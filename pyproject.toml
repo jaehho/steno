@@ -1,6 +1,6 @@
 [project]
 name = "meeting-copilot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Live meeting copilot: dual audio capture -> Deepgram -> Claude advisor TUI"
 requires-python = ">=3.11"
 dependencies = [
@@ -8,14 +8,22 @@ dependencies = [
     "websockets>=13.0",
     "textual>=0.86.0",
     "python-dotenv>=1.0.0",
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+    "numpy>=1.24",
 ]
 
 [project.scripts]
-copilot = "copilot:main"
+copilot = "meeting_copilot.cli:main"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-py-modules = ["copilot"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["src"]
