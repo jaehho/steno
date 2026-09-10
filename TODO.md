@@ -117,16 +117,21 @@ See `PRODUCT.md` for what this is and what it refuses to be.
       transcript to filter a sidebar is slow. Not before.
 
 ## Deployment
-Installed via `make link` + `make desktop` + `make autostart` (all no-sudo, all
-running from this checkout). `uv tool install` is not viable — its venv is
-isolated and can never see the system `python-gobject` the window needs;
-`make install` builds the Arch package instead, which needs `python-anthropic`
-from the AUR.
+Installed via `make venv` + `make link` + `make desktop` + `make autostart`
+(all no-sudo, all running from this checkout). `make venv` pins
+`/usr/bin/python`: `--system-site-packages` shares the site-packages of
+whichever interpreter uv picks, and left alone uv picks its own managed build,
+which has neither `python-gobject` nor `numpy`. `uv tool install` is not viable
+either — that venv is isolated and can never see the system `python-gobject`
+the window needs; `make install` builds the Arch package instead, which needs
+`python-anthropic` from the AUR.
 
 - [x] pushed to GitHub: `jaehho/steno`, private.
 - [ ] make it public, then convert `packaging/PKGBUILD` to a `-git` variant with
       a `pkgver()` reading git tags, and publish to the AUR. The AUR needs a
       repo it can clone, so the `-git` package waits on that.
 - [ ] tag releases so the non-`-git` variant can pin a version.
-- [ ] the checkout is still at `~/projects/meeting-copilot`. `mv` it and re-run
-      `make link`; nothing in the tree depends on the directory name.
+- [x] the checkout moved to `~/projects/steno`. Only two things baked the old
+      path — the `~/.local/bin/steno` wrapper and the venv's shebangs — so a
+      move is `make venv && make link`. Everything else (desktop entry, the
+      Hyprland line, the waybar module) goes through `steno` on PATH.

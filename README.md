@@ -18,10 +18,12 @@ Built for Linux with pipewire-pulse. The window is GTK4 and libadwaita.
 ## Install
 
 ```sh
+make venv          # .venv on the system python, sharing its site-packages
 make link          # `steno` on PATH, running from this checkout
 make desktop       # launcher entry, so rofi lists it
 make hypr          # start listening with the Hyprland session
 make waybar        # recording indicator in the bar (backs up your config)
+make echo-cancel   # an echo-cancelled mic, if you take calls on speakers
 ```
 
 `make hypr` adds one `hl.exec_cmd` line to `hyprland.lua`, because Hyprland does
@@ -29,11 +31,13 @@ not read `~/.config/autostart`; on a desktop that does, `make autostart` is the
 portable equivalent. Both are idempotent, back up what they touch, and have an
 `un` twin.
 
-Or `make install` to build the Arch package properly. Note
-that `uv tool install` does **not** work: it builds an isolated venv, and the
-window needs the system `python-gobject`, which such a venv can never see. The
-repo's `.venv` is created with `--system-site-packages`, which is why
-`make link` points at it.
+Or `make install` to build the Arch package properly. Note that `uv tool
+install` does **not** work: it builds an isolated venv, and the window needs the
+system `python-gobject`, which such a venv can never see. `make venv` builds one
+that can — on `/usr/bin/python` explicitly, since `--system-site-packages`
+shares the site-packages of whichever interpreter uv picks and uv left alone
+picks its own. Moving the checkout is `make venv && make link`; nothing else
+refers to it by path.
 
 Then set it up once:
 

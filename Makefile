@@ -1,6 +1,6 @@
 # steno - listens to your meetings, hands you notes and todos.
 
-.PHONY: help run listen test lint sources watch link unlink desktop undesktop \
+.PHONY: help run listen test lint sources watch venv link unlink desktop undesktop \
 	hypr unhypr autostart unautostart waybar unwaybar echo-cancel unecho-cancel \
 	install uninstall package status clean
 
@@ -19,6 +19,19 @@ test:            ## headless suite - no audio, no network, no display
 
 lint:            ## ruff
 	uv run ruff check src tests packaging
+
+venv:            ## (re)create .venv - needed after moving the checkout
+	@rm -rf .venv
+	@# The system interpreter, explicitly: `--system-site-packages` shares the
+	@# site-packages of whichever python uv picks, and uv prefers its own
+	@# managed build, which has neither python-gobject nor numpy.
+	@uv venv --python /usr/bin/python --system-site-packages
+	@uv sync
+	@.venv/bin/python -c 'import gi; \
+	  gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1"); \
+	  gi.require_version("Gst", "1.0"); \
+	  from gi.repository import Adw, Gst, Gtk; \
+	  print("ok: window and playback are importable")'
 
 link:            ## put `steno` on PATH, running from this checkout (no sudo)
 	@mkdir -p $(HOME)/.local/bin
