@@ -123,8 +123,10 @@ isolated and can never see the system `python-gobject` the window needs;
 `make install` builds the Arch package instead, which needs `python-anthropic`
 from the AUR.
 
-- [ ] push to GitHub, then convert `packaging/PKGBUILD` to a `-git` variant with
-      a `pkgver()` reading git tags, and publish to the AUR.
+- [x] pushed to GitHub: `jaehho/steno`, private.
+- [ ] make it public, then convert `packaging/PKGBUILD` to a `-git` variant with
+      a `pkgver()` reading git tags, and publish to the AUR. The AUR needs a
+      repo it can clone, so the `-git` package waits on that.
 - [ ] tag releases so the non-`-git` variant can pin a version.
 - [ ] the checkout is still at `~/projects/meeting-copilot`. `mv` it and re-run
       `make link`; nothing in the tree depends on the directory name.
