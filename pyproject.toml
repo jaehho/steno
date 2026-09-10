@@ -1,20 +1,23 @@
 [project]
-name = "meeting-copilot"
-version = "0.2.0"
-description = "Live meeting copilot: dual audio capture -> Deepgram -> Claude advisor TUI"
+name = "steno"
+version = "0.4.0"
+description = "Listens to your meetings, keeps up when you drift, and turns them into notes and todos"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.40.0",
     "websockets>=13.0",
-    "textual>=0.86.0",
+    "httpx>=0.27",
     "python-dotenv>=1.0.0",
-    "sounddevice>=0.4",
-    "soundfile>=0.12",
-    "numpy>=1.24",
 ]
 
+[project.optional-dependencies]
+# Only `steno clean-echo` needs it, and only for meetings recorded before the
+# PipeWire canceller was installed. Imported where it is used, so the rest of
+# the tool runs without it.
+clean = ["numpy>=1.24"]
+
 [project.scripts]
-copilot = "meeting_copilot.cli:main"
+steno = "steno.cli:main"
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -27,3 +30,8 @@ where = ["src"]
 venvPath = "."
 venv = ".venv"
 extraPaths = ["src"]
+
+[dependency-groups]
+dev = [
+    "pygobject-stubs>=2.17.0",
+]

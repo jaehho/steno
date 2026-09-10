@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Steno
+GenericName=Meeting Notes
+Comment=Listens to your calls and turns them into notes and todos
+Exec=steno gui
+Icon=audio-input-microphone
+Terminal=false
+Categories=AudioVideo;Audio;Recorder;
+Keywords=meeting;transcript;notes;summary;recording;steno;
+StartupNotify=true
+StartupWMClass=dev.jaeho.Steno
+Actions=record;quit;
+
+[Desktop Action record]
+Name=Start or stop recording
+Exec=steno toggle
+
+[Desktop Action quit]
+Name=Quit (stops listening)
+Exec=steno quit

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Steno (listener)
+Comment=Watches for meetings in the background
+# --background: come up listening, with no window. Someone who has just logged
+# in did not ask to look at their meeting archive.
+Exec=steno gui --background
+Icon=audio-input-microphone
+Terminal=false
+# Out of the launcher: this entry exists for the session, not for the user.
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

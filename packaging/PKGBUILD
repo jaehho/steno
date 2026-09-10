@@ -1,0 +1,77 @@
+# Maintainer: Jaeho Cho <jaewon0907@gmail.com>
+#
+# Local-build PKGBUILD. From the project root:
+#   make install             # build + install (paru -Bi resolves the AUR deps)
+#   sudo pacman -R steno
+#
+# Bump `pkgver` to match pyproject.toml on each release; bump `pkgrel` when you
+# change the recipe without bumping the version.
+
+pkgname=steno
+pkgver=0.4.0
+pkgrel=1
+pkgdesc="Listens to your meetings and turns them into notes and todos"
+arch=('any')
+url=""
+license=('MIT')
+# gtk4/libadwaita/python-gobject are the window; libpulse provides pactl and
+# parec, which are how capture and meeting detection work at all; gstreamer is
+# archive playback (GTK's own media backend is not packaged on Arch).
+depends=(
+  'python'
+  'python-gobject'
+  'gtk4'
+  'libadwaita'
+  'python-anthropic'
+  'python-websockets'
+  'python-httpx'
+  'python-dotenv'
+  'libpulse'
+  'gstreamer'
+  'gst-plugins-base'
+  'gst-plugins-good'
+)
+optdepends=(
+  'libnotify: desktop notifications when a summary is ready'
+  'python-numpy: `steno clean-echo`, for meetings recorded on speakers'
+)
+makedepends=(
+  'python-build'
+  'python-installer'
+  'python-setuptools'
+  'python-wheel'
+)
+# Local build: no remote source. We copy the project into $srcdir in prepare().
+source=()
+sha256sums=()
+
+prepare() {
+  rm -rf "$srcdir/$pkgname"
+  mkdir -p "$srcdir/$pkgname"
+  cp -r "$startdir"/{src,tests,pyproject.toml,README.md,LICENSE,packaging} \
+    "$srcdir/$pkgname/"
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "$srcdir/$pkgname"
+  # Headless by construction: no audio device, no network, no display.
+  python -m unittest discover -s tests -t .
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 packaging/dev.jaeho.Steno.desktop \
+    "$pkgdir/usr/share/applications/dev.jaeho.Steno.desktop"
+  # The listener has to be running to notice a meeting, so the package puts it
+  # in the session's autostart rather than leaving that to the user.
+  install -Dm644 packaging/steno-autostart.desktop \
+    "$pkgdir/etc/xdg/autostart/steno.desktop"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
