@@ -26,7 +26,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-steno = ["data/icons/hicolor/*/*/*.svg"]
+steno = ["data/icons/hicolor/*/*/*.svg", "data/icons/hicolor/index.theme"]
 
 [tool.pyright]
 venvPath = "."

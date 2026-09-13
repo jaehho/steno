@@ -71,6 +71,11 @@ class TestTrayView(unittest.TestCase):
             found = list(icon_dir().glob(f"hicolor/*/*/{name}.svg"))
             self.assertTrue(found, name)
         self.assertTrue(list(icon_dir().glob("hicolor/*/apps/dev.jaeho.Steno.svg")))
+        # Waybar searches only IconThemePath; without the index every lookup misses.
+        index = (icon_dir() / "hicolor/index.theme").read_text()
+        for sub in {p.parent.relative_to(icon_dir() / "hicolor").as_posix()
+                    for p in icon_dir().glob("hicolor/*/*/*.svg")}:
+            self.assertIn(f"[{sub}]", index)
 
     def test_unknown_status_falls_back_to_idle_icon(self):
         self.assertEqual(state.tray_view("off")["icon"], state.TRAY_ICONS["idle"])
