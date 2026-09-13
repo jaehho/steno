@@ -1,8 +1,8 @@
 # steno - listens to your meetings, hands you notes and todos.
 
 .PHONY: help run listen test lint sources watch venv link unlink desktop undesktop \
-	hypr unhypr autostart unautostart waybar unwaybar echo-cancel unecho-cancel \
-	install uninstall package status clean
+	hypr unhypr autostart unautostart waybar unwaybar \
+	install uninstall package aur status clean
 
 help:            ## this list
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) \
@@ -45,11 +45,14 @@ unlink:          ## remove that wrapper
 desktop:         ## launcher entry, so rofi and friends can find it
 	install -Dm644 packaging/dev.jaeho.Steno.desktop \
 		$(HOME)/.local/share/applications/dev.jaeho.Steno.desktop
+	install -Dm644 src/steno/data/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg \
+		$(HOME)/.local/share/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg
 	@update-desktop-database $(HOME)/.local/share/applications 2>/dev/null || true
 	@echo "installed; rofi should list Steno"
 
 undesktop:       ## remove the launcher entry
-	rm -f $(HOME)/.local/share/applications/dev.jaeho.Steno.desktop
+	rm -f $(HOME)/.local/share/applications/dev.jaeho.Steno.desktop \
+		$(HOME)/.local/share/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg
 
 hypr:            ## start listening with the Hyprland session (this machine)
 	uv run python packaging/install-hypr.py
@@ -57,20 +60,12 @@ hypr:            ## start listening with the Hyprland session (this machine)
 unhypr:          ## stop starting with the session
 	uv run python packaging/install-hypr.py --remove
 
-autostart:       ## XDG autostart entry, for sessions that read ~/.config/autostart
-	install -Dm644 packaging/steno-autostart.desktop \
-		$(HOME)/.config/autostart/steno.desktop
-	@echo "linked; note Hyprland does not read this - use `make hypr` there"
+autostart:       ## start at login (same as the window menu's toggle)
+	uv run steno autostart on
 
 unautostart:     ## stop starting at login
-	rm -f $(HOME)/.config/autostart/steno.desktop \
-		$(HOME)/.config/autostart/dev.jaeho.MeetingCopilot.desktop
-
-echo-cancel:     ## ask pipewire for an echo-cancelled mic (for meetings on speakers)
-	uv run python packaging/install-echo-cancel.py
-
-unecho-cancel:   ## remove it; the microphone goes back to unfiltered
-	uv run python packaging/install-echo-cancel.py --remove
+	uv run steno autostart off
+	rm -f $(HOME)/.config/autostart/dev.jaeho.MeetingCopilot.desktop
 
 waybar:          ## add the recording indicator to waybar (backs up your config)
 	uv run python packaging/install-waybar.py
@@ -87,6 +82,9 @@ uninstall:       ## remove the Arch package
 package:         ## build the Arch package without installing
 	cd packaging && makepkg -f
 
+aur:             ## regenerate the AUR package's .SRCINFO
+	cd packaging/aur/steno-git && makepkg --printsrcinfo > .SRCINFO
+
 status:          ## is it running, and what does the bar say
 	@uv run steno status
 	@printf 'bar:      '; uv run steno bar --once
@@ -98,8 +96,8 @@ sources:         ## what's available to capture
 	@echo "== default mic =="; pactl get-default-source
 	@echo "== default sink (system audio comes from <sink>.monitor) =="; pactl get-default-sink
 	@echo "== all sources =="; pactl list short sources
-	@echo "== echo-cancelled mic (make echo-cancel) =="; \
-	  pactl list short sources | grep steno_echo_cancel || echo "not installed"
+	@echo "== echo canceller in front of the mic (dotfiles: audio package) =="; \
+	  pw-dump | grep -q '"node.name": "echo_cancel"' && echo installed || echo "not installed"
 
 clean:
 	rm -rf build dist src/*.egg-info **/__pycache__ *.pkg.tar.zst packaging/{src,pkg}

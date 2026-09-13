@@ -9,10 +9,10 @@ said something becomes a coin flip.
 
 There are two places to fix that, and this module holds both.
 
-*Before the fact*, PipeWire can hand us a second microphone with the speaker
-output already subtracted (`packaging/install-echo-cancel.py` sets it up).
-`preferred_source()` picks it when it exists, so recording just quietly gets
-better; nothing else in the engine needs to know.
+*Before the fact*, PipeWire can put a canceller in front of the microphone
+(dotfiles installs it, `audio` package). It is a WirePlumber smart filter, so
+recording the default microphone already records through it; nothing in the
+engine needs to know, and there is nothing to configure here.
 
 *After the fact*, an existing recording can be cleaned the same way, because
 the reference signal the canceller needs is exactly what `them.wav` already is.
@@ -23,67 +23,11 @@ command rather than running on its own, and it never overwrites the original.
 """
 from __future__ import annotations
 
-import os
-import subprocess
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 
 from .playback import clean_path
-
-# ------------------------------------------------------------------------ live
-
-# The virtual source the packaging script asks PipeWire for. Steno records from
-# it when it is there and from the real microphone when it is not — installing
-# echo cancellation is a choice the user makes once, not a dependency.
-AEC_SOURCE_NAME = "steno_echo_cancel"
-AEC_SOURCE_DESCRIPTION = "Microphone (echo-cancelled, for Steno)"
-AEC_LIBRARY = "aec/libspa-aec-webrtc"
-
-# Set to 0 to record the raw microphone even when the filtered source exists.
-ENABLE_ENV = "STENO_ECHO_CANCEL"
-
-
-def enabled() -> bool:
-    return os.environ.get(ENABLE_ENV, "1").strip().lower() not in ("0", "false", "no")
-
-
-def list_sources() -> list[str]:
-    try:
-        out = subprocess.run(
-            ["pactl", "list", "short", "sources"],
-            capture_output=True, text=True, timeout=5, check=False,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return [row.split("\t")[1] for row in out.splitlines() if "\t" in row]
-
-
-def pick_source(default: str, sources: list[str]) -> str:
-    """The echo-cancelled source if PipeWire is offering one, else `default`.
-
-    Matched on the name we asked for rather than on "anything with echo in the
-    name": another application's canceller is filtered against *its* reference,
-    which is not necessarily ours.
-    """
-    if not enabled():
-        return default
-    for name in sources:
-        if name == AEC_SOURCE_NAME or name.startswith(AEC_SOURCE_NAME + "."):
-            return name
-    return default
-
-
-def preferred_source(default: str) -> str:
-    return pick_source(default, list_sources())
-
-
-def installed() -> bool:
-    return any(
-        name == AEC_SOURCE_NAME or name.startswith(AEC_SOURCE_NAME + ".")
-        for name in list_sources()
-    )
-
 
 # --------------------------------------------------------------------- offline
 

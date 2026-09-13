@@ -81,9 +81,9 @@ See `PRODUCT.md` for what this is and what it refuses to be.
       too, so `you.wav` was a second copy of `them.wav` and every You/Them
       attribution downstream was a guess — measured at 411 of 482 "you" lines
       also appearing on the them track.
-  - live: `make echo-cancel` asks PipeWire for a filtered twin of the mic
-    (`monitor.mode`, so nothing has to change where it plays), and `capture_mic`
-    records from it when it exists. `STENO_ECHO_CANCEL=0` opts out.
+  - live: PipeWire's own canceller sits in front of the mic as a hidden
+    WirePlumber smart filter, so recording the default mic records through it.
+    The config lives in dotfiles (`audio` package), not here.
   - after the fact: `steno clean-echo` re-derives the echo path from the two
     tracks it already has — GCC-PHAT for the bulk delay, then a partitioned
     frequency-domain adaptive filter and a spectral suppressor for the part a
@@ -96,6 +96,48 @@ See `PRODUCT.md` for what this is and what it refuses to be.
       with one branch per track instead of `playbin3` on one file, so a meeting
       plays as a conversation and the transcript highlight follows one timeline
       rather than every other line. A dropdown solos either side.
+
+## v0.9 — done
+- [x] **headless Claude Code instead of the API** (`claude.py`). The summary and
+      the advisor run `claude -p` on the subscription login, with settings, MCP
+      and hooks off; `ANTHROPIC_API_KEY` is stripped from its environment and
+      `anthropic` is off the dependency list.
+- [x] **meetings tied to a project.** The summary prompt lists `~/projects`
+      (`STENO_PROJECTS_DIR`) with each README's first line; when the meeting is
+      about one, Claude reads it with Read/Grep/Glob, allowed inside that root
+      only, and `meta.json` records `project`. The archive row shows it.
+
+## v0.10 — done
+- [x] **one window, no tabs.** Live and Archive merged: a sidebar with a status
+      card (what Steno is doing, why, and the one button that changes it) over
+      the meeting list, and a meeting in progress as the top row under "Now".
+      A past meeting is one page — summary, to-dos, notes, ask, transcript —
+      with the player pinned to the bottom instead of hidden on a tab.
+- [x] **adaptive.** `Adw.NavigationSplitView` + breakpoints: two columns when
+      wide, stacked below 1000sp (`Adw.MultiLayoutView`), list and meeting as
+      separate pages below 600sp. Needs libadwaita 1.6.
+- [x] libadwaita's own surfaces recoloured from the palette; tracked-caps chrome
+      replaced with sentence-case labels. Toasts for errors and a finished
+      summary, instead of a tooltip nobody hovered.
+- [x] asking about a past meeting (`Engine.ask(session_dir=)`), over the whole
+      transcript with its own prompt.
+
+## v0.11
+- [x] **tray icon** (`gui/tray.py`): a StatusNotifierItem exported over Gio, its
+      menu through libdbusmenu-glib. libayatana-appindicator is GTK3-only, and
+      its GTK-free successor exports `org.gtk.Menus`, which waybar/KDE/XFCE
+      don't read (upstream issues #87, #102; dbusmenu fallback is PR #103).
+      Verified on waybar over D-Bus: registration, menu layout, pause/resume
+      clicks flip the state. `STENO_TRAY=0` turns it off.
+- [x] **own icons** in `src/steno/data/icons/hicolor` (package data): the app
+      icon and one per tray state, handed to the host via `IconThemePath`, so
+      the tray no longer depends on the host theme carrying stock names.
+- [x] **start at login is opt-in, per user** (`autostart.py`): "Start at login"
+      in the window menu, `steno autostart on|off`. The package no longer
+      installs `/etc/xdg/autostart`; `steno.install` says how to turn it on, and
+      a compositor line (`make hypr`) counts as on without being touched.
+- [x] one public email: PKGBUILD maintainer is jaeho2025@gmail.com, as in the commits.
+- [x] version 0.11.0 everywhere (`pyproject.toml`, `__version__`, PKGBUILD).
 
 ## Next
 - [ ] the live canceller is wired and unverified: with headphones plugged in
@@ -123,13 +165,16 @@ Installed via `make venv` + `make link` + `make desktop` + `make autostart`
 whichever interpreter uv picks, and left alone uv picks its own managed build,
 which has neither `python-gobject` nor `numpy`. `uv tool install` is not viable
 either — that venv is isolated and can never see the system `python-gobject`
-the window needs; `make install` builds the Arch package instead, which needs
-`python-anthropic` from the AUR.
+the window needs; `make install` builds the Arch package instead.
 
 - [x] pushed to GitHub: `jaehho/steno`, private.
-- [ ] make it public, then convert `packaging/PKGBUILD` to a `-git` variant with
-      a `pkgver()` reading git tags, and publish to the AUR. The AUR needs a
-      repo it can clone, so the `-git` package waits on that.
+- [x] `packaging/aur/steno-git/`: `-git` PKGBUILD + `.SRCINFO` (`make aur`),
+      `pkgver()` from tags with an `r<count>.<hash>` fallback. Built from a
+      mirror of the working tree; `check()` was never run against the installed
+      deps (they live in the venv here) — needs a clean-chroot build.
+- [ ] clean-chroot build (`/tmp/steno-chroot-build.sh`, needs sudo for devtools)
+      so `check()` runs against the real packages.
+- [ ] make it public, tag, publish `steno-git` to the AUR.
 - [ ] tag releases so the non-`-git` variant can pin a version.
 - [x] the checkout moved to `~/projects/steno`. Only two things baked the old
       path — the `~/.local/bin/steno` wrapper and the venv's shebangs — so a

@@ -8,11 +8,14 @@ GTK's own media backend is not packaged on Arch.
 quitting. `make desktop` installs it to `~/.local/share/applications`, which is
 what makes rofi list it.
 
-`steno-autostart.desktop` starts the listener at login with `--background`: no
-window, just detection. The app has to be running to notice a meeting, and the
-person who just logged in did not ask to look at their archive. `make autostart`
-links it; the package installs it to `/etc/xdg/autostart`. There is no systemd
-unit — it needs a display, so the session should own it.
+Starting at login is opt-in and per user: the window menu's "Start at login",
+`steno autostart on`, or `make autostart` write `~/.config/autostart/steno.desktop`
+(`steno.autostart`). The package installs nothing into `/etc/xdg/autostart`, since
+that would start recording detected calls for every account on the machine;
+`steno.install` says how to turn it on. There is no systemd unit — it needs a
+display, so the session should own it.
+
+`aur/steno-git/` is the AUR package. `make aur` regenerates its `.SRCINFO`.
 
 `install-hypr.py` adds one line to `hyprland.lua`'s start block (`make hypr`).
 Hyprland does not read `~/.config/autostart`, and this config starts its daemons

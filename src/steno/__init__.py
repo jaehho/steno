@@ -4,14 +4,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__version__ = "0.4.0"
+__version__ = "0.11.0"
 
 # All current Claude models are natively 1M context, so no beta header is needed.
 # Summaries and the advisor share this; override per-run with CLAUDE_MODEL.
+# Passed to `claude -p --model`, which takes full IDs and aliases alike.
 DEFAULT_MODEL = "claude-opus-5"
 
 LEGACY_NAME = "meeting-copilot"
 APP_NAME = "steno"
+
+
+def icon_dir() -> Path:
+    """The icon theme shipped inside the package: the app icon and tray states."""
+    return Path(__file__).parent / "data" / "icons"
 
 
 def config_dir() -> Path:

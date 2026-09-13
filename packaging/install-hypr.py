@@ -18,23 +18,13 @@ import shutil
 import time
 from pathlib import Path
 
+from steno.autostart import MARK, listener_command
+
 CONFIG = Path.home() / ".config" / "hypr" / "hyprland.lua"
-MARK = "steno gui --background"
 
 
 def command() -> str:
-    """Absolute path if we can find one.
-
-    Hyprland's exec inherits the environment the compositor was started with,
-    which often does not include `~/.local/bin` — the neighbouring lines in this
-    very config spell that directory out for exactly this reason.
-    """
-    stable = [Path.home() / ".local/bin/steno", Path("/usr/bin/steno")]
-    found = next((p for p in stable if p.is_file()), None)
-    # `which` last: run under `uv run`, it points into the project venv, which is
-    # the one path that stops working the moment the checkout moves.
-    exe = str(found) if found else (shutil.which("steno") or "steno")
-    return f"{exe} gui --background"
+    return listener_command()
 
 
 def line() -> str:

@@ -1,10 +1,14 @@
-"""The live view: what they just said, what you're writing, what you asked.
+"""A meeting in progress: what they just said, what you're writing, what you asked.
 
-Weighted to the transcript on purpose. This screen is read in a second by
-someone who is mid-sentence, so the far side's words get the space and the type
-size, and everything else is narrow and quiet beside them.
+Weighted to the transcript on purpose. This page is read in a second by someone
+who is mid-sentence, so the far side's words get the space and the type size.
+On a wide window notes and asking sit in a narrow column beside them; on a tall
+one — a window parked beside the call — they drop below, and the transcript
+keeps the full width.
 """
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import gi
 
@@ -13,21 +17,16 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, GLib, Gtk, Pango
 
-from ..notes import load_notes, save_notes
-from .style import (
-    TRANSCRIPT_PT_DEFAULT,
-    TRANSCRIPT_PT_MAX,
-    TRANSCRIPT_PT_MIN,
-)
+from .style import TRANSCRIPT_PT_DEFAULT, TRANSCRIPT_PT_MAX, TRANSCRIPT_PT_MIN
+from .widgets import AskBox, NotesBox, section
 
-NOTES_AUTOSAVE_S = 3
 MAX_LINES = 600  # keep the pane cheap to render across a long meeting
 
 
 class TranscriptLine(Gtk.Box):
-    """One utterance: a speaker tag and the words.
+    """One utterance: a speaker label and the words.
 
-    The tag is text, not just colour — the split has to survive a grayscale
+    The label is text, not just colour — the split has to survive a grayscale
     screenshot and a colourblind reader.
     """
 
@@ -36,7 +35,7 @@ class TranscriptLine(Gtk.Box):
         self.add_css_class("transcript-line")
         self.add_css_class("from-them" if speaker == "them" else "from-you")
 
-        tag = Gtk.Label(label="THEM" if speaker == "them" else "YOU", xalign=1.0)
+        tag = Gtk.Label(label="Them" if speaker == "them" else "You", xalign=0.0)
         tag.add_css_class("speaker-tag")
         tag.set_valign(Gtk.Align.START)
         tag.set_width_chars(5)
@@ -50,38 +49,95 @@ class TranscriptLine(Gtk.Box):
         self.append(self.label)
 
 
-class LiveView(Gtk.Box):
-    def __init__(self, on_ask, on_toggle_record) -> None:
+class LivePage(Gtk.Box):
+    def __init__(self, on_ask: Callable[[str], None]) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
-        self._on_ask = on_ask
-        self._on_toggle_record = on_toggle_record
         self.session_dir = None
-        self._notes_dirty = False
-        self._notes_timer: int | None = None
         self.transcript_pt = TRANSCRIPT_PT_DEFAULT
 
-        split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        split.set_position(640)
-        split.set_resize_start_child(True)
-        split.set_shrink_start_child(False)
-        split.set_shrink_end_child(False)
-        split.set_start_child(self._build_transcript())
-        split.set_end_child(self._build_side())
-        split.set_vexpand(True)
-        self.append(split)
+        self.layouts = Adw.MultiLayoutView()
+        self.layouts.set_vexpand(True)
+        self.layouts.add_layout(self._wide_layout())
+        self.layouts.add_layout(self._stacked_layout())
 
-    # ----------------------------------------------------------------- building
+        self.notes = NotesBox()
+        self.ask = AskBox(on_ask=on_ask)
+        notes = section("Your notes", self.notes, hint="Saved with the meeting")
+        notes.set_vexpand(True)
+        self.layouts.set_child("transcript", self._build_transcript())
+        self.layouts.set_child("notes", notes)
+        self.layouts.set_child("ask", section("Ask", self.ask))
+        self.layouts.set_layout_name("wide")
+        self.append(self.layouts)
+
+    # ------------------------------------------------------------------ layouts
+
+    def _wide_layout(self) -> Adw.Layout:
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        side.add_css_class("side-column")
+        side.add_css_class("beside")
+        side.set_size_request(320, -1)
+        side.set_hexpand(False)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        for setter in (inner.set_margin_top, inner.set_margin_start, inner.set_margin_end):
+            setter(16)
+        inner.set_margin_bottom(14)
+        inner.set_vexpand(True)
+        notes = Adw.LayoutSlot.new("notes")
+        notes.set_vexpand(True)
+        inner.append(notes)
+        inner.append(Adw.LayoutSlot.new("ask"))
+        side.append(inner)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        transcript = Adw.LayoutSlot.new("transcript")
+        transcript.set_hexpand(True)
+        row.append(transcript)
+        row.append(side)
+        layout = Adw.Layout.new(row)
+        layout.set_name("wide")
+        return layout
+
+    def _stacked_layout(self) -> Adw.Layout:
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        panel.add_css_class("side-column")
+        panel.add_css_class("below")
+        # The notes view expands; below the transcript that must not win it space.
+        panel.set_vexpand(False)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for setter in (inner.set_margin_top, inner.set_margin_start, inner.set_margin_end):
+            setter(14)
+        inner.set_margin_bottom(12)
+        notes = Adw.LayoutSlot.new("notes")
+        notes.set_size_request(-1, 150)
+        inner.append(notes)
+        inner.append(Adw.LayoutSlot.new("ask"))
+        panel.append(inner)
+
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        transcript = Adw.LayoutSlot.new("transcript")
+        transcript.set_vexpand(True)
+        column.append(transcript)
+        column.append(panel)
+        layout = Adw.Layout.new(column)
+        layout.set_name("stacked")
+        return layout
+
+    def set_stacked(self, stacked: bool) -> None:
+        self.layouts.set_layout_name("stacked" if stacked else "wide")
+        # A new shape moves the bottom; land on the latest line again.
+        self._scroll_to_end(force=True)
 
     def _build_transcript(self) -> Gtk.Widget:
         self.lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.lines.set_margin_start(18)
-        self.lines.set_margin_end(18)
+        self.lines.add_css_class("transcript-live")
+        self.lines.set_margin_start(24)
+        self.lines.set_margin_end(24)
         self.lines.set_margin_top(14)
-        self.lines.set_margin_bottom(6)
-        self.lines.add_css_class("transcript")
+        self.lines.set_margin_bottom(4)
 
         self.empty_hint = Gtk.Label(
-            label="Nothing heard yet.\nThis fills in once a meeting starts.",
+            label="Nothing heard yet.\nTheir words appear here as they speak.",
             justify=Gtk.Justification.CENTER,
         )
         self.empty_hint.add_css_class("empty-hint")
@@ -91,13 +147,15 @@ class LiveView(Gtk.Box):
         # Interim text sits below the finals and is replaced, never appended.
         self.interim = Gtk.Label(label="", xalign=0.0)
         self.interim.set_wrap(True)
+        self.interim.add_css_class("transcript-live")
         self.interim.add_css_class("interim")
-        self.interim.set_margin_start(18)
-        self.interim.set_margin_end(18)
-        self.interim.set_margin_bottom(12)
+        self.interim.set_margin_start(24 + 52)
+        self.interim.set_margin_end(24)
+        self.interim.set_margin_bottom(14)
         self.interim.set_visible(False)
 
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        inner.set_valign(Gtk.Align.END)
         inner.append(self.empty_hint)
         inner.append(self.lines)
         inner.append(self.interim)
@@ -106,62 +164,16 @@ class LiveView(Gtk.Box):
         self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.scroller.set_child(inner)
         self.scroller.set_vexpand(True)
-        self.scroller.add_css_class("transcript")
+        self.scroller.set_hexpand(True)
+        # Follow the conversation unless the user has scrolled up to read. The
+        # range grows after layout, not when a line is appended, so the snap
+        # to the bottom happens when it changes rather than when text arrives.
+        self._following = True
+        self._snap: int | None = None
+        adj = self.scroller.get_vadjustment()
+        adj.connect("changed", self._on_range_changed)
+        adj.connect("value-changed", self._on_scrolled)
         return self.scroller
-
-    def _build_side(self) -> Gtk.Widget:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        box.set_size_request(320, -1)
-
-        box.append(_section_label("Notes"))
-        self.notes = Gtk.TextView()
-        self.notes.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.notes.add_css_class("notes")
-        self.notes.get_buffer().connect("changed", self._on_notes_changed)
-        notes_scroll = Gtk.ScrolledWindow()
-        notes_scroll.set_child(self.notes)
-        notes_scroll.set_vexpand(True)
-
-        # TextView has no placeholder, so float one and hide it on first keystroke.
-        self.notes_hint = Gtk.Label(label="Your notes. Saved with the meeting.")
-        self.notes_hint.add_css_class("empty-hint")
-        self.notes_hint.set_halign(Gtk.Align.START)
-        self.notes_hint.set_valign(Gtk.Align.START)
-        self.notes_hint.set_margin_start(14)
-        self.notes_hint.set_margin_top(10)
-        self.notes_hint.set_can_target(False)
-        overlay = Gtk.Overlay()
-        overlay.set_child(notes_scroll)
-        overlay.add_overlay(self.notes_hint)
-        overlay.set_vexpand(True)
-        box.append(overlay)
-
-        box.append(_hairline())
-        box.append(_section_label("Ask"))
-
-        self.advice = Gtk.Label(label="", xalign=0.0)
-        self.advice.set_wrap(True)
-        self.advice.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        self.advice.set_selectable(True)
-        self.advice.add_css_class("advice")
-        self.advice.set_visible(False)
-        # Collapsed until something has been asked; an empty pane reserving a
-        # third of the column is the opposite of glanceable.
-        self.advice_scroll = Gtk.ScrolledWindow()
-        self.advice_scroll.set_child(self.advice)
-        self.advice_scroll.set_size_request(-1, 150)
-        self.advice_scroll.set_visible(False)
-        box.append(self.advice_scroll)
-
-        self.ask_entry = Gtk.Entry()
-        self.ask_entry.set_placeholder_text("Ask about this meeting…  (Ctrl+G)")
-        self.ask_entry.connect("activate", lambda _e: self.ask())
-        self.ask_entry.set_margin_start(8)
-        self.ask_entry.set_margin_end(8)
-        self.ask_entry.set_margin_top(6)
-        self.ask_entry.set_margin_bottom(8)
-        box.append(self.ask_entry)
-        return box
 
     # ------------------------------------------------------------------- events
 
@@ -183,9 +195,7 @@ class LiveView(Gtk.Box):
         while (child := self.lines.get_first_child()) is not None:
             self.lines.remove(child)
         self.set_interim("")
-        self.advice.set_text("")
-        self.advice.set_visible(False)
-        self.advice_scroll.set_visible(False)
+        self.ask.clear()
         self.empty_hint.set_visible(True)
 
     def _trim(self) -> None:
@@ -198,78 +208,37 @@ class LiveView(Gtk.Box):
             self.lines.remove(first)
             count -= 1
 
-    def _scroll_to_end(self) -> None:
-        """Follow the conversation, unless the user has scrolled up to read."""
-        adj = self.scroller.get_vadjustment()
-        at_bottom = (
-            adj.get_value() + adj.get_page_size() >= adj.get_upper() - 120
-        )
-        if at_bottom:
-            GLib.idle_add(
-                lambda: (adj.set_value(adj.get_upper() - adj.get_page_size()), False)[1]
-            )
+    def _scroll_to_end(self, force: bool = False) -> None:
+        if force:
+            self._following = True
+        if self._following:
+            adj = self.scroller.get_vadjustment()
+            adj.set_value(adj.get_upper() - adj.get_page_size())
 
-    # ------------------------------------------------------------------- advice
+    def _on_range_changed(self, adj) -> None:
+        # Emitted mid-allocation, where moving the view would not be laid out
+        # until something else asked for it; do it once the frame is done.
+        if self._following and self._snap is None:
+            self._snap = GLib.idle_add(self._snap_to_end, adj)
 
-    def ask(self) -> None:
-        question = self.ask_entry.get_text().strip()
-        self.advice.set_text("thinking…")
-        self.advice.add_css_class("advice-thinking")
-        self.advice.set_visible(True)
-        self.advice_scroll.set_visible(True)
-        self._advice_buf = ""
-        self.ask_entry.set_text("")
-        self._on_ask(question)
+    def _snap_to_end(self, adj) -> bool:
+        self._snap = None
+        if self._following:
+            adj.set_value(adj.get_upper() - adj.get_page_size())
+        return GLib.SOURCE_REMOVE
 
-    def advice_delta(self, text: str) -> None:
-        if not hasattr(self, "_advice_buf"):
-            self._advice_buf = ""
-        if not self._advice_buf:
-            self.advice.remove_css_class("advice-thinking")
-            self.advice.set_text("")
-        self._advice_buf += text
-        self.advice.set_text(self._advice_buf)
-
-    def advice_done(self, text: str) -> None:
-        self.advice.remove_css_class("advice-thinking")
-        if text:
-            self.advice.set_text(text)
-            self._advice_buf = text
+    def _on_scrolled(self, adj) -> None:
+        self._following = adj.get_value() + adj.get_page_size() >= adj.get_upper() - 120
 
     # -------------------------------------------------------------------- notes
 
     def bind_session(self, session_dir) -> None:
-        """Point the notes pane at a session, flushing whatever came before."""
-        self.flush_notes()
         self.session_dir = session_dir
-        buf = self.notes.get_buffer()
-        buf.handler_block_by_func(self._on_notes_changed)
-        buf.set_text(load_notes(session_dir) if session_dir else "")
-        buf.handler_unblock_by_func(self._on_notes_changed)
-        self.notes_hint.set_visible(buf.get_char_count() == 0)
-        self._notes_dirty = False
-
-    def _on_notes_changed(self, buf) -> None:
-        self._notes_dirty = True
-        self.notes_hint.set_visible(buf.get_char_count() == 0)
-        if self._notes_timer is None:
-            self._notes_timer = GLib.timeout_add_seconds(
-                NOTES_AUTOSAVE_S, self._autosave
-            )
-
-    def _autosave(self) -> bool:
-        self._notes_timer = None
-        self.flush_notes()
-        return GLib.SOURCE_REMOVE
+        self.notes.bind(session_dir)
+        self._scroll_to_end(force=True)
 
     def flush_notes(self) -> None:
-        """Persist notes now. Called on autosave, session end, and shutdown."""
-        if not self._notes_dirty or self.session_dir is None:
-            return
-        buf = self.notes.get_buffer()
-        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
-        save_notes(self.session_dir, text)
-        self._notes_dirty = False
+        self.notes.flush()
 
     # --------------------------------------------------------------- type scale
 
@@ -278,21 +247,3 @@ class LiveView(Gtk.Box):
             TRANSCRIPT_PT_MIN, min(TRANSCRIPT_PT_MAX, self.transcript_pt + delta)
         )
         return self.transcript_pt
-
-
-def _section_label(text: str) -> Gtk.Widget:
-    label = Gtk.Label(label=text, xalign=0.0)
-    label.add_css_class("chrome")
-    label.set_margin_start(10)
-    label.set_margin_top(10)
-    label.set_margin_bottom(4)
-    return label
-
-
-def _hairline() -> Gtk.Widget:
-    line = Gtk.Box()
-    line.add_css_class("hairline")
-    return line
-
-
-__all__ = ["Adw", "LiveView", "TranscriptLine"]

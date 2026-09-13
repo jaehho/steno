@@ -24,13 +24,19 @@ from .detect import DEFAULT_ALLOW, END_GRACE_S, START_HOLD_S
 ENV_TEMPLATE = """\
 # steno config — required keys
 DEEPGRAM_API_KEY=
-ANTHROPIC_API_KEY=
 
-# Optional model override for the advisor and summaries.
+# Summaries and questions run through headless Claude Code (`claude -p`) on its
+# own login; no Anthropic key is needed. Optional model override for both:
 # CLAUDE_MODEL=claude-sonnet-5
+
+# Optional. Where your projects live, for tying a meeting to its codebase.
+# STENO_PROJECTS_DIR=~/projects
 
 # Optional. Drop meeting audio after N days, keeping the text. Unset keeps it.
 # STENO_KEEP_AUDIO_DAYS=30
+
+# Optional. 0 hides the tray icon, for a bar already running `steno bar`.
+# STENO_TRAY=0
 """
 
 
@@ -121,6 +127,23 @@ def cmd_quit(_args: argparse.Namespace) -> None:
     if not activate("quit"):
         print("steno is not running", file=sys.stderr)
         sys.exit(1)
+
+
+def cmd_autostart(args: argparse.Namespace) -> None:
+    from . import autostart
+
+    compositor = autostart.started_by_compositor()
+    if args.state == "on":
+        autostart.enable()
+    elif args.state == "off":
+        autostart.disable()
+        if compositor is not None:
+            print(f"still started by {compositor}; remove that line to stop it")
+    enabled = autostart.is_enabled()
+    print(f"start at login: {'on' if enabled else 'off'}")
+    if enabled and compositor is None and not autostart.session_reads_autostart():
+        print("this session may not run autostart entries; start "
+              f"`{autostart.listener_command()}` from its config")
 
 
 def cmd_watch(args: argparse.Namespace) -> None:
@@ -254,7 +277,8 @@ def _summarize_one(
         return False
     todos = sync_todos(session_dir, summary.body)
     open_n = sum(1 for t in todos if not t.done)
-    _replace_line(f"  {session_dir.name}: {summary.title}", progress)
+    project = f"  ({summary.project})" if summary.project else ""
+    _replace_line(f"  {session_dir.name}: {summary.title}{project}", progress)
     print(f"    -> {session_dir / 'summary.md'}"
           + (f"  ·  {open_n} todo{'s' if open_n != 1 else ''}" if open_n else ""))
     return True
@@ -262,12 +286,10 @@ def _summarize_one(
 
 def cmd_summarize(args: argparse.Namespace) -> None:
     load_dotenv(config_dir() / ".env")
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print(
-            f"Missing ANTHROPIC_API_KEY. Put it in {config_dir() / '.env'} "
-            f"(run `steno init`) or export it.",
-            file=sys.stderr,
-        )
+    from .claude import claude_path
+
+    if claude_path() is None:
+        print("`claude` is not on PATH. Install Claude Code and log in.", file=sys.stderr)
         sys.exit(1)
     from .summarize import iter_sessions, resolve_session
 
@@ -519,8 +541,7 @@ def _brief_new(brief_path: Path) -> None:
 
 
 def _preflight() -> None:
-    missing_env = [k for k in ("DEEPGRAM_API_KEY", "ANTHROPIC_API_KEY")
-                   if not os.environ.get(k)]
+    missing_env = [k for k in ("DEEPGRAM_API_KEY",) if not os.environ.get(k)]
     if missing_env:
         cfg = config_dir() / ".env"
         print(
@@ -537,6 +558,11 @@ def _preflight() -> None:
             f"Install pipewire-pulse (or pulseaudio).",
             file=sys.stderr,
         )
+        sys.exit(1)
+    from .claude import claude_path
+
+    if claude_path() is None:
+        print("`claude` is not on PATH. Install Claude Code and log in.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -608,6 +634,11 @@ def main() -> None:
 
     p_quit = sub.add_parser("quit", help="Stop the running app (and its listening)")
     p_quit.set_defaults(func=cmd_quit)
+
+    p_auto = sub.add_parser("autostart", help="Start listening at login (per user)")
+    p_auto.add_argument("state", nargs="?", choices=("on", "off"),
+                        help="Turn it on or off; no argument shows the setting")
+    p_auto.set_defaults(func=cmd_autostart)
 
     p_init = sub.add_parser("init", help="Create config dir and .env template")
     p_init.set_defaults(func=cmd_init)

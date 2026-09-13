@@ -17,18 +17,31 @@ Built for Linux with pipewire-pulse. The window is GTK4 and libadwaita.
 
 ## Install
 
+On Arch, from the AUR:
+
+```sh
+paru -S steno-git
+```
+
+Steno only notices a meeting while it is running, and it does not start itself
+at login until you ask: turn on **Start at login** in the window's menu (or
+`steno autostart on`). Hyprland, sway and niri don't run autostart entries
+unless the session was started through systemd (uwsm); there, start
+`steno gui --background` from the compositor's config instead.
+
+From a checkout:
+
 ```sh
 make venv          # .venv on the system python, sharing its site-packages
 make link          # `steno` on PATH, running from this checkout
 make desktop       # launcher entry, so rofi lists it
 make hypr          # start listening with the Hyprland session
 make waybar        # recording indicator in the bar (backs up your config)
-make echo-cancel   # an echo-cancelled mic, if you take calls on speakers
 ```
 
 `make hypr` adds one `hl.exec_cmd` line to `hyprland.lua`, because Hyprland does
-not read `~/.config/autostart`; on a desktop that does, `make autostart` is the
-portable equivalent. Both are idempotent, back up what they touch, and have an
+not read `~/.config/autostart`; on a desktop that does, `make autostart` (the
+same as the menu toggle) is the portable equivalent. Both are idempotent, back up what they touch, and have an
 `un` twin.
 
 Or `make install` to build the Arch package properly. Note that `uv tool
@@ -45,7 +58,9 @@ Then set it up once:
 steno init         # writes ~/.config/steno/.env
 ```
 
-Put a `DEEPGRAM_API_KEY` and an `ANTHROPIC_API_KEY` in that file. Optionally
+Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions run through
+headless Claude Code (`claude -p`) on its own login, so `claude` must be on
+PATH and logged in; no Anthropic key. Optionally
 write `~/.config/steno/brief.md` — a short, curated page about who you are and
 what you work on, used to resolve names and jargon that speech recognition
 mangles. `steno brief --new` drafts one with Claude Code.
@@ -57,6 +72,7 @@ Day to day there is nothing to run. Open the window from rofi, or click the bar.
 ```
 steno                      the window (same as `steno gui`)
 steno gui --background     listen with no window (what autostart runs)
+steno autostart [on|off]   start listening at login, for this user
 steno show                 raise the window, starting it if needed
 steno toggle               start or stop recording
 steno pause 45m            stop detecting for a while; --off to resume
@@ -71,18 +87,33 @@ steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context
 ```
 
-In the window: **Live** is the far side's transcript, your notes, and a box to
-ask Claude about what's being said. **Archive** is every meeting since — its
-summary, its todos, your notes, and the full transcript, where **clicking any
-line plays that moment back**. The ⋯ menu acts on the meeting you are looking
-at: re-time it against its audio, drop the audio but keep the words, or delete
-it. Deleting goes to your desktop trash, all of it together, recoverable from
-there.
+In the window, the sidebar says what Steno is doing (listening, recording,
+paused) and lists every meeting. A meeting in progress sits at the top under
+**Now** and opens by itself: the far side's transcript, your notes, and a box to
+ask Claude about what's being said. A past meeting is one page — its summary,
+to-dos, your notes, a question box, and the full transcript, where **clicking
+any line plays that moment back**. The ⋯ menu acts on the meeting you are
+looking at: re-time it against its audio, drop the audio but keep the words, or
+delete it. Deleting goes to your desktop trash, all of it together, recoverable
+from there.
 
-`Ctrl+G` ask · `Ctrl+F` search · `Ctrl+R` record · `Ctrl+` `+`/`-` transcript
-size · `Ctrl+W` close (keeps listening) · `Ctrl+Q` quit (stops listening)
+The layout follows the window: two columns when wide, one when narrower, and the
+list and the meeting as separate pages when the window is narrow — a tall window
+parked beside the call works.
+
+`Ctrl+G` ask · `Ctrl+F` search · `Ctrl+R` record · `Ctrl+Space` play ·
+`Ctrl+` `+`/`-` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`
+quit (stops listening) · `Ctrl+?` all of these
 
 ## The bar
+
+Steno puts an icon in the system tray (any StatusNotifierItem host: waybar's
+`tray`, KDE, XFCE, GNOME with the AppIndicator extension). Click opens the
+window, middle-click starts or stops recording, and the right-click menu has
+the rest, pause included. The icon changes while recording.
+
+On waybar the custom module below says more (it counts the recording up), so
+`STENO_TRAY=0` in `~/.config/steno/.env` turns the tray icon off.
 
 `make waybar` inserts a `custom/steno` module into `~/.config/waybar/`, backing
 up both files first and styling it from your own palette. Left-click opens the
@@ -103,7 +134,10 @@ transcribed in one pass when the meeting ends, which is cheaper and more
 accurate than streaming it.
 
 Audio leaves the machine only to Deepgram, and transcript text only to Anthropic
-for the summary and for questions you ask. Nothing is uploaded or shared on the
+(through `claude -p`) for the summary and for questions you ask. When a meeting
+is about one of the projects in `~/projects` (`STENO_PROJECTS_DIR`), the
+summary may read that directory, read-only, to get names and files right; so
+whatever it reads is sent too. It can read nothing outside that directory. Nothing is uploaded or shared on the
 tool's own initiative.
 
 It records other people automatically. That is a deliberate choice, and getting
@@ -146,7 +180,9 @@ reconnect.
 - **`gui/`** — GTK4. `app.py` is the long-running listener and owns the engine;
   `window.py` is a view it can live without. `bridge.py` is the only place the
   engine's asyncio loop and GTK's main loop meet; everything crossing back goes
-  through `GLib.idle_add`. `player.py` is GStreamer, for archive playback.
+  through `GLib.idle_add`. `sidebar.py`, `meeting.py` and `live.py` are the three
+  surfaces; `words.py` is what they say, testable headlessly. `player.py` is
+  GStreamer, for playback.
 - **`events.py`** — what the engine says. The engine never touches a widget.
 - **`state.py` / `control.py`** — what the bar reads, and how a click reaches
   the running app (its own D-Bus actions; no socket, no pidfile).

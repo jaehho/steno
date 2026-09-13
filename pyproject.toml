@@ -1,10 +1,9 @@
 [project]
 name = "steno"
-version = "0.4.0"
+version = "0.11.0"
 description = "Listens to your meetings, keeps up when you drift, and turns them into notes and todos"
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.40.0",
     "websockets>=13.0",
     "httpx>=0.27",
     "python-dotenv>=1.0.0",
@@ -25,6 +24,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+steno = ["data/icons/hicolor/*/*/*.svg"]
 
 [tool.pyright]
 venvPath = "."

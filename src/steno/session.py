@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
-from . import DEFAULT_MODEL, config_dir, data_dir
+from . import DEFAULT_MODEL, claude, config_dir, data_dir
 from .audio import capture_mic, default_sink_monitor, open_wav, record_only
 from .brief import BRIEF_FILENAME, load_brief
 from .detect import DEFAULT_ALLOW, END_GRACE_S, START_HOLD_S, watch_meetings
@@ -49,6 +49,14 @@ ADVISOR_PROMPT = (
     "it; if they seem stuck, give the nudge; otherwise surface the open threads "
     "and anything they agreed to. Lead with the answer — no preamble, no "
     "restating the question. Bullets are fine. Under 80 words."
+)
+
+REVIEW_PROMPT = (
+    "You are answering a question about a meeting that has already ended, "
+    "asked by the person who wore the mic ('you'); 'them' is everyone else. "
+    "Answer from the transcript: lead with the answer, quote or paraphrase what "
+    "was actually said when that settles it, and say plainly when the meeting "
+    "did not cover it. Bullets are fine. Under 150 words."
 )
 
 
@@ -319,48 +327,39 @@ class Engine:
 
     # --------------------------------------------------------------- the advisor
 
-    async def ask(self, question: str = "", max_lines: int = 80) -> None:
-        """Answer a question about the meeting so far, streaming as it arrives."""
+    async def ask(
+        self, question: str = "", max_lines: int = 80, session_dir: Path | None = None
+    ) -> None:
+        """Answer a question about a meeting, streaming as it arrives.
+
+        With no `session_dir` that is the meeting in progress, where only the
+        recent stretch matters. A past meeting is asked about as a whole.
+        """
         if self._asking:
             return
         self._asking = True
         try:
-            lines = self.transcript[-max_lines:]
+            lines = (
+                load_records(session_dir) if session_dir is not None
+                else self.transcript[-max_lines:]
+            )
             if not lines:
                 self.emit(AdviceDone("Nothing has been transcribed yet."))
                 return
             convo = "\n".join(f"{r['speaker']}: {r['text']}" for r in lines)
             content = f"{convo}\n\n---\nThe user asks: {question}" if question else convo
 
-            from anthropic import AsyncAnthropic
-            from anthropic.types import TextBlockParam
-
             brief = load_brief(self.brief_path)
-            system: str | list[TextBlockParam] = ADVISOR_PROMPT
+            system = ADVISOR_PROMPT if session_dir is None else REVIEW_PROMPT
             if brief:
-                system = [
-                    TextBlockParam(type="text", text=ADVISOR_PROMPT),
-                    TextBlockParam(
-                        type="text",
-                        text=f"# Standing context\n\n{brief}",
-                        cache_control={"type": "ephemeral"},
-                    ),
-                ]
-            client = AsyncAnthropic()
-            try:
-                buf = ""
-                async with client.messages.stream(
-                    model=self.model,
-                    max_tokens=600,
-                    system=system,
-                    messages=[{"role": "user", "content": content}],
-                ) as stream:
-                    async for delta in stream.text_stream:
-                        buf += delta
-                        self.emit(AdviceDelta(delta))
-                self.emit(AdviceDone(buf))
-            finally:
-                await client.close()
+                system += f"\n\n# Standing context\n\n{brief}"
+            answer = await claude.stream_text(
+                content,
+                system=system,
+                model=self.model,
+                on_delta=lambda d: self.emit(AdviceDelta(d)),
+            )
+            self.emit(AdviceDone(answer))
         except Exception as e:  # noqa: BLE001 — a failed question must not end the meeting
             self.emit(EngineError("advisor", str(e)))
             self.emit(AdviceDone(""))

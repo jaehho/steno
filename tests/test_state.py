@@ -50,6 +50,32 @@ class TestBarRendering(unittest.TestCase):
             self.assertEqual(state.bar_json({"status": status})["class"], status)
 
 
+class TestTrayView(unittest.TestCase):
+    def test_recording_offers_stop(self):
+        view = state.tray_view("recording", "Zoom")
+        self.assertEqual(view["record_label"], "Stop recording")
+        self.assertEqual(view["tooltip"], "Recording · Zoom")
+        self.assertNotEqual(view["icon"], state.tray_view("idle")["icon"])
+
+    def test_finalizing_cannot_start_another(self):
+        self.assertFalse(state.tray_view("finalizing")["can_record"])
+
+    def test_paused_offers_resume(self):
+        self.assertTrue(state.tray_view("paused")["paused"])
+        self.assertFalse(state.tray_view("idle")["paused"])
+
+    def test_every_tray_icon_ships(self):
+        from steno import icon_dir
+
+        for name in state.TRAY_ICONS.values():
+            found = list(icon_dir().glob(f"hicolor/*/*/{name}.svg"))
+            self.assertTrue(found, name)
+        self.assertTrue(list(icon_dir().glob("hicolor/*/apps/dev.jaeho.Steno.svg")))
+
+    def test_unknown_status_falls_back_to_idle_icon(self):
+        self.assertEqual(state.tray_view("off")["icon"], state.TRAY_ICONS["idle"])
+
+
 class TestStateFile(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -1,12 +1,10 @@
 """Getting the speakers out of the microphone, live and after the fact."""
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 import wave
 from pathlib import Path
-from unittest import mock
 
 from steno import echo, playback
 
@@ -16,36 +14,6 @@ except ImportError:  # pragma: no cover — cleaning old sessions is what needs 
     numpy = None  # type: ignore[assignment]
 
 needs_numpy = unittest.skipIf(numpy is None, "numpy not installed")
-
-
-class TestSourceChoice(unittest.TestCase):
-    """Which microphone the engine records from. Nothing here needs audio."""
-
-    def setUp(self):
-        patcher = mock.patch.dict(os.environ, {}, clear=False)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        os.environ.pop(echo.ENABLE_ENV, None)
-
-    def test_the_real_mic_when_nothing_is_filtered(self):
-        self.assertEqual(echo.pick_source("mic", ["mic", "mic.monitor"]), "mic")
-
-    def test_the_filtered_source_when_there_is_one(self):
-        chosen = echo.pick_source("mic", ["mic", echo.AEC_SOURCE_NAME])
-        self.assertEqual(chosen, echo.AEC_SOURCE_NAME)
-
-    def test_someone_elses_canceller_is_not_ours(self):
-        """It is filtered against a reference we did not choose."""
-        self.assertEqual(
-            echo.pick_source("mic", ["mic", "easyeffects_source", "echo-cancel-source"]),
-            "mic",
-        )
-
-    def test_the_environment_can_turn_it_off(self):
-        with mock.patch.dict(os.environ, {echo.ENABLE_ENV: "0"}):
-            self.assertEqual(
-                echo.pick_source("mic", ["mic", echo.AEC_SOURCE_NAME]), "mic"
-            )
 
 
 class TestTrackChoice(unittest.TestCase):

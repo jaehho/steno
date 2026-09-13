@@ -10,16 +10,18 @@ is why the CLI imports it inside the `gui` subcommand and nowhere else.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
+gi.require_version("Gdk", "4.0")
 
-from gi.repository import Adw, Gio, GLib
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
-from .. import migrate_legacy
+from .. import autostart, icon_dir, migrate_legacy
 from ..control import APP_ID
 from ..events import (
     Event,
@@ -34,9 +36,11 @@ from ..retention import prune_audio
 from ..session import paused_until, set_pause
 from ..state import clear_state, write_state
 from .bridge import EngineBridge
+from .tray import Tray
 
 RECORDING_NOTIFICATION = "recording"
 REPUBLISH_S = 20
+TRAY_ENV = "STENO_TRAY"
 
 
 class App(Adw.Application):
@@ -60,11 +64,16 @@ class App(Adw.Application):
         self._window = None
         self._first_activation = True
         self._said_still_listening = False
+        self.tray: Tray | None = None
 
     # ------------------------------------------------------------------ startup
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
+        # The app icon ships inside the package, so a checkout finds it too.
+        display = Gdk.Display.get_default()
+        if display is not None:
+            Gtk.IconTheme.get_for_display(display).add_search_path(str(icon_dir()))
         # Without this the app would exit the moment its last window closed,
         # taking the detector with it. The pipeline outlives every window.
         self.hold()
@@ -76,6 +85,11 @@ class App(Adw.Application):
             on_event=self._on_event, root=self.root, **self.engine_kw
         )
         self.bridge.start()
+        # Off for a bar that already shows the waybar module, which says more.
+        if os.environ.get(TRAY_ENV, "1") != "0":
+            self.tray = Tray(self)
+            if not self.tray.start():
+                self.tray = None
         self._publish("paused" if paused_until() else "idle")
         # Republish on a slow timer so the bar heals itself: the runtime file
         # can be swept, or overwritten by a second instance, and an indicator
@@ -94,6 +108,8 @@ class App(Adw.Application):
     def do_shutdown(self) -> None:
         if self.bridge is not None:
             self.bridge.stop()
+        if self.tray is not None:
+            self.tray.stop()
         clear_state()
         Adw.Application.do_shutdown(self)
 
@@ -115,7 +131,40 @@ class App(Adw.Application):
         add("quit", lambda _a, _p: self.request_quit())
         add("open-session", lambda _a, p: self.open_session(p.get_string()), "s")
 
+        login = Gio.SimpleAction.new_stateful(
+            "autostart", None, GLib.Variant("b", autostart.is_enabled())
+        )
+        login.connect("change-state", self._on_autostart)
+        self.add_action(login)
+
         self.set_accels_for_action("app.quit", ["<Control>q"])
+
+    def _on_autostart(self, action: Gio.SimpleAction, value: GLib.Variant) -> None:
+        """Start at login, as a per-user entry the user asked for."""
+        want = value.get_boolean()
+        compositor = autostart.started_by_compositor()
+        message = ""
+        if not want and compositor is not None:
+            message = f"Started from {compositor.name}; remove that line to stop it"
+            want = True
+        else:
+            try:
+                if want:
+                    autostart.enable()
+                else:
+                    autostart.disable()
+            except OSError as exc:
+                message = f"Couldn't change the autostart entry: {exc.strerror}"
+                want = autostart.is_enabled()
+            else:
+                if want and not autostart.session_reads_autostart():
+                    message = (
+                        "This session may not run autostart entries; "
+                        f"start `{autostart.listener_command()}` from its config"
+                    )
+        action.set_state(GLib.Variant("b", want))
+        if message and self._window is not None:
+            self._window._toast(message)
 
     def present_window(self):
         from .window import Window
@@ -211,6 +260,8 @@ class App(Adw.Application):
         self.detail = detail
         self.since = since or GLib.get_real_time() / 1e6
         write_state(status, detail, since=self.since)
+        if self.tray is not None:
+            self.tray.update(status, detail)
         if self._window is not None:
             self._window.set_state(status, detail)
 

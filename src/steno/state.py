@@ -38,6 +38,17 @@ WORDS = {
     "off": "Steno is not running",
 }
 
+PAUSE_CHOICES = ((30, "For 30 minutes"), (60, "For 1 hour"), (240, "For 4 hours"))
+
+# Our own icons (`steno.icon_dir()`), handed to the tray host by path: a stock
+# theme name can be missing from whatever theme the host happens to use.
+TRAY_ICONS = {
+    "recording": "steno-recording",
+    "finalizing": "steno-finalizing",
+    "paused": "steno-paused",
+    "idle": "steno-idle",
+}
+
 
 def state_path() -> Path:
     return runtime_dir() / STATE_FILENAME
@@ -153,4 +164,21 @@ def bar_json(state: dict, now: float | None = None) -> dict:
         "class": status,
         "tooltip": tooltip,
         "percentage": 0,
+    }
+
+
+def tray_view(status: str, detail: str = "") -> dict:
+    """What the tray item shows and offers in a given state.
+
+    No elapsed time: the tray is told about changes, not polled, so a counter
+    would freeze at whatever it said when the state last changed.
+    """
+    recording = status == "recording"
+    return {
+        "icon": TRAY_ICONS.get(status, TRAY_ICONS["idle"]),
+        "tooltip": bar_json({"status": status, "detail": detail})["tooltip"],
+        "record_label": "Stop recording" if recording else "Start recording",
+        "can_record": status != "finalizing",
+        "recording": recording,
+        "paused": status == "paused",
     }

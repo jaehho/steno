@@ -1,11 +1,18 @@
-"""The window: two screens, one state indicator, and the wiring between them.
+"""The window: a list of meetings, and the meeting you picked.
 
 Nothing here decides anything about a meeting — it routes engine events into
 widgets and user gestures back into the engine, which the *app* owns. The window
 is closable, disposable, and often absent; closing it stops nothing.
+
+It is one `Adw.NavigationSplitView` whose shape follows the window's: a sidebar
+and a two-column meeting page when wide, the same page stacked into one column
+when narrower, and the list and the meeting as two pages you move between when
+the window is narrow — the tall one parked beside a call.
 """
 from __future__ import annotations
 
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,7 +21,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from .. import data_dir
 from ..events import (
@@ -28,22 +35,32 @@ from ..events import (
     SummaryReady,
 )
 from ..session import paused_until
+from ..state import PAUSE_CHOICES
 from ..summarize import load_records
-from .archive import ArchiveView
-from .live import LiveView
+from . import words
+from .live import LivePage
+from .meeting import MeetingPage
+from .sidebar import LIVE, Session, Sidebar
 from .style import palette, stylesheet
+from .widgets import AskBox
 
 if TYPE_CHECKING:  # the app imports the window lazily; this keeps the cycle unreal
     from .app import App
 
-PAUSE_CHOICES = ((30, "30 minutes"), (60, "1 hour"), (240, "4 hours"))
+# Below this the meeting stacks into one column; below NARROW the sidebar and
+# the meeting become separate pages.
+MEDIUM = "max-width: 1000sp"
+NARROW = "max-width: 600sp"
 
-STATE_WORDS = {
-    "idle": "Listening for a meeting",
-    "recording": "Recording",
-    "finalizing": "Finishing up",
-    "paused": "Paused",
-}
+SHORTCUTS = (
+    ("Ctrl+F", "Search meetings"),
+    ("Ctrl+G", "Ask about this meeting"),
+    ("Ctrl+R", "Start or stop recording"),
+    ("Ctrl+Space", "Play or pause a past meeting"),
+    ("Ctrl+ + / −", "Live transcript size"),
+    ("Ctrl+W", "Close the window (keeps listening)"),
+    ("Ctrl+Q", "Quit (stops listening)"),
+)
 
 
 class Window(Adw.ApplicationWindow):
@@ -52,81 +69,140 @@ class Window(Adw.ApplicationWindow):
         self.app = app
         self.add_css_class("steno")
         self.set_default_size(1100, 720)
+        self.set_size_request(360, 420)
         self.root = root or (data_dir() / "sessions")
+        self._asker: AskBox | None = None
+        self._live_started = 0.0
+        self._live_app = ""
 
+        self.live = LivePage(on_ask=self._ask_live)
         self._css = Gtk.CssProvider()
         self._apply_css()
 
-        self.live = LiveView(on_ask=self._ask, on_toggle_record=self._toggle_record)
-        self.archive = ArchiveView(self.root, on_realign=self._realign)
-
-        self.stack = Adw.ViewStack()
-        self.stack.add_titled_with_icon(
-            self.live, "live", "Live", "media-record-symbolic"
+        self.meeting = MeetingPage(
+            on_ask=self._ask_past,
+            on_realign=self._realign,
+            on_deleted=lambda d: self.sidebar.forget(d),
+            on_todos_changed=lambda s: self.sidebar.update_todo_counts(s),
+            on_toast=self._toast,
         )
-        self.stack.add_titled_with_icon(
-            self.archive, "archive", "Archive", "document-open-recent-symbolic"
-        )
-        # Connected after the pages, so adding them does not fire it.
-        self.stack.connect("notify::visible-child-name", self._on_view_changed)
+        self.insert_action_group("meeting", self.meeting.actions)
 
-        toolbar = Adw.ToolbarView()
-        toolbar.add_top_bar(self._build_header())
-        toolbar.set_content(self.stack)
-        self.set_content(toolbar)
+        self.sidebar = Sidebar(
+            self.root,
+            on_select=self._on_select,
+            on_status_button=self._on_status_button,
+            on_activate=lambda: self.split.set_show_content(True),
+        )
+
+        self.split = Adw.NavigationSplitView()
+        self.split.set_min_sidebar_width(260)
+        self.split.set_max_sidebar_width(300)
+        self.split.set_sidebar(self._build_sidebar_page())
+        self.split.set_content(self._build_content_page())
+        self.split.connect("notify::collapsed", lambda *_a: self._update_header())
+
+        self.toasts = Adw.ToastOverlay()
+        self.toasts.set_child(self.split)
+        self.set_content(self.toasts)
+
+        medium = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(MEDIUM))
+        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW))
+        narrow.add_setter(self.split, "collapsed", True)
+        self.add_breakpoint(medium)
+        self.add_breakpoint(narrow)
+        self.connect("notify::current-breakpoint", lambda *_a: self._on_breakpoint())
 
         self._install_actions()
         self.connect("close-request", self._on_close)
-        GLib.timeout_add_seconds(30, self._tick_pause)
+        GLib.timeout_add_seconds(1, self._tick)
+        self.sidebar.refresh()
         self._adopt_running_meeting()
         self.set_state(app.status, app.detail)
 
     # ----------------------------------------------------------------- building
 
-    def _build_header(self) -> Gtk.Widget:
+    def _build_sidebar_page(self) -> Adw.NavigationPage:
         header = Adw.HeaderBar()
-
-        self.state_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
-        self.state_box.add_css_class("state-idle")
-        self.state_dot = Gtk.Label(label="●")
-        self.state_dot.add_css_class("state-dot")
-        self.state_word = Gtk.Label(label=STATE_WORDS["idle"])
-        self.state_word.add_css_class("chrome")
-        self.state_box.append(self.state_dot)
-        self.state_box.append(self.state_word)
-        header.pack_start(self.state_box)
-
-        switcher = Adw.ViewSwitcher()
-        switcher.set_stack(self.stack)
-        switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
-        header.set_title_widget(switcher)
-
-        self.record_button = Gtk.Button(label="Record")
-        self.record_button.add_css_class("suggested-action")
-        self.record_button.connect("clicked", lambda _b: self._toggle_record())
-        header.pack_end(self.record_button)
-
         menu = Gio.Menu()
-        pause_menu = Gio.Menu()
+        pause = Gio.Menu()
         for minutes, label in PAUSE_CHOICES:
-            pause_menu.append_item(Gio.MenuItem.new(label, f"app.pause({minutes})"))
-        pause_menu.append("Resume detection", "app.unpause")
-        menu.append_section("Pause detection", pause_menu)
-        menu.append("Keyboard shortcuts", "win.shortcuts")
-        menu.append("Quit Steno (stops listening)", "app.quit")
-
+            pause.append_item(Gio.MenuItem.new(label, f"app.pause({minutes})"))
+        pause.append("Resume listening", "app.unpause")
+        menu.append_section("Pause listening", pause)
+        rest = Gio.Menu()
+        rest.append("Start at login", "app.autostart")
+        rest.append("Keyboard shortcuts", "win.shortcuts")
+        rest.append("Quit, stop listening", "app.quit")
+        menu.append_section(None, rest)
         button = Gtk.MenuButton()
         button.set_icon_name("open-menu-symbolic")
+        button.set_tooltip_text("Main menu")
         button.set_menu_model(menu)
         header.pack_end(button)
-        return header
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(self.sidebar)
+        return Adw.NavigationPage.new(view, "Steno")
+
+    def _build_content_page(self) -> Adw.NavigationPage:
+        header = Adw.HeaderBar()
+        header.set_show_title(False)
+
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        titles.set_valign(Gtk.Align.CENTER)
+        titles.set_margin_start(8)
+        self.page_title = Gtk.Label(label="", xalign=0.0)
+        self.page_title.add_css_class("page-title")
+        self.page_title.set_ellipsize(Pango.EllipsizeMode.END)
+        self.page_subtitle = Gtk.Label(label="", xalign=0.0)
+        self.page_subtitle.add_css_class("page-subtitle")
+        self.page_subtitle.set_ellipsize(Pango.EllipsizeMode.END)
+        titles.append(self.page_title)
+        titles.append(self.page_subtitle)
+        header.pack_start(titles)
+
+        menu = Gio.Menu()
+        menu.append("Re-time against the audio…", "meeting.realign")
+        danger = Gio.Menu()
+        danger.append("Delete the audio, keep the text…", "meeting.delete-audio")
+        danger.append("Delete this meeting…", "meeting.delete")
+        menu.append_section(None, danger)
+        self.meeting_menu = Gtk.MenuButton()
+        self.meeting_menu.set_icon_name("view-more-symbolic")
+        self.meeting_menu.set_tooltip_text("This meeting")
+        self.meeting_menu.set_menu_model(menu)
+        header.pack_end(self.meeting_menu)
+
+        self.stop_button = Gtk.Button(label="Stop")
+        self.stop_button.add_css_class("destructive-action")
+        self.stop_button.connect("clicked", lambda _b: self.app.toggle_record())
+        header.pack_end(self.stop_button)
+
+        empty = Adw.StatusPage()
+        empty.set_icon_name("audio-input-microphone-symbolic")
+        empty.set_title("No meetings yet")
+        empty.set_description(
+            "Steno records by itself when an app uses the microphone. "
+            "Start a call, or press Record."
+        )
+
+        self.stack = Gtk.Stack()
+        self.stack.add_css_class("page")
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.add_named(self.meeting, "meeting")
+        self.stack.add_named(self.live, "live")
+        self.stack.add_named(empty, "empty")
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(self.stack)
+        self.content_page = Adw.NavigationPage.new(view, "Meeting")
+        return self.content_page
 
     def _apply_css(self) -> None:
-        self._css.load_from_string(
-            stylesheet(palette(), self.live.transcript_pt)
-            if hasattr(self, "live")
-            else stylesheet(palette())
-        )
+        self._css.load_from_string(stylesheet(palette(), self.live.transcript_pt))
         display = Gdk.Display.get_default()
         if display is not None:
             Gtk.StyleContext.add_provider_for_display(
@@ -134,30 +210,23 @@ class Window(Adw.ApplicationWindow):
             )
 
     def _install_actions(self) -> None:
-        def add(name: str, fn, param: str | None = None):
-            action = Gio.SimpleAction.new(
-                name, GLib.VariantType.new(param) if param else None
-            )
-            action.connect("activate", fn)
+        def add(name: str, fn, accels: list[str] | None = None):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda _a, _p: fn())
             self.add_action(action)
+            app = self.get_application()
+            if accels and app is not None:
+                app.set_accels_for_action(f"win.{name}", accels)
 
-        add("shortcuts", lambda _a, _p: self._show_shortcuts())
-        add("ask", lambda _a, _p: self._focus_ask())
-        add("zoom-in", lambda _a, _p: self._zoom(1))
-        add("zoom-out", lambda _a, _p: self._zoom(-1))
-        add("toggle-record", lambda _a, _p: self._toggle_record())
-        add("find", lambda _a, _p: self._focus_search())
+        add("shortcuts", self._show_shortcuts, ["<Control>question"])
+        add("ask", self._focus_ask, ["<Control>g"])
+        add("find", self._focus_search, ["<Control>f"])
+        add("toggle-record", self.app.toggle_record, ["<Control>r"])
+        add("play", self.meeting.toggle_play, ["<Control>space"])
+        add("zoom-in", lambda: self._zoom(1), ["<Control>plus", "<Control>equal"])
+        add("zoom-out", lambda: self._zoom(-1), ["<Control>minus"])
         # Close is not quit: it hides the window and the listener keeps going.
-        add("close", lambda _a, _p: self.close())
-
-        app = self.get_application()
-        if app is not None:
-            app.set_accels_for_action("win.ask", ["<Control>g"])
-            app.set_accels_for_action("win.zoom-in", ["<Control>plus", "<Control>equal"])
-            app.set_accels_for_action("win.zoom-out", ["<Control>minus"])
-            app.set_accels_for_action("win.toggle-record", ["<Control>r"])
-            app.set_accels_for_action("win.find", ["<Control>f"])
-            app.set_accels_for_action("win.close", ["<Control>w"])
+        add("close", self.close, ["<Control>w"])
 
     def _adopt_running_meeting(self) -> None:
         """Catch up if a meeting was already going when this window opened.
@@ -169,11 +238,51 @@ class Window(Adw.ApplicationWindow):
         engine = self.app.engine
         if engine is None or engine.current is None:
             return
-        session_dir = engine.current.session_dir
-        self.live.bind_session(session_dir)
-        for record in load_records(session_dir):
+        current = engine.current
+        self._begin_live(current.session_dir, current.app, current.started_at)
+        for record in load_records(current.session_dir):
             self.live.add_line(record.get("speaker", "them"), record.get("text", ""))
-        self._show_recording(True)
+
+    # ------------------------------------------------------------------- layout
+
+    def _on_breakpoint(self) -> None:
+        stacked = self.get_current_breakpoint() is not None
+        self.meeting.set_stacked(stacked)
+        self.live.set_stacked(stacked)
+        self._update_header()
+
+    def _on_select(self, item) -> None:
+        if isinstance(item, Session):
+            self.meeting.load(item)
+            self.stack.set_visible_child_name("meeting")
+        elif item == LIVE:
+            self.stack.set_visible_child_name("live")
+        else:
+            self.stack.set_visible_child_name("empty")
+        self._update_header()
+
+    def _update_header(self) -> None:
+        item = self.sidebar.selected
+        collapsed = self.split.get_collapsed()
+        if isinstance(item, Session):
+            title = item.title or "Untitled"
+            subtitle = words.page_subtitle(item.start, item.minutes, item.project)
+        elif item == LIVE:
+            title = "Meeting in progress"
+            started = datetime.fromtimestamp(self._live_started)  # noqa: DTZ006
+            parts = [f"Started {started:%H:%M}", self._live_app]
+            if not collapsed:
+                parts.append("the summary and to-dos arrive when it ends")
+            subtitle = " · ".join(p for p in parts if p)
+        else:
+            title, subtitle = "", ""
+        self.page_title.set_text(title)
+        self.page_subtitle.set_text(subtitle)
+        self.page_subtitle.set_visible(bool(subtitle))
+        self.content_page.set_title(title or "Meeting")
+        self.meeting_menu.set_visible(isinstance(item, Session))
+        # With the sidebar showing, Stop is on its status card; without it, here.
+        self.stop_button.set_visible(item == LIVE and collapsed)
 
     # ------------------------------------------------------------ engine events
 
@@ -181,9 +290,7 @@ class Window(Adw.ApplicationWindow):
         """Called by the app, on the GTK thread."""
         if isinstance(event, MeetingStarted):
             self.live.clear()
-            self.live.bind_session(event.session_dir)
-            self.stack.set_visible_child_name("live")
-            self._show_recording(True)
+            self._begin_live(event.session_dir, event.app, event.started_at)
 
         elif isinstance(event, Heard):
             if event.final:
@@ -193,72 +300,105 @@ class Window(Adw.ApplicationWindow):
 
         elif isinstance(event, MeetingEnded):
             self.live.flush_notes()
-            self._show_recording(False)
+            was_watching = self.sidebar.selected == LIVE
+            self.sidebar.live_dir = None
+            self.sidebar.refresh(select=event.session_dir if was_watching else None)
 
         elif isinstance(event, SummaryReady):
-            self.archive.refresh(select=event.session_dir)
-            self._toast(f"Summary ready — {event.title}")
+            self.sidebar.refresh()
+            selected = self.sidebar.selected
+            if isinstance(selected, Session) and selected.dir == event.session_dir:
+                self.meeting.load(selected)
+                self._update_header()
+            self._toast(f"Summary ready: {event.title}", open_session=event.session_dir)
 
         elif isinstance(event, AdviceDelta):
-            self.live.advice_delta(event.text)
+            if self._asker is not None:
+                self._asker.delta(event.text)
 
         elif isinstance(event, AdviceDone):
-            self.live.advice_done(event.text)
+            if self._asker is not None:
+                self._asker.done(event.text)
+            self._asker = None
 
         elif isinstance(event, EngineError):
             self._toast(f"{event.where}: {event.message}")
 
-    def set_state(self, status: str, detail: str = "") -> None:
-        for name in STATE_WORDS:
-            self.state_box.remove_css_class(f"state-{name}")
-        self.state_box.add_css_class(f"state-{status}")
-        word = STATE_WORDS.get(status, status)
-        if status == "paused":
-            until = paused_until()
-            if until:
-                mins = max(0, int((until - _now()) / 60))
-                word = f"Paused · {mins}m left"
-        elif detail:
-            word = f"{word} · {detail}"
-        self.state_word.set_text(word)
-        self._show_recording(status == "recording")
+    def _begin_live(self, session_dir: Path, app: str, started_at: float) -> None:
+        self._live_started = started_at
+        self._live_app = app
+        self.live.bind_session(session_dir)
+        self.sidebar.set_live(session_dir, app)
+        self.split.set_show_content(True)
+        self._update_header()
 
-    def _show_recording(self, recording: bool) -> None:
-        self.record_button.set_label("Stop" if recording else "Record")
-        self.record_button.remove_css_class(
-            "suggested-action" if recording else "destructive-action"
+    def set_state(self, status: str, detail: str = "") -> None:
+        title, subtitle, button = words.status_card(
+            status, detail, time.time(), self.app.since, paused_until()
         )
-        self.record_button.add_css_class(
-            "destructive-action" if recording else "suggested-action"
-        )
+        self.sidebar.set_status(status, title, subtitle, button)
+
+    def _tick(self) -> bool:
+        """Let the status card count a recording up and a pause down."""
+        if self.app.status in ("recording", "paused", "idle"):
+            if self.app.status != "recording":
+                status = "paused" if paused_until() else "idle"
+                self.set_state(status)
+            else:
+                self.set_state(self.app.status, self.app.detail)
+        return GLib.SOURCE_CONTINUE
 
     def refresh_if_stale(self) -> None:
         """Catch up with anything the CLI changed while the window was hidden."""
-        self.archive.refresh_if_stale()
-
-    def _on_view_changed(self, *_a) -> None:
-        if self.stack.get_visible_child_name() == "archive":
-            self.archive.refresh_if_stale()
+        if self.sidebar.refresh_if_stale():
+            selected = self.sidebar.selected
+            if isinstance(selected, Session):
+                self.meeting.load(selected)
+            self._update_header()
 
     def show_session(self, session_dir: Path | None) -> None:
-        """Open the archive on one meeting — where a summary notification lands."""
-        self.stack.set_visible_child_name("archive")
-        self.archive.refresh(select=session_dir)
+        """Open one meeting — where a summary notification lands."""
+        self.sidebar.refresh(select=session_dir)
+        self.split.set_show_content(True)
 
     # ------------------------------------------------------------ user gestures
 
-    def _toggle_record(self) -> None:
-        self.app.toggle_record()
+    def _on_status_button(self, label: str) -> None:
+        if label == "Resume":
+            self.app.pause(None)
+        else:
+            self.app.toggle_record()
 
-    def _ask(self, question: str) -> None:
+    def _ask_live(self, question: str) -> None:
+        self._submit_question(self.live.ask, question, None)
+
+    def _ask_past(self, session_dir: Path, question: str) -> None:
+        self._submit_question(self.meeting.ask, question, session_dir)
+
+    def _submit_question(self, asker: AskBox, question: str, session_dir: Path | None) -> None:
         engine, bridge = self.app.engine, self.app.bridge
         if engine is None or bridge is None:
+            asker.done("Steno isn't running, so there is nothing to ask.")
             return
-        bridge.submit(engine.ask(question))
+        if self._asker is not None and self._asker is not asker:
+            # One question at a time: the engine drops a second one, and a box
+            # left saying "Thinking…" forever reads as a hang.
+            asker.done("Still answering the question asked elsewhere; ask again in a moment.")
+            return
+        self._asker = asker
+        bridge.submit(engine.ask(question, session_dir=session_dir))
 
     def _focus_ask(self) -> None:
-        self.stack.set_visible_child_name("live")
-        self.live.ask_entry.grab_focus()
+        self.split.set_show_content(True)
+        page = self.stack.get_visible_child_name()
+        if page == "live":
+            self.live.ask.focus()
+        elif page == "meeting":
+            self.meeting.ask.focus()
+
+    def _focus_search(self) -> None:
+        self.split.set_show_content(False)
+        self.sidebar.search.grab_focus()
 
     def _realign(self, session_dir: Path, done) -> None:
         """Run a re-timing pass on the engine's loop, and report back on GTK's.
@@ -286,38 +426,26 @@ class Window(Adw.ApplicationWindow):
 
         future.add_done_callback(finished)
 
-    def _focus_search(self) -> None:
-        self.stack.set_visible_child_name("archive")
-        self.archive.focus_search()
-
     def _zoom(self, delta: int) -> None:
         self.live.zoom(delta)
         self._apply_css()
 
-    def _tick_pause(self) -> bool:
-        """Let the header count a pause down, and notice when it lapses."""
-        status = self.app.status
-        if status in ("paused", "idle"):
-            self.set_state("paused" if paused_until() else "idle")
-        return GLib.SOURCE_CONTINUE
-
-    def _toast(self, text: str) -> None:
+    def _toast(self, text: str, open_session: Path | None = None) -> None:
         # Never steal focus or animate during a meeting; a toast is the loudest
         # this window is allowed to be while someone is talking.
         print(f"[steno] {text}", flush=True)
-        self.state_word.set_tooltip_text(text)
+        toast = Adw.Toast.new(text)
+        toast.set_timeout(5)
+        if open_session is not None:
+            toast.set_button_label("Open")
+            toast.set_action_name("app.open-session")
+            toast.set_action_target_value(GLib.Variant("s", str(open_session)))
+        self.toasts.add_toast(toast)
 
     def _show_shortcuts(self) -> None:
         dialog = Adw.AlertDialog(
             heading="Keyboard shortcuts",
-            body=(
-                "Ctrl+G\tAsk about this meeting\n"
-                "Ctrl+F\tSearch the archive\n"
-                "Ctrl+R\tStart or stop recording\n"
-                "Ctrl+ +/-\tTranscript size\n"
-                "Ctrl+W\tClose the window (keeps listening)\n"
-                "Ctrl+Q\tQuit (stops listening)"
-            ),
+            body="\n".join(f"{keys}\t{what}" for keys, what in SHORTCUTS),
         )
         dialog.add_response("close", "Close")
         dialog.present(self)
@@ -332,8 +460,8 @@ class Window(Adw.ApplicationWindow):
         their desktop. Save what's open, hide, and say so once.
         """
         self.live.flush_notes()
-        self.archive.flush_notes()
-        self.archive.stop_playback()
+        self.meeting.flush_notes()
+        self.meeting.stop_playback()
         self.set_visible(False)
         self.app.note_still_listening()
         return True
@@ -358,14 +486,8 @@ class Window(Adw.ApplicationWindow):
         def answered(_d, response: str) -> None:
             if response != "quit":
                 return
-            self.set_state("finalizing", "wrapping up")
+            self.set_state("finalizing", "Wrapping up")
             self.app.quit()
 
         dialog.connect("response", answered)
         dialog.present(self)
-
-
-def _now() -> float:
-    import time
-
-    return time.time()

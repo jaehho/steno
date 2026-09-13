@@ -64,22 +64,14 @@ async def default_mic() -> str:
     return await _pactl("get-default-source")
 
 
-async def source_names() -> list[str]:
-    out = await _pactl("list", "short", "sources")
-    return [row.split("\t")[1] for row in out.splitlines() if "\t" in row]
-
-
 async def capture_mic() -> str:
-    """The source the near side is recorded from.
+    """The source the near side is recorded from: the default microphone.
 
-    The default microphone, unless PipeWire is offering the echo-cancelled copy
-    of it that `packaging/install-echo-cancel.py` asks for — in which case the
-    far side coming out of the speakers has already been subtracted, and this
-    track is only you.
+    With the echo canceller installed (dotfiles, `audio` package), WirePlumber
+    routes a recording of the microphone through it, so the far side coming out
+    of the speakers has already been subtracted and this track is only you.
     """
-    from .echo import pick_source
-
-    return pick_source(await default_mic(), await source_names())
+    return await default_mic()
 
 
 async def default_sink_monitor() -> str:
