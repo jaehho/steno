@@ -170,11 +170,11 @@ the window needs; `make install` builds the Arch package instead.
 - [x] pushed to GitHub: `jaehho/steno`, private.
 - [x] `packaging/aur/steno-git/`: `-git` PKGBUILD + `.SRCINFO` (`make aur`),
       `pkgver()` from tags with an `r<count>.<hash>` fallback. Built from a
-      mirror of the working tree; `check()` was never run against the installed
-      deps (they live in the venv here) — needs a clean-chroot build.
-- [ ] clean-chroot build (`/tmp/steno-chroot-build.sh`, needs sudo for devtools)
-      so `check()` runs against the real packages.
-- [ ] make it public, tag, publish `steno-git` to the AUR.
+      mirror of the working tree, then in a clean chroot.
+- [x] clean-chroot build: `check()` passes against the real packages (199
+      tests); namcap's license-path error and implicit deps fixed.
+- [x] public, tagged `v0.11.0`, `steno-git` published to the AUR. History was
+      rewritten first to drop a real meeting's name from TODO.md.
 - [ ] tag releases so the non-`-git` variant can pin a version.
 - [x] the checkout moved to `~/projects/steno`. Only two things baked the old
       path — the `~/.local/bin/steno` wrapper and the venv's shebangs — so a
