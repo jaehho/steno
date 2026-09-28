@@ -7,19 +7,17 @@ out of the speakers, so `you.wav` contains a delayed, room-coloured copy of
 `them.wav`, and every question the transcript is supposed to answer about who
 said something becomes a coin flip.
 
-There are two places to fix that, and this module holds both.
+There is one fix, after the fact: `cancel_file()` estimates the delay between
+the two tracks and adapts a filter that models the path from the speakers back
+into the mic. The reference signal that filter needs is exactly what `them.wav`
+already is.
 
-*Before the fact*, PipeWire can put a canceller in front of the microphone
-(dotfiles installs it, `audio` package). It is a WirePlumber smart filter, so
-recording the default microphone already records through it; nothing in the
-engine needs to know, and there is nothing to configure here.
-
-*After the fact*, an existing recording can be cleaned the same way, because
-the reference signal the canceller needs is exactly what `them.wav` already is.
-`cancel_file()` estimates the delay between the two tracks and adapts a filter
-that models the path from the speakers back into the mic. That is only worth
-doing for meetings recorded before any of this existed, so it lives behind a
-command rather than running on its own, and it never overwrites the original.
+A live PipeWire canceller in front of the microphone was tried and taken back
+out: it left two permanent recording streams in every mixer and kept the mic hot
+whenever anything woke the speaker path. Offline is enough — on speakers, run
+`steno clean-echo` and the bleed comes out. It lives behind a command rather
+than running on its own (it is lossy and best-effort) and never overwrites the
+original.
 """
 from __future__ import annotations
 

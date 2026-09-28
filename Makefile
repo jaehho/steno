@@ -96,8 +96,6 @@ sources:         ## what's available to capture
 	@echo "== default mic =="; pactl get-default-source
 	@echo "== default sink (system audio comes from <sink>.monitor) =="; pactl get-default-sink
 	@echo "== all sources =="; pactl list short sources
-	@echo "== echo canceller in front of the mic (dotfiles: audio package) =="; \
-	  pw-dump | grep -q '"node.name": "echo_cancel"' && echo installed || echo "not installed"
 
 clean:
 	rm -rf build dist src/*.egg-info **/__pycache__ *.pkg.tar.zst packaging/{src,pkg}

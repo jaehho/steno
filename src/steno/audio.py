@@ -67,9 +67,8 @@ async def default_mic() -> str:
 async def capture_mic() -> str:
     """The source the near side is recorded from: the default microphone.
 
-    With the echo canceller installed (dotfiles, `audio` package), WirePlumber
-    routes a recording of the microphone through it, so the far side coming out
-    of the speakers has already been subtracted and this track is only you.
+    Nothing filters it on the way in. On speakers the far side bleeds into this
+    track too; `steno clean-echo` takes it back out afterwards.
     """
     return await default_mic()
 
