@@ -14,9 +14,9 @@ from steno.gui.style import (
 class TestPalette(unittest.TestCase):
     def test_every_fallback_key_is_present(self):
         """A missing desktop palette must never leave a colour undefined."""
-        C = palette()
+        colors = palette()
         for key in FALLBACK:
-            self.assertIn(key, C)
+            self.assertIn(key, colors)
 
     def test_values_are_hex(self):
         for key, value in palette().items():

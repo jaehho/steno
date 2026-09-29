@@ -52,7 +52,7 @@ def palette() -> dict[str, str]:
     return out
 
 
-def stylesheet(C: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAULT) -> str:
+def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAULT) -> str:
     """One stylesheet for the whole window.
 
     Speaker colour is deliberately never the only signal — every transcript line
@@ -61,61 +61,61 @@ def stylesheet(C: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAULT) ->
     """
     return f"""
     /* ---- libadwaita's surfaces, in the desktop palette ---- */
-    @define-color window_bg_color {C['crust']};
-    @define-color window_fg_color {C['text']};
-    @define-color view_bg_color {C['base']};
-    @define-color view_fg_color {C['text']};
-    @define-color headerbar_bg_color {C['base']};
-    @define-color headerbar_fg_color {C['text']};
-    @define-color headerbar_border_color {C['surface0']};
-    @define-color headerbar_shade_color {C['surface0']};
-    @define-color sidebar_bg_color {C['mantle']};
-    @define-color sidebar_fg_color {C['text']};
-    @define-color sidebar_border_color {C['surface0']};
-    @define-color popover_bg_color {C['surface0']};
-    @define-color popover_fg_color {C['text']};
-    @define-color dialog_bg_color {C['surface0']};
-    @define-color dialog_fg_color {C['text']};
-    @define-color card_bg_color {C['base']};
-    @define-color card_fg_color {C['text']};
-    @define-color accent_bg_color {C['teal']};
-    @define-color accent_fg_color {C['crust']};
-    @define-color accent_color {C['teal']};
-    @define-color destructive_bg_color {C['red']};
-    @define-color destructive_fg_color {C['crust']};
-    @define-color destructive_color {C['red']};
+    @define-color window_bg_color {colors['crust']};
+    @define-color window_fg_color {colors['text']};
+    @define-color view_bg_color {colors['base']};
+    @define-color view_fg_color {colors['text']};
+    @define-color headerbar_bg_color {colors['base']};
+    @define-color headerbar_fg_color {colors['text']};
+    @define-color headerbar_border_color {colors['surface0']};
+    @define-color headerbar_shade_color {colors['surface0']};
+    @define-color sidebar_bg_color {colors['mantle']};
+    @define-color sidebar_fg_color {colors['text']};
+    @define-color sidebar_border_color {colors['surface0']};
+    @define-color popover_bg_color {colors['surface0']};
+    @define-color popover_fg_color {colors['text']};
+    @define-color dialog_bg_color {colors['surface0']};
+    @define-color dialog_fg_color {colors['text']};
+    @define-color card_bg_color {colors['base']};
+    @define-color card_fg_color {colors['text']};
+    @define-color accent_bg_color {colors['teal']};
+    @define-color accent_fg_color {colors['crust']};
+    @define-color accent_color {colors['teal']};
+    @define-color destructive_bg_color {colors['red']};
+    @define-color destructive_fg_color {colors['crust']};
+    @define-color destructive_color {colors['red']};
 
-    window.steno {{ background: {C['crust']}; }}
-    .page {{ background: {C['base']}; }}
+    window.steno {{ background: {colors['crust']}; }}
+    .page {{ background: {colors['base']}; }}
 
     /* ---- words around the content: small, plain, sentence case ---- */
-    .sec {{ font-weight: 600; font-size: 10pt; color: {C['overlay2']}; }}
-    .hint {{ font-size: 9pt; color: {C['overlay1']}; }}
+    .sec {{ font-weight: 600; font-size: 10pt; color: {colors['overlay2']}; }}
+    .hint {{ font-size: 9pt; color: {colors['overlay1']}; }}
     .mono {{ font-family: {DATA}; }}
-    .count {{ font-size: 9pt; font-weight: 600; color: {C['peach']}; }}
+    .count {{ font-size: 9pt; font-weight: 600; color: {colors['peach']}; }}
     .page-title {{ font-weight: 700; }}
-    .page-subtitle {{ font-size: 9pt; color: {C['overlay1']}; }}
+    .page-subtitle {{ font-size: 9pt; color: {colors['overlay1']}; }}
 
     /* ---- recording state: colour plus a word, never colour alone ---- */
     .status-card {{
-        background: {C['base']};
+        background: {colors['base']};
         border-radius: 8px;
         padding: 10px;
     }}
-    .status-card.state-recording {{ box-shadow: inset 0 0 0 1px alpha({C['red']}, 0.4); }}
+    .status-card.state-recording {{ box-shadow: inset 0 0 0 1px alpha({colors['red']}, 0.4); }}
     .state-dot {{ font-size: 11pt; }}
-    .state-recording .state-dot {{ color: {C['red']}; }}
-    .state-idle      .state-dot {{ color: {C['overlay0']}; }}
-    .state-paused    .state-dot {{ color: {C['yellow']}; }}
-    .state-finalizing .state-dot {{ color: {C['blue']}; }}
+    .state-recording .state-dot {{ color: {colors['red']}; }}
+    .state-idle      .state-dot {{ color: {colors['overlay0']}; }}
+    .state-paused    .state-dot {{ color: {colors['yellow']}; }}
+    .state-finalizing .state-dot {{ color: {colors['blue']}; }}
     .status-title {{ font-weight: 600; }}
 
     /* ---- the meeting list ---- */
     .session-title {{ font-weight: 600; }}
-    .session-untitled {{ color: {C['overlay1']}; font-style: italic; }}
-    .session-meta {{ font-size: 9pt; color: {C['overlay1']}; }}
+    .session-untitled {{ color: {colors['overlay1']}; font-style: italic; }}
+    .session-meta {{ font-size: 9pt; color: {colors['overlay1']}; }}
     .list-section {{
-        font-weight: 600; font-size: 10pt; color: {C['overlay2']};
+        font-weight: 600; font-size: 10pt; color: {colors['overlay2']};
         margin: 10px 10px 2px 10px;
     }}
 
@@ -124,54 +124,54 @@ def stylesheet(C: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAULT) ->
         font-family: {READING};
         font-size: {transcript_pt}pt;
         line-height: 1.55;
-        color: {C['text']};
+        color: {colors['text']};
     }}
-    .transcript-past {{ font-size: 12pt; line-height: 1.55; color: {C['text']}; }}
+    .transcript-past {{ font-size: 12pt; line-height: 1.55; color: {colors['text']}; }}
     .transcript-live, .transcript-past, list.transcript-past {{ background: transparent; }}
     .transcript-line {{ padding: 3px 0; }}
     .speaker-tag {{
         font-size: 9pt;
-        color: {C['overlay1']};
+        color: {colors['overlay1']};
         margin-right: 10px;
         margin-top: 4px;
     }}
-    .from-them .speaker-tag {{ color: {C['sapphire']}; }}
-    .from-you  .speaker-tag {{ color: {C['overlay1']}; }}
-    .from-you  {{ color: {C['subtext0']}; }}
+    .from-them .speaker-tag {{ color: {colors['sapphire']}; }}
+    .from-you  .speaker-tag {{ color: {colors['overlay1']}; }}
+    .from-you  {{ color: {colors['subtext0']}; }}
 
     /* The recorded transcript doubles as a tape deck: every line is a seek
        point, so the line being played has to be findable at a glance. */
     .line-stamp {{
         font-family: {DATA};
         font-size: 9pt;
-        color: {C['overlay0']};
+        color: {colors['overlay0']};
         margin-right: 12px;
         margin-top: 4px;
     }}
     list.transcript-past row {{ border-radius: 6px; padding: 2px 8px; }}
-    list.transcript-past row:hover {{ background: {C['surface0']}; }}
+    list.transcript-past row:hover {{ background: {colors['surface0']}; }}
     list.transcript-past row.line-playing {{
-        background: {C['surface1']};
-        box-shadow: inset 2px 0 0 {C['teal']};
+        background: {colors['surface1']};
+        box-shadow: inset 2px 0 0 {colors['teal']};
     }}
 
     /* Interim text is provisional and says so by looking unfinished. */
-    .interim {{ color: {C['overlay1']}; font-style: italic; }}
+    .interim {{ color: {colors['overlay1']}; font-style: italic; }}
 
-    .empty-hint {{ font-size: 12pt; color: {C['overlay1']}; }}
+    .empty-hint {{ font-size: 12pt; color: {colors['overlay1']}; }}
 
     /* ---- the side column beside a meeting, and the stacked page ---- */
-    .side-column {{ background: {C['crust']}; }}
-    .side-column.below {{ border-top: 1px solid {C['surface0']}; }}
-    .side-column.beside {{ border-left: 1px solid {C['surface0']}; }}
+    .side-column {{ background: {colors['crust']}; }}
+    .side-column.below {{ border-top: 1px solid {colors['surface0']}; }}
+    .side-column.beside {{ border-left: 1px solid {colors['surface0']}; }}
 
     /* ---- notes: a plain sheet of paper ---- */
-    .notes-frame {{ background: {C['base']}; border-radius: 6px; }}
-    .stacked .notes-frame {{ background: {C['crust']}; }}
+    .notes-frame {{ background: {colors['base']}; border-radius: 6px; }}
+    .stacked .notes-frame {{ background: {colors['crust']}; }}
     .notes, .notes text {{
         font-size: 12pt;
         line-height: 1.5;
-        color: {C['text']};
+        color: {colors['text']};
         background: transparent;
     }}
     .notes {{ padding: 8px 12px; }}
@@ -180,26 +180,26 @@ def stylesheet(C: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAULT) ->
     .advice {{
         font-size: 11.5pt;
         line-height: 1.5;
-        color: {C['subtext1']};
-        background: {C['surface0']};
+        color: {colors['subtext1']};
+        background: {colors['surface0']};
         border-radius: 6px;
         padding: 10px 12px;
     }}
-    .advice-thinking {{ color: {C['overlay1']}; font-style: italic; }}
-    .stacked entry.ask {{ background: {C['crust']}; }}
+    .advice-thinking {{ color: {colors['overlay1']}; font-style: italic; }}
+    .stacked entry.ask {{ background: {colors['crust']}; }}
 
     /* ---- a past meeting ---- */
-    .summary {{ font-size: 11.5pt; line-height: 1.6; color: {C['text']}; }}
-    .todo-done {{ color: {C['overlay0']}; text-decoration: line-through; }}
-    .owner-you  {{ color: {C['teal']}; }}
-    .owner-them {{ color: {C['overlay2']}; }}
+    .summary {{ font-size: 11.5pt; line-height: 1.6; color: {colors['text']}; }}
+    .todo-done {{ color: {colors['overlay0']}; text-decoration: line-through; }}
+    .owner-you  {{ color: {colors['teal']}; }}
+    .owner-them {{ color: {colors['overlay2']}; }}
 
     .player-bar {{
-        background: {C['mantle']};
-        border-top: 1px solid {C['surface0']};
+        background: {colors['mantle']};
+        border-top: 1px solid {colors['surface0']};
         padding: 8px 12px;
     }}
-    .player-bar scale trough highlight {{ background: {C['teal']}; }}
+    .player-bar scale trough highlight {{ background: {colors['teal']}; }}
 
-    .error {{ color: {C['maroon']}; font-size: 10pt; }}
+    .error {{ color: {colors['maroon']}; font-size: 10pt; }}
     """

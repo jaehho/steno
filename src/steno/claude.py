@@ -1,9 +1,16 @@
-"""Headless Claude Code: every model call steno makes goes through `claude -p`.
+"""One OpenAI-style chat-completions POST per model call.
 
-It runs on the subscription login rather than an API key, so the key is removed
-from the child's environment even when `.env` still sets one. Settings, hooks,
-and MCP servers are off: the transcript is other people's speech, and the only
-tools a call ever gets are read-only ones scoped to a single directory.
+Endpoint, model, and key are config, not code, because the best model for a
+meeting summary changes often. Flip `STENO_MODEL` for the model;
+`STENO_PROVIDER` (or `STENO_BASE_URL`) for where it is hosted. Defaults are
+MiMo on the token plan, using the same `~/.config/mimo.env` key as
+`claude-open`. That host also speaks Anthropic Messages (`…/anthropic`) for
+Claude Code; this client uses its OpenAI route, which takes the same
+json_schema, tools, and SSE we already build.
+
+The only tools a call ever gets are three read-only ones scoped to a single
+directory: the transcript is other people's speech, and grounding must not
+read the rest of the machine.
 """
 from __future__ import annotations
 
@@ -11,80 +18,223 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
+import re
 from collections.abc import Callable
 from pathlib import Path
 
-READ_TOOLS = ("Read", "Grep", "Glob")
-# One `assistant` event carries a whole message; the default 64 KiB line limit
-# is not enough once a tool result is in it.
-LINE_LIMIT = 1 << 24
+import httpx
+
+# name -> how to reach a chat-completions endpoint and who to bill.
+# `base_url` may be a callable when it is derived from the key file (MiMo
+# hosts the OpenAI route beside its Anthropic one, and the plan picks the host).
+PROVIDERS: dict[str, dict] = {
+    "mimo": {
+        "key_file": "~/.config/mimo.env",
+        "key_name": "MIMO_API_KEY",
+        "model": "mimo-v2.6-flash",
+    },
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1/chat/completions",
+        "key_file": "~/.config/openrouter.env",
+        "key_name": "OPENROUTER_API_KEY",
+        "model": "@preset/cc-flash-med",
+    },
+}
+DEFAULT_PROVIDER = "mimo"
+MAX_TOOL_ROUNDS = 8
+_RETRY_STATUSES = {408, 429, 500, 502, 503, 504, 522, 524}
+HTTP_OK = 200
+MAX_TOOL_HITS = 60  # cap hits returned per tool call
+
+_transport: httpx.AsyncBaseTransport | None = None   # tests inject a MockTransport
 
 
 class ClaudeError(RuntimeError):
     pass
 
 
-def claude_path() -> str | None:
-    """`claude`, including its native install dir, which a user service's PATH lacks."""
-    local_bin = Path.home() / ".local" / "bin"
-    return shutil.which("claude", path=f"{os.environ.get('PATH', '')}:{local_bin}")
+class _StreamDeadError(Exception):
+    """A retryable stream failure: dropped connection, or no [DONE] at the end."""
 
 
-def child_env() -> dict[str, str]:
-    env = dict(os.environ)
-    env.pop("ANTHROPIC_API_KEY", None)
-    return env
+def _read_kv(path: Path, name: str) -> str:
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith(f"{name}="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
 
 
-def build_argv(
-    binary: str,
-    model: str,
-    system: str,
-    output_format: str,
-    read_root: Path | None = None,
-    schema: dict | None = None,
-) -> list[str]:
-    """The flags for one call. With `read_root`, Read/Grep/Glob work inside it only."""
-    argv = [
-        binary, "-p", "--model", model, "--system-prompt", system,
-        "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
-        "--output-format", output_format,
-    ]
-    if read_root is None:
-        argv += ["--tools", ""]
-    else:
-        # A leading `//` makes the rule an absolute path. Grep and Glob are
-        # governed by Read rules, and anything unmatched is denied in -p mode.
-        argv += ["--tools", ",".join(READ_TOOLS),
-                 "--allowedTools", f"Read(/{read_root.resolve()}/**)"]
+def _expand(path: str) -> Path:
+    return Path(path).expanduser()
+
+
+def provider() -> str:
+    return os.environ.get("STENO_PROVIDER") or DEFAULT_PROVIDER
+
+
+def _settings() -> dict:
+    name = provider()
+    if name not in PROVIDERS:
+        msg = f"unknown STENO_PROVIDER={name!r}; known: {', '.join(sorted(PROVIDERS))}"
+        raise ClaudeError(msg)
+    return PROVIDERS[name]
+
+
+def _key_file() -> Path:
+    override = os.environ.get("STENO_API_KEY_FILE")
+    return _expand(override) if override else _expand(_settings()["key_file"])
+
+
+def _key_name() -> str:
+    return os.environ.get("STENO_API_KEY_NAME") or _settings()["key_name"]
+
+
+def _mimo_base_url() -> str:
+    """MiMo's OpenAI route, derived from the Anthropic host in mimo.env.
+
+    `MIMO_BASE_URL` is what Claude Code points at (`…/anthropic`). The
+    chat-completions path is the same origin without that suffix.
+    """
+    raw = (_read_kv(_key_file(), "MIMO_BASE_URL") or os.environ.get("MIMO_BASE_URL")
+           or "https://token-plan-sgp.xiaomimimo.com/anthropic")
+    root = raw.rstrip("/").removesuffix("/anthropic")
+    return root + "/v1/chat/completions"
+
+
+def base_url() -> str:
+    """The chat-completions endpoint. STENO_BASE_URL wins, for one-off experiments."""
+    if url := os.environ.get("STENO_BASE_URL"):
+        return url.rstrip("/")
+    if provider() == "mimo":
+        return _mimo_base_url()
+    return _settings()["base_url"]
+
+
+def default_model() -> str:
+    return _settings()["model"]
+
+
+def api_key() -> str:
+    if key := os.environ.get("STENO_API_KEY", "").strip():
+        return key
+    return _read_kv(_key_file(), _key_name())
+
+
+def check_ready() -> str | None:
+    """What a call would fail on, or None if one can be made now."""
+    if api_key():
+        return None
+    return f"no {_key_name()} in {_key_file()}"
+
+
+def _content(message: dict) -> str:
+    """The text of one assistant message: a string or a list of typed parts.
+
+    Reasoning models carry their thinking in `reasoning`/`reasoning_content`;
+    it is never part of the answer.
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content
+                       if isinstance(part, dict) and part.get("type") == "text")
+    return ""
+
+
+def _strict(schema: dict) -> dict:
+    """OpenAI strict mode: a `type: [T, "null"]` union becomes anyOf."""
+    out: dict = {}
+    for k, v in schema.items():
+        if isinstance(v, dict):
+            out[k] = _strict(v)
+        elif isinstance(v, list):
+            out[k] = [_strict(i) if isinstance(i, dict) else i for i in v]
+        else:
+            out[k] = v
+    types = out.get("type")
+    if isinstance(types, list):
+        out = {k: v for k, v in out.items() if k != "type"}
+        out["anyOf"] = [{"type": t} for t in types]
+    return out
+
+
+def _payload(model: str, messages: list[dict], *, schema: dict | None = None,
+             tools: list[dict] | None = None, stream: bool = False) -> dict:
+    payload: dict = {"model": model, "messages": messages}
+    if stream:
+        payload["stream"] = True
     if schema is not None:
-        argv += ["--json-schema", json.dumps(schema)]
-    if output_format == "stream-json":
-        argv += ["--verbose", "--include-partial-messages"]
-    return argv
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "steno", "strict": True, "schema": _strict(schema)},
+        }
+    if tools:
+        payload["tools"] = tools
+    return payload
 
 
-async def _spawn(argv: list[str], cwd: Path | None) -> asyncio.subprocess.Process:
-    return await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        env=child_env(),
-        limit=LINE_LIMIT,
-    )
+def _error_text(status: int, body: str) -> str:
+    try:
+        err = json.loads(body).get("error")
+        if err:
+            return str(err.get("message") or err)[:200]
+    except ValueError:
+        pass
+    return f"HTTP {status}: {body[:200]}"
 
 
-def _require_binary() -> str:
-    binary = claude_path()
-    if binary is None:
-        raise ClaudeError("`claude` is not on PATH; install Claude Code and log in")
-    return binary
+def _backoff(attempt: int, resp: httpx.Response | None) -> float:
+    if resp is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            return min(60.0, float(resp.headers.get("retry-after", "")))
+    return min(30.0, 5.0 * 4.0 ** (attempt - 1))
 
 
-async def run_structured(
+async def _retry_sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
+async def _call(client: httpx.AsyncClient, payload: dict) -> dict:
+    """One POST. Retried: 429/5xx, a dropped connection, a truncated body, and
+    a 200 with no content -- a provider that dies mid-stream is not covered by
+    failover, so empty is just another retryable failure. Other 4xx raise."""
+    headers = {"Authorization": f"Bearer {api_key()}"}
+    reason, resp = "no response", None
+    for attempt in range(3):
+        if attempt:
+            await _retry_sleep(_backoff(attempt, resp))
+        try:
+            resp = await client.post(base_url(), json=payload, headers=headers)
+        except httpx.TransportError as e:
+            reason, resp = str(e), None
+            continue
+        if resp.status_code in _RETRY_STATUSES:
+            reason = f"HTTP {resp.status_code}"
+            continue
+        if resp.status_code != HTTP_OK:
+            raise ClaudeError(_error_text(resp.status_code, resp.text))
+        try:
+            data = resp.json()
+        except ValueError:
+            reason = "truncated response body"
+            continue
+        err = data.get("error")
+        message = (data.get("choices") or [{}])[0].get("message") or {}
+        if err:
+            reason = str(err.get("message") or err)
+        elif message.get("tool_calls") or _content(message):
+            return data
+        else:
+            reason = "empty response"
+    msg = f"OpenRouter: {reason}, after 3 attempts"
+    raise ClaudeError(msg)
+
+
+async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model config
     prompt: str,
     *,
     system: str,
@@ -94,30 +244,148 @@ async def run_structured(
     timeout: float = 900.0,
 ) -> dict:
     """One call that must return an object matching `schema`. Raises ClaudeError."""
-    argv = build_argv(_require_binary(), model, system, "json", read_root, schema)
-    proc = await _spawn(argv, read_root)
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout)
-    except TimeoutError:
-        raise ClaudeError(f"claude -p took longer than {timeout:.0f}s") from None
-    finally:
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-    return parse_structured(out.decode(), err.decode())
+    messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+    tools = _tools(read_root) if read_root is not None else None
+    async with httpx.AsyncClient(transport=_transport,
+                                 timeout=httpx.Timeout(timeout, connect=15.0)) as client:
+        for _ in range(MAX_TOOL_ROUNDS):
+            data = await _call(client, _payload(model, messages, schema=schema, tools=tools))
+            message = data["choices"][0]["message"]
+            calls = message.get("tool_calls") or []
+            if not calls or read_root is None:
+                # No tools were offered, so none can come back.
+                return parse_structured(_content(message))
+            messages.append({"role": "assistant", "content": _content(message),
+                             "tool_calls": calls})
+            messages += [_tool_result(read_root, call) for call in calls]
+        # Over the tool budget: one forced answer with the tools withdrawn.
+        data = await _call(client, _payload(model, messages, schema=schema))
+        return parse_structured(_content(data["choices"][0]["message"]))
 
 
-def parse_structured(out: str, err: str = "") -> dict:
+def parse_structured(text: str) -> dict:
+    """The model's JSON, fences stripped; anything else raises."""
+    body = text.strip()
+    if body.startswith("```"):
+        body = body.split("\n", 1)[1] if "\n" in body else ""
+        if body.endswith("```"):
+            body = body[: -3].rstrip()
     try:
-        payload = json.loads(out)
+        out = json.loads(body)
     except json.JSONDecodeError:
-        raise ClaudeError(_tail(err or out) or "claude -p printed nothing") from None
-    structured = payload.get("structured_output")
-    if payload.get("is_error") or not isinstance(structured, dict):
-        reason = payload.get("result") or payload.get("subtype") or _tail(err)
-        raise ClaudeError(f"claude -p returned no result: {str(reason)[:200]}")
-    return structured
+        raise ClaudeError(_tail(text) or "the model returned nothing") from None
+    if not isinstance(out, dict):
+        msg = f"the model returned a {type(out).__name__}, not an object"
+        raise ClaudeError(msg)
+    return out
 
+
+def _tail(text: str, n: int = 300) -> str:
+    return text.strip()[-n:]
+
+
+# --- grounding tools ---------------------------------------------------------
+
+_PRUNE = {".git", "node_modules", ".venv", "__pycache__"}
+
+_TOOLS = (
+    {"name": "list_dir", "description": "List a directory.",
+     "parameters": {"type": "object", "properties": {
+         "path": {"type": "string", "description": "Relative path, default '.'"}}}},
+    {"name": "read_file", "description": "Read the first 4000 characters of a file.",
+     "parameters": {"type": "object", "properties": {"path": {"type": "string"}},
+                    "required": ["path"]}},
+    {"name": "grep", "description": "Regex search; path:line: text per match, capped.",
+     "parameters": {"type": "object", "properties": {
+         "pattern": {"type": "string"},
+         "path": {"type": "string", "description": "File or directory, default '.'"}},
+                    "required": ["pattern"]}},
+)
+
+
+def _tools(root: Path) -> list[dict]:
+    """The tools offered to the model. The scoping itself is enforced by
+    _resolve; the description just says where the paths start."""
+    return [{"type": "function",
+             "function": {**t, "description": f"{t['description']} Paths are relative to {root}."}}
+            for t in _TOOLS]
+
+
+def _resolve(root: Path, path: str) -> Path:
+    p = (root / path).resolve()
+    if not p.is_relative_to(root.resolve()):
+        msg = f"{path} is outside the project directory"
+        raise ValueError(msg)
+    return p
+
+
+def _run_tool(root: Path, name: str, args: dict) -> str:
+    if name == "list_dir":
+        entries = sorted(_resolve(root, args.get("path", ".")).iterdir(),
+                         key=lambda e: (e.is_file(), e.name))
+        return "\n".join(f"{e.name}/" if e.is_dir() else e.name for e in entries[:200]) or "(empty)"
+    if name == "read_file":
+        text = _resolve(root, args["path"]).read_text(errors="replace")
+        return text[:4000] or "(empty file)"
+    if name == "grep":
+        return _grep(root, args.get("pattern", ""), args.get("path", "."))
+    msg = f"unknown tool {name!r}"
+    raise ValueError(msg)
+
+
+def _tool_result(root: Path, call: dict) -> dict:
+    """Run one tool call. Any failure, including a path outside the root,
+    becomes an error string the model can recover from."""
+    try:
+        fn = call.get("function", {})
+        args = json.loads(fn.get("arguments") or "{}")
+    except Exception as e:
+        return {"role": "tool", "tool_call_id": call.get("id", ""), "content": f"error: {e}"}
+    if not isinstance(args, dict):
+        return {"role": "tool", "tool_call_id": call.get("id", ""),
+                "content": "error: arguments must be an object"}
+    try:
+        result = _run_tool(root, fn.get("name", ""), args)
+    except Exception as e:
+        result = f"error: {e}"
+    return {"role": "tool", "tool_call_id": call.get("id", ""), "content": result}
+
+
+def _grep(root: Path, pattern: str, path: str) -> str:
+    rx = re.compile(pattern)
+    base = _resolve(root, path)
+    hits: list[str] = []
+
+    def scan(f: Path) -> None:
+        if len(hits) >= MAX_TOOL_HITS:
+            return
+        try:
+            if f.stat().st_size > (1 << 20):
+                return
+            lines = f.read_text(errors="replace").splitlines()
+        except OSError:
+            return
+        for n, line in enumerate(lines, 1):
+            if rx.search(line):
+                hits.append(f"{f.relative_to(root.resolve())}:{n}: {line.strip()}")
+                if len(hits) >= MAX_TOOL_HITS:
+                    return
+
+    if base.is_file():
+        scan(base)
+    else:
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if d not in _PRUNE]
+            for fname in filenames:
+                scan(Path(dirpath) / fname)
+                if len(hits) >= MAX_TOOL_HITS:
+                    break
+            if len(hits) >= MAX_TOOL_HITS:
+                break
+    return "\n".join(hits) or "no match"
+
+
+# --- streaming ---------------------------------------------------------------
 
 async def stream_text(
     prompt: str,
@@ -128,52 +396,56 @@ async def stream_text(
     timeout: float = 180.0,
 ) -> str:
     """One tool-less call, handing each piece of text to `on_delta` as it arrives."""
-    argv = build_argv(_require_binary(), model, system, "stream-json")
-    proc = await _spawn(argv, None)
-    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-    try:
-        proc.stdin.write(prompt.encode())
-        await proc.stdin.drain()
-        proc.stdin.close()
-        async with asyncio.timeout(timeout):
-            final: str | None = None
-            async for raw in proc.stdout:
-                kind, text = parse_stream_line(raw.decode())
-                if kind == "delta":
-                    on_delta(text)
-                elif kind == "result":
-                    final = text
-                elif kind == "error":
-                    raise ClaudeError(text)
-            await proc.wait()
-        if final is None:
-            err = (await proc.stderr.read()).decode()
-            raise ClaudeError(_tail(err) or f"claude -p exited {proc.returncode}")
-        return final
-    except TimeoutError:
-        raise ClaudeError(f"claude -p took longer than {timeout:.0f}s") from None
-    finally:
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
+    payload = _payload(model, [{"role": "system", "content": system},
+                               {"role": "user", "content": prompt}], stream=True)
+    headers = {"Authorization": f"Bearer {api_key()}"}
+    seen = False
+
+    def emit(text: str) -> None:
+        nonlocal seen
+        seen = True
+        on_delta(text)
+
+    async with httpx.AsyncClient(transport=_transport,
+                                 timeout=httpx.Timeout(timeout, connect=15.0)) as client:
+        # Exactly one retry, and only before anything was shown: a mid-stream
+        # death after the user has seen text would start the answer over.
+        for attempt in (0, 1):
+            try:
+                return await _stream(client, payload, headers, emit)
+            except (_StreamDeadError, httpx.TransportError) as e:
+                if attempt or seen:
+                    raise ClaudeError(str(e)) from None
+                await _retry_sleep(2.0)
+    raise AssertionError  # unreachable
 
 
-def parse_stream_line(line: str) -> tuple[str, str]:
-    """Classify one stream-json line as ("delta"|"result"|"error"|"", text)."""
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return "", ""
-    if event.get("type") == "stream_event":
-        delta = event.get("event", {}).get("delta", {})
-        if delta.get("type") == "text_delta":
-            return "delta", delta.get("text", "")
-    elif event.get("type") == "result":
-        if event.get("is_error"):
-            return "error", str(event.get("result") or event.get("subtype"))[:200]
-        return "result", event.get("result") or ""
-    return "", ""
-
-
-def _tail(text: str, n: int = 300) -> str:
-    return text.strip()[-n:]
+async def _stream(client: httpx.AsyncClient, payload: dict, headers: dict,
+                  on_delta: Callable[[str], None]) -> str:
+    accumulated: list[str] = []
+    async with client.stream("POST", base_url(), json=payload, headers=headers) as resp:
+        if resp.status_code != HTTP_OK:
+            if resp.status_code in _RETRY_STATUSES:
+                msg = f"HTTP {resp.status_code}"
+                raise _StreamDeadError(msg)
+            raise ClaudeError(_error_text(resp.status_code, (await resp.aread()).decode(errors="replace")))
+        async for line in resp.aiter_lines():
+            if not line.startswith("data:"):
+                continue   # SSE keepalive comments and the blank separators
+            data = line[5:].strip()
+            if data == "[DONE]":
+                return "".join(accumulated)
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if "error" in event:
+                raise ClaudeError(str(event["error"].get("message") or event["error"])[:200])
+            delta = ((event.get("choices") or [{}])[0].get("delta") or {})
+            if delta.get("reasoning") or delta.get("reasoning_content"):
+                continue   # thinking must never reach the transcript
+            if delta.get("content"):
+                accumulated.append(delta["content"])
+                on_delta(delta["content"])
+    msg = "stream ended without [DONE]"
+    raise _StreamDeadError(msg)

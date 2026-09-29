@@ -9,6 +9,8 @@ from pathlib import Path
 from steno.summarize import (
     duration_minutes,
     format_for_model,
+    has_body,
+    has_summary,
     iter_sessions,
     load_records,
     load_title,
@@ -82,6 +84,33 @@ class TestSummaryParsing(unittest.TestCase):
     def test_missing_heading_falls_back(self):
         self.assertEqual(parse_summary("no heading here").title, "Untitled meeting")
 
+    def test_title_only_has_no_body(self):
+        """A flash model sometimes stops after `# Title`; that is not a summary."""
+        self.assertFalse(has_body("# Vendor Pricing Call"))
+        self.assertFalse(has_body("# Vendor Pricing Call\n\n  \n"))
+
+    def test_a_section_counts_as_a_body(self):
+        self.assertTrue(has_body("# T\n\n## TL;DR\n- x"))
+        self.assertTrue(has_body("# T\n\nThey agreed on Thursday."))
+
+
+class TestHasSummary(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.a = _session(self.root, "20260101-090000")
+
+    def test_missing_file(self):
+        self.assertFalse(has_summary(self.a))
+
+    def test_title_only_is_not_summarized(self):
+        """Otherwise `steno status` reports done and never retries it."""
+        (self.a / "summary.md").write_text("# Only a title\n")
+        self.assertFalse(has_summary(self.a))
+
+    def test_a_real_summary_counts(self):
+        (self.a / "summary.md").write_text("# T\n\n## TL;DR\n- x\n")
+        self.assertTrue(has_summary(self.a))
+
 
 class TestSessionResolution(unittest.TestCase):
     def setUp(self):
@@ -128,3 +157,43 @@ class TestSessionResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFormatForModel(unittest.TestCase):
+    """Issue 8: the copy that leaves for a model is scrubbed; disk is not."""
+
+    def test_pii_is_replaced(self):
+        out = format_for_model(
+            [{"ts": 60.0, "speaker": "them", "text": "mail jane@example.com at 415-555-0100"}]
+        )
+        self.assertIn("[EMAIL]", out)
+        self.assertIn("[PHONE]", out)
+        self.assertNotIn("jane@example.com", out)
+
+    def test_keeps_speaker_and_stamp(self):
+        out = format_for_model([
+            {"ts": 100.0, "speaker": "them", "text": "hi"},
+            {"ts": 165.0, "speaker": "you", "text": "on it"},
+        ])
+        self.assertEqual(out, "[00:00] them: hi\n[01:05] you: on it")
+
+    def test_names_reach_the_model(self):
+        """Issue 7: a diarized voice becomes a name the summary can attribute to."""
+        out = format_for_model(
+            [{"ts": 0.0, "speaker": "them", "who": "speaker_0",
+              "text": "I will send it"}],
+            names={"speaker_0": "Alice"},
+        )
+        self.assertEqual(out, "[00:00] Alice: I will send it")
+
+    def test_unnamed_voice_stays_them(self):
+        out = format_for_model(
+            [{"ts": 0.0, "speaker": "them", "who": "speaker_1", "text": "ok"}]
+        )
+        self.assertIn("them: ok", out)
+
+    def test_can_skip_redaction(self):
+        out = format_for_model(
+            [{"ts": 0.0, "speaker": "them", "text": "a@b.com"}], redact=False
+        )
+        self.assertIn("a@b.com", out)

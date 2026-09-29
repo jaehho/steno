@@ -13,16 +13,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
-from . import DEFAULT_MODEL, claude, config_dir, data_dir
+from . import claude, config_dir, data_dir, model_default
 from .audio import capture_mic, default_sink_monitor, open_wav, record_only
-from .brief import BRIEF_FILENAME, load_brief
+from .brief import BRIEF_FILENAME, brief_for, load_brief, proper_nouns
 from .detect import DEFAULT_ALLOW, END_GRACE_S, START_HOLD_S, watch_meetings
 from .events import (
     AdviceDelta,
@@ -36,6 +35,7 @@ from .events import (
     StatusChanged,
     SummaryReady,
 )
+from .redact import redact_text
 from .summarize import META_FILENAME, load_records, summarize_session
 from .transcribe import Utterance, stream_speaker, transcribe_file
 
@@ -114,7 +114,7 @@ class Engine:
     to marshal onto its own thread rather than touching widgets here.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - Engine's full config surface
         self,
         emit: Callable[[Event], None],
         allow: tuple[str, ...] | None = DEFAULT_ALLOW,
@@ -129,7 +129,7 @@ class Engine:
         self.emit = emit
         self.allow = allow
         self.deny = deny
-        self.model = model or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
+        self.model = model or model_default()
         self.summarize = summarize
         self.root = root or (data_dir() / "sessions")
         self.brief_path = brief_path or (config_dir() / BRIEF_FILENAME)
@@ -142,6 +142,11 @@ class Engine:
         self._commands: asyncio.Queue[str] = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._asking = False
+        self._keyterms: list[str] = []
+        # Someone is looking at the window. The mic is normally only recorded,
+        # not streamed; while this is on its words are also shown live.
+        self._audience = False
+        self._you_display: asyncio.Task | None = None
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -175,13 +180,19 @@ class Engine:
                 await self._end()
 
     async def _serve_commands(self) -> None:
-        """Serve `start_now()` / `stop_now()` from the engine's own loop."""
+        """Serve `start_now()` / `stop_now()` / `set_audience()` from our loop."""
         while True:
             cmd = await self._commands.get()
             if cmd == "start" and self.current is None:
                 await self._start("manual", manual=True)
             elif cmd == "stop" and self.current is not None:
                 await self._end()
+            elif cmd == "audience-on":
+                self._audience = True
+                self._start_you_display()
+            elif cmd == "audience-off":
+                self._audience = False
+                self._stop_you_display()
 
     def start_now(self) -> None:
         """Ask the engine to begin recording. Safe to call from another thread."""
@@ -190,6 +201,15 @@ class Engine:
     def stop_now(self) -> None:
         """Ask the engine to end the current recording. Thread-safe."""
         self._command("stop")
+
+    def set_audience(self, watching: bool) -> None:
+        """Someone opened or closed the window. Thread-safe.
+
+        The far side is always streamed — that is the live use case. Your own
+        words are only streamed while someone can see them, because a second
+        Deepgram stream for a room nobody is looking at is pure spend.
+        """
+        self._command("audience-on" if watching else "audience-off")
 
     def _command(self, cmd: str) -> None:
         if self._loop is None:
@@ -216,7 +236,7 @@ class Engine:
             sink_mon = await default_sink_monitor()
             you_wav = open_wav(session_dir / "you.wav")
             them_wav = open_wav(session_dir / "them.wav")
-        except Exception as e:  # noqa: BLE001 — surface it rather than half-record
+        except Exception as e:
             self.current = None
             self.emit(EngineError("capture", f"could not open audio: {e}", fatal=True))
             self._status("idle")
@@ -229,6 +249,11 @@ class Engine:
         rec.started_at = started_at = time.time()
         _rewrite_meta(session_dir, started_at, app, manual)
 
+        # Names the brief cares about, so "Mimo" is not transcribed "me moan".
+        # Extracted once per meeting: the brief is short, and a live meeting
+        # must not re-read a file on every utterance.
+        self._keyterms = self._load_keyterms(app)
+
         rec.tasks = [
             asyncio.create_task(self._record_mic(mic, you_wav)),
             asyncio.create_task(self._stream_them(sink_mon, them_wav)),
@@ -236,12 +261,15 @@ class Engine:
         ]
         self.emit(MeetingStarted(session_dir, app, started_at, manual))
         self._status("recording", app)
+        if self._audience:
+            self._start_you_display()
 
     async def _end(self) -> None:
         rec = self.current
         if rec is None:
             return
         self.current = None
+        self._stop_you_display()
         rec.stop()
         await asyncio.sleep(0.2)  # let cancelled writers unwind before we read
         if rec.transcript_jsonl is not None:
@@ -263,17 +291,18 @@ class Engine:
                 await record_only(source, wav)
             except asyncio.CancelledError:
                 raise
-            except Exception as e:  # noqa: BLE001 — a dead capture must not end the meeting
+            except Exception as e:
                 self.emit(EngineError("mic", f"capture on {source} failed: {e}"))
             await asyncio.sleep(2)
 
     async def _stream_them(self, source: str, wav) -> None:
         while True:
             try:
-                await stream_speaker("them", source, self.queue, wav)
+                await stream_speaker("them", source, self.queue, wav,
+                                    keyterms=self._keyterms)
             except asyncio.CancelledError:
                 raise
-            except Exception as e:  # noqa: BLE001 — retry across network blips
+            except Exception as e:
                 self.emit(EngineError("deepgram", f"stream error: {e}; retrying"))
                 await asyncio.sleep(2)
 
@@ -286,11 +315,13 @@ class Engine:
                 continue
             ts = time.time()
             self.emit(Heard(u.speaker, u.text, u.final, ts))
-            if not u.final or rec.transcript_jsonl is None:
+            if not u.final or not u.persist or rec.transcript_jsonl is None:
                 continue
             row = {"ts": ts, "speaker": u.speaker, "text": u.text}
             if u.offset is not None:
                 row["offset"] = round(u.offset, 3)
+            if u.who:
+                row["who"] = u.who
             self.transcript.append(row)
             rec.transcript_jsonl.write(json.dumps(row) + "\n")
             rec.transcript_jsonl.flush()
@@ -304,8 +335,10 @@ class Engine:
         if you_wav.is_file():
             self.emit(Finalizing(rec.session_dir, "transcribing your side"))
             try:
-                mine = await transcribe_file(you_wav, rec.started_at, "you")
-            except Exception as e:  # noqa: BLE001 — keep the far side regardless
+                mine = await transcribe_file(
+                    you_wav, rec.started_at, "you", keyterms=self._keyterms
+                )
+            except Exception as e:
                 self.emit(EngineError("transcribe", f"mic transcription failed: {e}"))
 
         records = sorted(load_records(rec.session_dir) + mine, key=lambda r: r["ts"])
@@ -317,10 +350,10 @@ class Engine:
         if not self.summarize:
             return
         self.emit(Finalizing(rec.session_dir, "writing the summary"))
-        brief = load_brief(self.brief_path)
+        brief = self._meeting_brief(rec.app)
         try:
             summary = await summarize_session(rec.session_dir, self.model, brief)
-        except Exception as e:  # noqa: BLE001 — the transcript is already safe on disk
+        except Exception as e:
             self.emit(EngineError("summary", f"summary failed: {e}"))
             return
         self.emit(SummaryReady(rec.session_dir, summary.title, summary.body))
@@ -346,10 +379,16 @@ class Engine:
             if not lines:
                 self.emit(AdviceDone("Nothing has been transcribed yet."))
                 return
-            convo = "\n".join(f"{r['speaker']}: {r['text']}" for r in lines)
+            convo = "\n".join(
+                f"{r['speaker']}: {redact_text(str(r.get('text', '')))}"
+                for r in lines
+            )
             content = f"{convo}\n\n---\nThe user asks: {question}" if question else convo
 
-            brief = load_brief(self.brief_path)
+            brief = self._meeting_brief(
+                self.current.app if self.current is not None and session_dir is None
+                else ""
+            )
             system = ADVISOR_PROMPT if session_dir is None else REVIEW_PROMPT
             if brief:
                 system += f"\n\n# Standing context\n\n{brief}"
@@ -360,13 +399,56 @@ class Engine:
                 on_delta=lambda d: self.emit(AdviceDelta(d)),
             )
             self.emit(AdviceDone(answer))
-        except Exception as e:  # noqa: BLE001 — a failed question must not end the meeting
+        except Exception as e:
             self.emit(EngineError("advisor", str(e)))
             self.emit(AdviceDone(""))
         finally:
             self._asking = False
 
     # ---------------------------------------------------------------- internals
+
+    def _load_keyterms(self, app: str = "") -> list[str]:
+        """Proper nouns from this meeting's brief, for Deepgram's keyterm boost."""
+        brief = load_brief(brief_for(self.brief_path, app))
+        return proper_nouns(brief) if brief else []
+
+    def _meeting_brief(self, app: str = "") -> str | None:
+        """The standing brief, or the one written for this app."""
+        return load_brief(brief_for(self.brief_path, app))
+
+    def _start_you_display(self) -> None:
+        """Stream the mic for the live view only. Idempotent.
+
+        `you.wav` is already being written by `_record_mic`; this second parec
+        is thrown away after Deepgram hears it. The batch pass at the end is
+        still what lands in the transcript.
+        """
+        rec = self.current
+        if rec is None or self._you_display is not None:
+            return
+        self._you_display = asyncio.create_task(self._stream_you_display())
+
+    def _stop_you_display(self) -> None:
+        task, self._you_display = self._you_display, None
+        if task is not None:
+            task.cancel()
+
+    async def _stream_you_display(self) -> None:
+        rec = self.current
+        if rec is None:
+            return
+        try:
+            source = await capture_mic()
+            await stream_speaker(
+                "you", source, self.queue,
+                wav=None, keyterms=self._keyterms, persist=False,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.emit(EngineError("deepgram", f"mic live view failed: {e}"))
+        finally:
+            self._you_display = None
 
     def _status(self, status: str, detail: str = "") -> None:
         self.emit(StatusChanged(status, detail))

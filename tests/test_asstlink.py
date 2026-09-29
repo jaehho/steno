@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from steno import asstlink
+from steno import asstlink, notes
+from steno.notes import save_todos, set_done, sync_todos
 
 
 class TestSourceKey(unittest.TestCase):
@@ -83,9 +85,7 @@ class TestSuiteIsolation(unittest.TestCase):
         self.assertFalse(asstlink.available())
 
     def test_sync_todos_never_shells_out(self):
-        import tempfile
 
-        from steno.notes import sync_todos
 
         summary = "## Action items\n**You**\n- Send the usage figures by Friday\n"
         with mock.patch.object(asstlink.subprocess, "run") as run:
@@ -97,9 +97,7 @@ class TestFileWithAsst(unittest.TestCase):
     """Issue 11: your items go to asst; theirs stay local; uid sticks."""
 
     def setUp(self):
-        import tempfile
 
-        from steno import notes
 
         self.notes = notes
         self.dir = Path(tempfile.mkdtemp())
@@ -132,7 +130,6 @@ class TestFileWithAsst(unittest.TestCase):
         add.assert_not_called()
 
     def test_checkbox_mirrors_to_asst(self):
-        from steno.notes import save_todos, set_done
 
         todos = [self.notes.Todo(text="Send", owner="you", uid="0F27")]
         save_todos(self.dir, todos)
@@ -141,7 +138,6 @@ class TestFileWithAsst(unittest.TestCase):
         mirror.assert_called_once_with("0F27", True)
 
     def test_uid_survives_resummarize(self):
-        from steno.notes import save_todos, sync_todos
 
         save_todos(self.dir, [self.notes.Todo(text="Send the report", owner="you",
                                               uid="0F27", done=True)])

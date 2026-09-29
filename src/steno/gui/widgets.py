@@ -1,6 +1,7 @@
 """Pieces both meeting pages use: notes, asking, and the words between them."""
 from __future__ import annotations
 
+# ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 from collections.abc import Callable
 from pathlib import Path
 

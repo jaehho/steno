@@ -10,6 +10,7 @@ is why the CLI imports it inside the `gui` subcommand and nowhere else.
 """
 from __future__ import annotations
 
+# ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 import os
 from pathlib import Path
 
@@ -77,8 +78,8 @@ class App(Adw.Application):
         # Without this the app would exit the moment its last window closed,
         # taking the detector with it. The pipeline outlives every window.
         self.hold()
-        for old, new in migrate_legacy():
-            print(f"[steno] moved {old} -> {new}", flush=True)
+        for _old, _new in migrate_legacy():
+            pass
         prune_audio()
         self._install_actions()
         self.bridge = EngineBridge(
@@ -167,7 +168,7 @@ class App(Adw.Application):
             self._window._toast(message)
 
     def present_window(self):
-        from .window import Window
+        from .window import Window  # noqa: PLC0415  # avoids import cycle with app
 
         window = self._window
         if window is None:
@@ -176,10 +177,22 @@ class App(Adw.Application):
             self._window = window
         window.present()
         window.refresh_if_stale()
+        self._set_audience(True)
         return window
 
     def _forget_window(self, *_a) -> None:
         self._window = None
+        self._set_audience(False)
+
+    def _set_audience(self, watching: bool) -> None:
+        """Tell the engine whether anyone can see the live transcript.
+
+        Closing the window is not quitting, so this is the only signal the
+        engine has that its mic-side live view is worth paying for.
+        """
+        engine = self.engine
+        if engine is not None:
+            engine.set_audience(watching)
 
     @property
     def engine(self):

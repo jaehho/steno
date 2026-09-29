@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from steno import state
+from steno import icon_dir, state
 
 
 class TestBarRendering(unittest.TestCase):
@@ -65,7 +65,6 @@ class TestTrayView(unittest.TestCase):
         self.assertFalse(state.tray_view("idle")["paused"])
 
     def test_every_tray_icon_ships(self):
-        from steno import icon_dir
 
         for name in state.TRAY_ICONS.values():
             found = list(icon_dir().glob(f"hicolor/*/*/{name}.svg"))

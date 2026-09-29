@@ -12,7 +12,8 @@ from unittest import mock
 from steno import retention
 
 
-def make_session(root: Path, name: str, *, transcript=True, summary=True,
+def make_session(  # noqa: PLR0913 - test fixture with every knob
+    root: Path, name: str, *, transcript=True, summary=True,
                  audio=True, age_days=0) -> Path:
     session = root / name
     session.mkdir(parents=True)

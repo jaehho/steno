@@ -79,12 +79,12 @@ def _read_summary(session_dir: Path) -> str:
 def _session_datetime(session_dir: Path) -> datetime:
     started = session_start(session_dir)
     if started > 0:
-        return datetime.fromtimestamp(started)  # noqa: DTZ006
+        return datetime.fromtimestamp(started)
     # `YYYYMMDD-HHMMSS`, which every session directory is named after.
     try:
-        return datetime.strptime(session_dir.name[:15], "%Y%m%d-%H%M%S")  # noqa: DTZ007
+        return datetime.strptime(session_dir.name[:15], "%Y%m%d-%H%M%S")
     except ValueError:
-        return datetime.fromtimestamp(session_dir.stat().st_mtime)  # noqa: DTZ006
+        return datetime.fromtimestamp(session_dir.stat().st_mtime)
 
 
 def _session_date(session_dir: Path) -> str:

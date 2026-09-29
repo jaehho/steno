@@ -6,6 +6,8 @@ there is one place to look, whether a call is happening or not.
 """
 from __future__ import annotations
 
+# ruff: noqa: E402  # gi.require_version must precede gi.repository imports
+import json
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -14,8 +16,11 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
+import contextlib
+
 from gi.repository import Gtk, Pango
 
+from ..cost import format_meter, prerecorded_cost, stream_cost
 from ..notes import open_count
 from ..summarize import (
     SUMMARY_FILENAME,
@@ -41,11 +46,12 @@ class Session:
         self.title = load_title(path)
         self.project = load_project(path)
         try:
-            self.start = datetime.strptime(path.name, "%Y%m%d-%H%M%S")  # noqa: DTZ007
+            self.start = datetime.strptime(path.name, "%Y%m%d-%H%M%S")
         except ValueError:
-            self.start = datetime.fromtimestamp(path.stat().st_mtime)  # noqa: DTZ006
+            self.start = datetime.fromtimestamp(path.stat().st_mtime)
         self.open_todos = open_count(path)
         self.minutes = duration_minutes(load_records(path))
+        self.cost = _session_cost(path, self.minutes)
         self.stamp = session_stamp(path)
         self._haystack: str | None = None
 
@@ -60,17 +66,66 @@ class Session:
         directory of files rather than a database. If this ever gets slow, that
         is the moment to add an index — not before.
         """
+        return self.locate(query) is not None
+
+    def locate(self, query: str) -> dict | None:
+        """Where a query hit, or None. `{"where": label, "line": n}`.
+
+        `where` is the surface the reader cares about — summary, notes, or the
+        transcript — and `line` is a 0-based transcript line so the meeting
+        page can scroll to the sentence rather than just opening the meeting
+        and leaving the reader to hunt for it.
+        """
         if not query:
-            return True
+            return {"where": "", "line": 0}
+        words = query.lower().split()
+
+        def hit(text: str) -> bool:
+            low = text.lower()
+            return all(w in low for w in words)
+
+        if hit(self.title or "") or hit(self.project or "") or hit(self.dir.name):
+            return {"where": "title", "line": -1}
+        for name, label in ((SUMMARY_FILENAME, "summary"), ("notes.md", "notes")):
+            try:
+                text = (self.dir / name).read_text()
+            except OSError:
+                continue
+            if hit(text):
+                return {"where": label, "line": -1}
+        try:
+            lines = (self.dir / "transcript.txt").read_text().splitlines()
+        except OSError:
+            lines = []
+        for i, line in enumerate(lines):
+            if hit(line):
+                return {"where": "transcript", "line": i}
+        # A last resort: the jsonl is the same words as the txt, but a summary
+        # written before transcript.txt existed may be all there is.
         if self._haystack is None:
             parts = [self.title or "", self.project or "", self.dir.name]
             for name in (SUMMARY_FILENAME, "notes.md", "transcript.txt"):
-                try:
+                with contextlib.suppress(OSError):
                     parts.append((self.dir / name).read_text())
-                except OSError:
-                    pass
             self._haystack = "\n".join(parts).lower()
-        return all(word in self._haystack for word in query.lower().split())
+        if all(w in self._haystack for w in words):
+            return {"where": "meeting", "line": -1}
+        return None
+
+
+def _session_cost(path: Path, minutes: float) -> float:
+    """A meeting's stamped estimate, or one derived from its length.
+
+    Older sessions predate `cost_usd`; they still have to count toward the
+    meter or the total lies the moment the archive is not brand new.
+    """
+    try:
+        stamped = json.loads((path / "meta.json").read_text()).get("cost_usd")
+        if stamped is not None:
+            return float(stamped)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return stream_cost(minutes) + prerecorded_cost(minutes)
 
 
 Item = Session | str
@@ -226,7 +281,7 @@ class Sidebar(Gtk.Box):
             if s.dir != self.live_dir and s.matches(self.query)
         ]
         self.items = ([LIVE] if self.live_dir is not None else []) + shown
-        now = datetime.now()  # noqa: DTZ005 — the list is in local time
+        now = datetime.now()
         for item in self.items:
             self.list.append(
                 self._session_row(item, now) if isinstance(item, Session) else self._live_row()
@@ -258,9 +313,13 @@ class Sidebar(Gtk.Box):
     def _update_footer(self) -> None:
         total = len(self.sessions)
         open_todos = sum(s.open_todos for s in self.sessions)
+        minutes = sum(s.minutes for s in self.sessions)
+        dollars = sum(s.cost for s in self.sessions)
         parts = [f"{total} meeting{'' if total == 1 else 's'}"]
         if open_todos:
             parts.append(f"{open_todos} to-do{'' if open_todos == 1 else 's'} open")
+        if minutes:
+            parts.append(format_meter(minutes, dollars))
         self.footer.set_text(" · ".join(parts))
 
     def update_todo_counts(self, session: Session) -> None:
@@ -269,10 +328,10 @@ class Sidebar(Gtk.Box):
         index = next((i for i, it in enumerate(self.items) if it is session), -1)
         row = self.list.get_row_at_index(index) if index >= 0 else None
         if row is not None:
-            row.set_child(self._session_row(session, datetime.now()).get_child())  # noqa: DTZ005
+            row.set_child(self._session_row(session, datetime.now()).get_child())
 
     def _header(self, row: Gtk.ListBoxRow, before: Gtk.ListBoxRow | None) -> None:
-        now = datetime.now()  # noqa: DTZ005
+        now = datetime.now()
         name = self._section_of(row.get_index(), now)
         if before is not None and self._section_of(before.get_index(), now) == name:
             row.set_header(None)
@@ -322,9 +381,12 @@ class Sidebar(Gtk.Box):
         box.append(title)
 
         line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        meta = Gtk.Label(
-            label="  ·  ".join(words.row_meta(s.start, now, s.minutes, s.project)), xalign=0.0
-        )
+        parts = words.row_meta(s.start, now, s.minutes, s.project)
+        if self.query:
+            hit = s.locate(self.query)
+            if hit and hit["where"] in ("summary", "notes", "transcript"):
+                parts.append(f"in {hit['where']}")
+        meta = Gtk.Label(label="  ·  ".join(parts), xalign=0.0)
         meta.add_css_class("session-meta")
         meta.set_hexpand(True)
         meta.set_ellipsize(Pango.EllipsizeMode.END)

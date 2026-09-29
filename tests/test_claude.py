@@ -1,139 +1,291 @@
-"""The `claude -p` wrapper and the summary's project inference, with a fake `claude`."""
+"""The OpenRouter client: request shape, parsing, retries, streaming, tools."""
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import stat
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import httpx
+
 from steno import claude
 from steno.summarize import list_projects, load_project, summarize_session
 
-
-def _fake_claude(bindir: Path, stdout: str) -> None:
-    """A `claude` that saves its argv, env and stdin next to itself, then prints `stdout`."""
-    script = bindir / "claude"
-    script.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
-        "here = os.path.dirname(os.path.abspath(__file__))\n"
-        "json.dump({'argv': sys.argv[1:], 'stdin': sys.stdin.read(),\n"
-        "           'key': os.environ.get('ANTHROPIC_API_KEY'), 'cwd': os.getcwd()},\n"
-        "          open(os.path.join(here, 'call.json'), 'w'))\n"
-        f"sys.stdout.write({stdout!r})\n"
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+SCHEMA = {"type": "object", "required": ["a"], "properties": {"a": {"type": "string"}}}
 
 
-def _call(bindir: Path) -> dict:
-    return json.loads((bindir / "call.json").read_text())
+def _sse(*events):
+    """SSE bytes: dicts are json-encoded as data lines; strings (`:...` comments,
+    `data: [DONE]`) pass through verbatim."""
+    body = "".join(
+        f"data: {json.dumps(e)}\n\n" if isinstance(e, dict) else f"{e}\n\n"
+        for e in events)
+    return httpx.Response(200, content=body.encode(),
+                          headers={"content-type": "text/event-stream"})
 
 
-class TestArgv(unittest.TestCase):
-    def test_without_a_root_there_are_no_tools(self):
-        argv = claude.build_argv("claude", "m", "sys", "stream-json")
-        self.assertEqual(argv[argv.index("--tools") + 1], "")
-        self.assertNotIn("--allowedTools", argv)
-
-    def test_a_root_allows_reads_inside_it_only(self):
-        root = Path(tempfile.mkdtemp())
-        argv = claude.build_argv("claude", "m", "sys", "json", root)
-        self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob")
-        self.assertEqual(argv[argv.index("--allowedTools") + 1], f"Read(/{root.resolve()}/**)")
-
-    def test_settings_and_mcp_are_off(self):
-        argv = claude.build_argv("claude", "m", "sys", "json")
-        self.assertEqual(argv[argv.index("--setting-sources") + 1], "")
-        self.assertIn("--strict-mcp-config", argv)
-
-    def test_the_api_key_never_reaches_claude(self):
-        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-x"}):
-            self.assertNotIn("ANTHROPIC_API_KEY", claude.child_env())
+def _completion(content, *, reasoning=None, tool_calls=None):
+    message = {"role": "assistant", "content": content}
+    if reasoning is not None:
+        message["reasoning"] = reasoning
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return {"choices": [{"message": message}]}
 
 
-class TestParsing(unittest.TestCase):
-    def test_structured_output(self):
-        out = json.dumps({"is_error": False, "structured_output": {"a": 1}})
-        self.assertEqual(claude.parse_structured(out), {"a": 1})
-
-    def test_error_result_raises(self):
-        out = json.dumps({"is_error": True, "result": "not logged in"})
-        with self.assertRaisesRegex(claude.ClaudeError, "not logged in"):
-            claude.parse_structured(out)
-
-    def test_garbage_raises_with_stderr(self):
-        with self.assertRaisesRegex(claude.ClaudeError, "boom"):
-            claude.parse_structured("", "boom")
-
-    def test_stream_lines(self):
-        delta = {"type": "stream_event",
-                 "event": {"type": "content_block_delta",
-                           "delta": {"type": "text_delta", "text": "hi"}}}
-        thinking = {"type": "stream_event",
-                    "event": {"delta": {"type": "thinking_delta", "thinking": ""}}}
-        self.assertEqual(claude.parse_stream_line(json.dumps(delta)), ("delta", "hi"))
-        self.assertEqual(claude.parse_stream_line(json.dumps(thinking)), ("", ""))
-        self.assertEqual(
-            claude.parse_stream_line(json.dumps({"type": "result", "result": "hi there"})),
-            ("result", "hi there"))
+def _resp(content, **kw):
+    return httpx.Response(200, json=_completion(content, **kw))
 
 
-class TestAgainstAFakeClaude(unittest.TestCase):
+def _tool_call(call_id, name, arguments):
+    return {"id": call_id, "type": "function",
+            "function": {"name": name, "arguments": arguments}}
+
+
+class Keyed(unittest.TestCase):
+    """A key in the environment, and no sleeping between retries."""
+
     def setUp(self):
-        self.bindir = Path(tempfile.mkdtemp())
-        env = {"PATH": f"{self.bindir}:{os.environ['PATH']}", "ANTHROPIC_API_KEY": "sk-x"}
-        patcher = mock.patch.dict(os.environ, env)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for p in (mock.patch.dict(os.environ, {"STENO_API_KEY": "sk-test"},
+                                  clear=False),
+                  mock.patch.object(claude, "_retry_sleep", mock.AsyncMock())):
+            p.start()
+            self.addCleanup(p.stop)
 
-    def test_stream_text_hands_over_deltas(self):
-        lines = [
-            {"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": "a"}}},
-            {"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": "b"}}},
-            {"type": "result", "result": "ab"},
-        ]
-        _fake_claude(self.bindir, "".join(json.dumps(x) + "\n" for x in lines))
-        got: list[str] = []
-        answer = asyncio.run(claude.stream_text("q", system="s", model="m", on_delta=got.append))
+    def serve(self, *responses, seen=None):
+        """Serve responses in order, repeating the last; record requests to `seen`.
+
+        Each response is rebuilt per request: a Response that has been read
+        once cannot be streamed again.
+        """
+        specs = [(r.status_code, dict(r.headers), r.read()) for r in responses]
+
+        def handler(request):
+            if seen is not None:
+                seen.append(json.loads(request.content))
+            code, headers, body = specs.pop(0) if len(specs) > 1 else specs[0]
+            return httpx.Response(code, headers=headers, content=body)
+
+        return mock.patch.object(claude, "_transport", httpx.MockTransport(handler))
+
+
+class TestRequestShape(Keyed):
+    def test_model_messages_and_strict_schema(self):
+        seen = []
+        schema = {"type": "object", "required": ["a"],
+                  "properties": {"a": {"type": ["string", "null"]}}}
+        with self.serve(_resp('{"a": null}'), seen=seen):
+            out = asyncio.run(claude.run_structured(
+                "p", system="s", model="@preset/x", schema=schema, timeout=5))
+        self.assertEqual(out, {"a": None})
+        req = seen[0]
+        self.assertEqual(req["model"], "@preset/x")
+        self.assertEqual([m["role"] for m in req["messages"]], ["system", "user"])
+        rf = req["response_format"]["json_schema"]
+        self.assertEqual((rf["name"], rf["strict"]), ("steno", True))
+        prop = rf["schema"]["properties"]["a"]
+        self.assertNotIn("type", prop)
+        self.assertEqual(prop["anyOf"], [{"type": "string"}, {"type": "null"}])
+
+
+class TestStructured(Keyed):
+    def test_string_content(self):
+        with self.serve(_resp('{"a": "x"}')):
+            self.assertEqual(asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, timeout=5)), {"a": "x"})
+
+    def test_parts_join_and_reasoning_ignored(self):
+        body = _completion([{"type": "text", "text": '{"a": '},
+                            {"type": "text", "text": '"x"}'}],
+                           reasoning="thinking out loud")
+        with self.serve(httpx.Response(200, json=body)):
+            self.assertEqual(asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, timeout=5)), {"a": "x"})
+
+    def test_fenced_content_parses(self):
+        with self.serve(_resp('```json\n{"a": "x"}\n```')):
+            self.assertEqual(asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, timeout=5)), {"a": "x"})
+
+
+class TestRetries(Keyed):
+    def test_429_then_success(self):
+        with self.serve(httpx.Response(429, json={}), _resp('{"a": "x"}')):
+            self.assertEqual(asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, timeout=5)), {"a": "x"})
+
+    def test_empty_content_is_retried_then_raises(self):
+        with (self.serve(_resp("")),
+              self.assertRaisesRegex(claude.ClaudeError, "after 3 attempts")):
+            asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, timeout=5))
+
+    def test_persistent_500(self):
+        with (self.serve(httpx.Response(500, json={})),
+              self.assertRaisesRegex(claude.ClaudeError, "after 3 attempts")):
+            asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, timeout=5))
+
+    def test_400_is_immediate(self):
+        with (self.serve(httpx.Response(400, json={"error": {"message": "bad schema"}})),
+              self.assertRaisesRegex(claude.ClaudeError, "bad schema")):
+            asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, timeout=5))
+
+
+class TestStream(Keyed):
+    def test_deltas_and_reasoning_dropped(self):
+        got = []
+        with self.serve(_sse(
+                ": OPENROUTER PROCESSING",
+                {"choices": [{"delta": {"reasoning": "hmm"}}]},
+                {"choices": [{"delta": {"content": "a"}}]},
+                {"choices": [{"delta": {"content": "b"}}]},
+                "data: [DONE]")):
+            answer = asyncio.run(claude.stream_text(
+                "q", system="s", model="m", on_delta=got.append, timeout=5))
         self.assertEqual((got, answer), (["a", "b"], "ab"))
-        call = _call(self.bindir)
-        self.assertEqual(call["stdin"], "q")
-        self.assertIsNone(call["key"])
 
-    def test_summary_records_a_known_project_and_reads_from_the_root(self):
+    def test_midstream_death_retries_once_then_succeeds(self):
+        got = []
+        dead = _sse()   # a stream that dies before its first token
+        good = _sse({"choices": [{"delta": {"content": "b"}}]}, "data: [DONE]")
+        with self.serve(dead, good):
+            answer = asyncio.run(claude.stream_text(
+                "q", system="s", model="m", on_delta=got.append, timeout=5))
+        self.assertEqual((got, answer), (["b"], "b"))
+
+    def test_reasoning_content_is_dropped(self):
+        got = []
+        with self.serve(_sse(
+                {"choices": [{"delta": {"reasoning_content": "hmm"}}]},
+                {"choices": [{"delta": {"content": "a"}}]},
+                "data: [DONE]")):
+            answer = asyncio.run(claude.stream_text(
+                "q", system="s", model="m", on_delta=got.append, timeout=5))
+        self.assertEqual((got, answer), (["a"], "a"))
+
+    def test_partial_text_is_not_retried(self):
+        got = []
+        dead = _sse({"choices": [{"delta": {"content": "a"}}]})   # emits, then dies
+        with (self.serve(dead), self.assertRaises(claude.ClaudeError)):
+            asyncio.run(claude.stream_text(
+                "q", system="s", model="m", on_delta=got.append, timeout=5))
+        self.assertEqual(got, ["a"])
+
+    def test_error_chunk_raises(self):
+        got = []
+        with (self.serve(_sse({"error": {"message": "over quota"}})),
+              self.assertRaisesRegex(claude.ClaudeError, "over quota")):
+            asyncio.run(claude.stream_text(
+                "q", system="s", model="m", on_delta=got.append, timeout=5))
+
+
+class TestToolLoop(Keyed):
+    def test_tools_run_and_summarize_records_the_project(self):
         projects = Path(tempfile.mkdtemp())
         (projects / "thesis").mkdir()
         (projects / "thesis" / "README.md").write_text("# thesis\n\nA beamformer on an FPGA.\n")
         session = Path(tempfile.mkdtemp())
         (session / "transcript.jsonl").write_text(
             json.dumps({"ts": 1.0, "speaker": "them", "text": "the beamformer"}) + "\n")
-        result = {"is_error": False, "structured_output": {
-            "summary": "# Beamformer Review\n\n## TL;DR\n- x", "project": "thesis"}}
-        _fake_claude(self.bindir, json.dumps(result))
+        seen = []
+        calls = [
+            [_tool_call("1", "list_dir", "{}")],
+            [_tool_call("2", "read_file", '{"path": "thesis/README.md"}')],
+        ]
 
-        summary = asyncio.run(summarize_session(session, "m", None, projects))
+        def handler(request):
+            seen.append(json.loads(request.content))
+            if calls:
+                return _resp("", tool_calls=calls.pop(0))
+            return _resp('{"summary": "# Beamformer Review\\n\\n## TL;DR\\n- x", "project": "thesis"}')
+
+        with mock.patch.object(claude, "_transport", httpx.MockTransport(handler)):
+            summary = asyncio.run(summarize_session(session, "m", None, projects))
 
         self.assertEqual((summary.title, summary.project), ("Beamformer Review", "thesis"))
         self.assertEqual(load_project(session), "thesis")
-        call = _call(self.bindir)
-        self.assertEqual(Path(call["cwd"]).resolve(), projects.resolve())
-        system = call["argv"][call["argv"].index("--system-prompt") + 1]
-        self.assertIn("- thesis: A beamformer on an FPGA.", system)
+        tools1 = [m for m in seen[1]["messages"] if m["role"] == "tool"]
+        tools2 = [m for m in seen[2]["messages"] if m["role"] == "tool"]
+        self.assertEqual([m["tool_call_id"] for m in tools1], ["1"])
+        self.assertEqual(tools1[0]["content"], "thesis/")
+        self.assertEqual([m["tool_call_id"] for m in tools2], ["1", "2"])
+        self.assertIn("beamformer", tools2[-1]["content"])
+        self.assertIn(str(projects), seen[0]["messages"][0]["content"])
 
-    def test_an_invented_project_is_dropped(self):
+    def test_path_escape_is_an_error_string(self):
         projects = Path(tempfile.mkdtemp())
-        (projects / "thesis").mkdir()
+        seen = []
+        calls = [[_tool_call("1", "read_file", '{"path": "../../etc/passwd"}')]]
+
+        def handler(request):
+            seen.append(json.loads(request.content))
+            if calls:
+                return _resp("", tool_calls=calls.pop(0))
+            return _resp('{"a": "x"}')
+
+        with mock.patch.object(claude, "_transport", httpx.MockTransport(handler)):
+            out = asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, read_root=projects, timeout=5))
+        self.assertEqual(out, {"a": "x"})
+        tools = [m for m in seen[1]["messages"] if m["role"] == "tool"]
+        self.assertTrue(tools[0]["content"].startswith("error:"))
+
+    def test_over_budget_forces_a_final_answer(self):
+        projects = Path(tempfile.mkdtemp())
+        seen = []
+        n = [0]
+
+        def handler(request):
+            body = json.loads(request.content)
+            seen.append(body)
+            if body.get("tools"):
+                n[0] += 1
+                return _resp("", tool_calls=[_tool_call(str(n[0]), "list_dir", "{}")])
+            return _resp('{"a": "x"}')
+
+        with mock.patch.object(claude, "_transport", httpx.MockTransport(handler)):
+            out = asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema=SCHEMA, read_root=projects, timeout=5))
+        self.assertEqual(out, {"a": "x"})
+        self.assertEqual(len(seen), claude.MAX_TOOL_ROUNDS + 1)
+        self.assertNotIn("tools", seen[-1])
+
+    def test_title_only_summary_is_retried_then_succeeds(self):
+        projects = Path(tempfile.mkdtemp())
         session = Path(tempfile.mkdtemp())
         (session / "transcript.jsonl").write_text(
-            json.dumps({"ts": 1.0, "speaker": "you", "text": "hi"}) + "\n")
-        _fake_claude(self.bindir, json.dumps({"structured_output": {
-            "summary": "# Hi", "project": "../../etc"}}))
-        summary = asyncio.run(summarize_session(session, "m", None, projects))
-        self.assertIsNone(summary.project)
+            json.dumps({"ts": 1.0, "speaker": "them", "text": "hi"}) + "\n")
+        replies = [
+            '{"summary": "# Only a title", "project": null}',
+            '{"summary": "# Real\\n\\n## TL;DR\\n- x", "project": null}',
+        ]
+
+        def handler(_request):
+            return _resp(replies.pop(0) if len(replies) > 1 else replies[0])
+
+        with mock.patch.object(claude, "_transport", httpx.MockTransport(handler)):
+            summary = asyncio.run(summarize_session(session, "m", None, projects))
+        self.assertEqual(summary.title, "Real")
+        self.assertIn("## TL;DR", (session / "summary.md").read_text())
+
+    def test_title_only_three_times_raises_without_writing(self):
+        projects = Path(tempfile.mkdtemp())
+        session = Path(tempfile.mkdtemp())
+        (session / "transcript.jsonl").write_text(
+            json.dumps({"ts": 1.0, "speaker": "them", "text": "hi"}) + "\n")
+
+        def handler(_request):
+            return _resp('{"summary": "# Only a title", "project": null}')
+
+        with (mock.patch.object(claude, "_transport", httpx.MockTransport(handler)),
+              self.assertRaisesRegex(claude.ClaudeError, "only a title")):
+            asyncio.run(summarize_session(session, "m", None, projects))
+        self.assertFalse((session / "summary.md").exists())
 
 
 class TestProjects(unittest.TestCase):
@@ -148,6 +300,57 @@ class TestProjects(unittest.TestCase):
 
     def test_missing_root(self):
         self.assertEqual(list_projects(Path("/nonexistent/steno")), {})
+
+
+class TestEndpointConfig(unittest.TestCase):
+    """STENO_MODEL / STENO_PROVIDER / STENO_BASE_URL are how the endpoint moves."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.mimo = self.tmp / "mimo.env"
+        self.mimo.write_text(
+            "MIMO_API_KEY=tp-test\nMIMO_BASE_URL=https://token-plan-sgp.xiaomimimo.com/anthropic\n")
+        patcher = mock.patch.dict(os.environ, {
+            "STENO_API_KEY": "",
+            "STENO_API_KEY_FILE": str(self.mimo),
+            "STENO_API_KEY_NAME": "MIMO_API_KEY",
+            "STENO_PROVIDER": "mimo",
+            "STENO_BASE_URL": "",
+            "MIMO_ENV": str(self.mimo),
+        }, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_mimo_route_is_derived_from_the_anthropic_host(self):
+        self.assertEqual(claude.base_url(),
+                         "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions")
+
+    def test_steno_base_url_wins(self):
+        os.environ["STENO_BASE_URL"] = "https://example.test/v1/chat/completions"
+        self.assertEqual(claude.base_url(), "https://example.test/v1/chat/completions")
+
+    def test_openrouter_provider_keeps_its_own_url(self):
+        os.environ["STENO_PROVIDER"] = "openrouter"
+        self.assertEqual(claude.base_url(),
+                         "https://openrouter.ai/api/v1/chat/completions")
+
+    def test_key_comes_from_the_provider_file(self):
+        self.assertEqual(claude.api_key(), "tp-test")
+        self.assertIsNone(claude.check_ready())
+
+    def test_steno_api_key_wins(self):
+        os.environ["STENO_API_KEY"] = "sk-direct"
+        self.assertEqual(claude.api_key(), "sk-direct")
+
+    def test_default_model_follows_the_provider(self):
+        self.assertEqual(claude.default_model(), "mimo-v2.6-flash")
+        os.environ["STENO_PROVIDER"] = "openrouter"
+        self.assertEqual(claude.default_model(), "@preset/cc-flash-med")
+
+    def test_unknown_provider_raises(self):
+        os.environ["STENO_PROVIDER"] = "nope"
+        with self.assertRaisesRegex(claude.ClaudeError, "unknown STENO_PROVIDER"):
+            claude.base_url()
 
 
 if __name__ == "__main__":

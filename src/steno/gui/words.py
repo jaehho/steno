@@ -7,6 +7,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+SECONDS_PER_HOUR = 3600
+SECONDS_PER_MINUTE = 60
+MIN_WRAP_PARTS = 3  # token + two spans before wrapping kicks in
+
 # Headings in the summary that the page already shows some other way: the title
 # is the page title, the TL;DR needs no label on top of the summary itself, and
 # action items are the to-do list beside it.
@@ -54,8 +58,8 @@ def todo_count(n: int) -> str:
 
 def clock(seconds: float) -> str:
     total = max(0, int(seconds))
-    if total >= 3600:
-        return f"{total // 3600}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+    if total >= SECONDS_PER_HOUR:
+        return f"{total // SECONDS_PER_HOUR}:{(total % SECONDS_PER_HOUR) // SECONDS_PER_MINUTE:02d}:{total % 60:02d}"
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
@@ -137,7 +141,7 @@ def inline(text: str) -> str:
     out = escape(text)
     for token, tag in (("**", "b"), ("`", "tt")):
         parts = out.split(token)
-        if len(parts) >= 3:
+        if len(parts) >= MIN_WRAP_PARTS:
             rebuilt = parts[0]
             for i, part in enumerate(parts[1:], start=1):
                 rebuilt += (f"<{tag}>{part}</{tag}>" if i % 2 else part)

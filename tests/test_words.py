@@ -1,11 +1,14 @@
-# ruff: noqa: DTZ001 — the sidebar works in naive local time, as the session names do
+
 """The window's wording, worked out without a display."""
 from __future__ import annotations
 
+import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 
 from steno.gui import words
+from steno.gui.sidebar import Session
 
 NOW = datetime(2026, 9, 12, 16, 0)
 
@@ -92,3 +95,54 @@ class TestSummary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSearchLocate(unittest.TestCase):
+    """Issue 2: search says where it matched, not just that it did."""
+
+    def setUp(self):
+
+
+        self.root = Path(tempfile.mkdtemp())
+        self.dir = self.root / "20260927-100000"
+        self.dir.mkdir()
+        (self.dir / "transcript.jsonl").write_text(
+            '{"ts": 1, "speaker": "them", "text": "the budget is fine"}\n'
+            '{"ts": 2, "speaker": "you", "text": "we need the roadmap"}\n'
+        )
+        (self.dir / "transcript.txt").write_text(
+            "[00:01] them: the budget is fine\n"
+            "[00:02] you: we need the roadmap\n"
+        )
+        (self.dir / "summary.md").write_text("# Budget chat\n\nWe agreed.")
+        (self.dir / "meta.json").write_text('{"title": "Budget chat"}')
+        self.session = Session(self.dir)
+
+    def test_transcript_hit_names_the_line(self):
+        hit = self.session.locate("roadmap")
+        self.assertEqual(hit["where"], "transcript")
+        self.assertEqual(hit["line"], 1)
+
+    def test_summary_hit_is_labelled(self):
+        hit = self.session.locate("agreed")
+        self.assertEqual(hit["where"], "summary")
+
+    def test_notes_hit_is_labelled(self):
+        (self.dir / "notes.md").write_text("ask about the printer\n")
+        session = type(self.session)(self.dir)
+        self.assertEqual(session.locate("printer")["where"], "notes")
+
+    def test_title_hit(self):
+        self.assertEqual(self.session.locate("budget chat")["where"], "title")
+
+    def test_miss_returns_none(self):
+        self.assertIsNone(self.session.locate("quantum"))
+
+    def test_matches_delegates_to_locate(self):
+        self.assertTrue(self.session.matches("roadmap"))
+        self.assertFalse(self.session.matches("quantum"))
+        self.assertTrue(self.session.matches(""))
+
+    def test_all_words_must_match(self):
+        self.assertTrue(self.session.matches("budget fine"))
+        self.assertFalse(self.session.matches("budget quantum"))

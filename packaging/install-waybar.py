@@ -13,6 +13,7 @@ idempotent, with a timestamped backup of anything it touches.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ WAYBAR = Path.home() / ".config" / "waybar"
 CONFIG = WAYBAR / "config.jsonc"
 STYLE = WAYBAR / "style.css"
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "src"))
 
 BEGIN = "/* >>> steno >>> */"
 END = "/* <<< steno <<< */"
@@ -55,7 +57,7 @@ def module() -> str:
 
 def _icons() -> dict:
     sys.path.insert(0, str(HERE.parent / "src"))
-    from steno.state import ICONS
+    from steno.state import ICONS  # noqa: PLC0415  # sys.path first
 
     return ICONS
 
@@ -73,7 +75,8 @@ def add_module(text: str) -> str:
         return text
     match = re.search(r'"modules-right"\s*:\s*\[.*?\],\n', text, re.DOTALL)
     if match is None:
-        raise SystemExit("could not find a modules-right array in config.jsonc")
+        msg = "could not find a modules-right array in config.jsonc"
+        raise SystemExit(msg)
     at = match.end()
     return text[:at] + module() + text[at:]
 
@@ -84,7 +87,8 @@ def add_to_bar(text: str) -> str:
         return text
     match = re.search(r'("modules-right"\s*:\s*\[\n)(\s*)', text)
     if match is None:
-        raise SystemExit("could not find a modules-right array in config.jsonc")
+        msg = "could not find a modules-right array in config.jsonc"
+        raise SystemExit(msg)
     indent = match.group(2)
     return text[:match.end(1)] + f'{indent}"custom/steno",\n' + text[match.end(1):]
 
@@ -97,7 +101,7 @@ def remove_module(text: str) -> str:
 def css() -> str:
     """Style the indicator in the user's own palette, not in ours."""
     sys.path.insert(0, str(HERE.parent / "src"))
-    from steno.gui.style import palette
+    from steno.gui.style import palette  # noqa: PLC0415  # sys.path first
 
     c = palette()
     return f"""{BEGIN}
@@ -126,10 +130,8 @@ def splice_css(text: str, block: str | None) -> str:
 
 
 def reload_waybar() -> None:
-    try:
+    with contextlib.suppress(OSError):
         subprocess.run(["pkill", "-SIGUSR2", "waybar"], check=False)
-    except OSError:
-        pass
 
 
 def main() -> None:
@@ -139,7 +141,8 @@ def main() -> None:
     args = ap.parse_args()
 
     if not CONFIG.is_file() or not STYLE.is_file():
-        raise SystemExit(f"no waybar config at {WAYBAR}")
+        msg = f"no waybar config at {WAYBAR}"
+        raise SystemExit(msg)
 
     config_text = CONFIG.read_text()
     style_text = STYLE.read_text()
@@ -157,17 +160,13 @@ def main() -> None:
             continue
         changed.append(path)
         if args.dry_run:
-            print(f"--- would rewrite {path}")
             continue
-        print(f"backed up {backup(path).name}")
         path.write_text(new)
 
     if not changed:
-        print("waybar already up to date")
         return
     if not args.dry_run:
         reload_waybar()
-        print("waybar reloaded")
 
 
 if __name__ == "__main__":

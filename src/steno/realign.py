@@ -14,13 +14,14 @@ in fragments as it arrived, while this sees the whole conversation at once.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .playback import TRACKS, audio_duration, recorded_offset, track_path
+from .playback import TRACKS, audio_duration, recorded_offset, session_start, track_path
 from .session import write_transcripts
 from .summarize import load_records, transcript_path
 from .transcribe import transcribe_file
@@ -87,7 +88,8 @@ async def realign_session(session_dir: Path, started_at: float | None = None) ->
     what it replaced is a transcription that has to be taken on faith.
     """
     if not has_audio(session_dir):
-        raise FileNotFoundError(f"no audio in {session_dir}")
+        msg = f"no audio in {session_dir}"
+        raise FileNotFoundError(msg)
 
     anchor = started_at if started_at is not None else _anchor(session_dir)
     records: list[dict] = []
@@ -101,7 +103,8 @@ async def realign_session(session_dir: Path, started_at: float | None = None) ->
         records.extend(await transcribe_file(path, anchor, speaker))
 
     if not records:
-        raise ValueError(f"nothing transcribed from {session_dir}")
+        msg = f"nothing transcribed from {session_dir}"
+        raise ValueError(msg)
 
     records.sort(key=lambda r: r.get("offset", 0.0))
     _back_up(session_dir)
@@ -117,8 +120,6 @@ def _anchor(session_dir: Path) -> float:
     relative stamps; playback reads `offset`, which is what actually matters
     now.
     """
-    from .playback import session_start
-
     return session_start(session_dir, load_records(session_dir))
 
 
@@ -151,7 +152,5 @@ def _stamp(session_dir: Path, anchor: float, lines: int) -> None:
     })
     # It is no longer an inference: every line now carries a measured offset.
     meta.pop("started_at_derived", None)
-    try:
+    with contextlib.suppress(OSError):
         meta_path.write_text(json.dumps(meta, indent=2) + "\n")
-    except OSError:
-        pass

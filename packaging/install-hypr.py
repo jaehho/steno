@@ -48,7 +48,8 @@ def add(text: str) -> str:
             continue
         at = text.rfind("\n", 0, match.start()) + 1
         return text[:at] + line() + text[at:]
-    raise SystemExit("could not find the autostart block in hyprland.lua")
+    msg = "could not find the autostart block in hyprland.lua"
+    raise SystemExit(msg)
 
 
 def remove(text: str) -> str:
@@ -62,21 +63,18 @@ def main() -> None:
     args = ap.parse_args()
 
     if not CONFIG.is_file():
-        raise SystemExit(f"no hyprland config at {CONFIG}")
+        msg = f"no hyprland config at {CONFIG}"
+        raise SystemExit(msg)
     before = CONFIG.read_text()
     after = remove(before) if args.remove else add(before)
 
     if before == after:
-        print("hyprland.lua already up to date")
         return
     if args.dry_run:
-        print(f"--- would rewrite {CONFIG}")
         return
     copy = CONFIG.with_suffix(CONFIG.suffix + f".bak-{time.strftime('%Y%m%d-%H%M%S')}")
     shutil.copy2(CONFIG, copy)
     CONFIG.write_text(after)
-    print(f"backed up {copy.name}")
-    print("steno will start with the session from the next login")
 
 
 if __name__ == "__main__":

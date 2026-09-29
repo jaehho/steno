@@ -8,6 +8,7 @@ because the only honest fix for "did they really say that?" is to hear it.
 """
 from __future__ import annotations
 
+# ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 from collections.abc import Callable
 from pathlib import Path
 
@@ -234,6 +235,45 @@ class MeetingPage(Gtk.Box):
 
     # ------------------------------------------------------------------ loading
 
+    def _clear_hits(self) -> None:
+        for row in self._rows:
+            row.remove_css_class("line-hit")
+
+    def jump_to(self, query: str) -> None:
+        """Scroll the transcript to the first line a search matched.
+
+        Called when the meeting is opened *from* a search. Without this the
+        search finds the meeting and then abandons the reader at the top of
+        it, which is the difference between finding a meeting and finding a
+        moment.
+        """
+        if not query or not self._rows:
+            return
+        words = query.lower().split()
+        first = -1
+        for i, record in enumerate(self._records):
+            if all(w in str(record.get("text", "")).lower() for w in words):
+                if first < 0:
+                    first = i
+                self._rows[i].add_css_class("line-hit")
+        if first < 0:
+            return
+        row = self._rows[first]
+        # One idle pass: the rows have only just been added to the list box,
+        # and scrolling before they are allocated does nothing.
+        GLib.idle_add(self._scroll_to_row, row)
+
+    def _scroll_to_row(self, row: Gtk.ListBoxRow) -> bool:
+        self.transcript_list.select_row(row)
+        mark = self.transcript_list.get_adjustment()
+        if mark is None:
+            mark = self.transcript_list.get_parent().get_vadjustment()
+        if mark is not None:
+            y = row.get_allocation().y
+            mark.set_value(max(0, y - 48))
+        row.grab_focus()
+        return GLib.SOURCE_REMOVE
+
     def load(self, s: Session) -> None:
         if self.current is not None and self.current.dir != s.dir:
             self.stop_playback()
@@ -320,6 +360,7 @@ class MeetingPage(Gtk.Box):
             row = _transcript_row(record, self._started_at)
             self.transcript_list.append(row)
             self._rows.append(row)
+        self._clear_hits()
         if not self._records:
             self.transcript_list.append(hint_label("No transcript."))
         self._update_player(s)

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as _dt
+import json as _json
 import os
 import shutil
 import sys
@@ -17,17 +19,46 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import DEFAULT_MODEL, __version__, config_dir, data_dir, migrate_legacy
+from . import __version__, config_dir, data_dir, migrate_legacy, model_default
 from .brief import BRIEF_FILENAME, brief_age_days, estimate_tokens, load_brief
-from .detect import DEFAULT_ALLOW, END_GRACE_S, START_HOLD_S
+from .claude import check_ready
+from .control import activate, show
+from .detect import (
+    DEFAULT_ALLOW,
+    END_GRACE_S,
+    START_HOLD_S,
+    list_recording_streams,
+    qualifying,
+)
+from .echo import cancel_file
+from .export import meeting_markdown
+from .notes import ensure_todos, sync_todos
+from .playback import TRACKS, clean_path
+from .realign import format_plan, has_audio, plan, realign_session
+from .retention import audio_bytes, delete_session, human_bytes
+from .session import paused_until, set_pause
+from .state import bar_json, read_state
+from .summarize import (
+    has_summary,
+    iter_sessions,
+    load_title,
+    resolve_session,
+    summarize_session,
+)
 
 ENV_TEMPLATE = """\
-# steno config — required keys
+# steno config - required keys
 DEEPGRAM_API_KEY=
 
-# Summaries and questions run through headless Claude Code (`claude -p`) on its
-# own login; no Anthropic key is needed. Optional model override for both:
-# CLAUDE_MODEL=claude-sonnet-5
+# Model calls are one OpenAI-style chat-completions POST. Flip these whenever
+# the best model moves; nothing else needs touching.
+#   STENO_MODEL=mimo-v2.6-flash          (default)
+#   STENO_MODEL=mimo-v2.6-pro[1m]
+#   STENO_PROVIDER=mimo|openrouter       (default: mimo)
+#   STENO_BASE_URL=https://.../v1/chat/completions   (one-off endpoint override)
+# Key: STENO_API_KEY, else the provider's file below (same as `claude-open`).
+#   mimo       -> ~/.config/mimo.env       MIMO_API_KEY
+#   openrouter -> ~/.config/openrouter.env OPENROUTER_API_KEY
 
 # Optional. Where your projects live, for tying a meeting to its codebase.
 # STENO_PROJECTS_DIR=~/projects
@@ -62,7 +93,7 @@ def cmd_init(_args: argparse.Namespace) -> None:
 def cmd_gui(args: argparse.Namespace) -> None:
     load_dotenv(config_dir() / ".env")
     _preflight()
-    from .gui import run
+    from .gui import run  # noqa: PLC0415  # GTK is heavy; only gui needs it
 
     allow = None if args.any_app else (_split_csv(args.allow) or DEFAULT_ALLOW)
     sys.exit(run(
@@ -84,9 +115,6 @@ def cmd_bar(args: argparse.Namespace) -> None:
     starts instantly, needs no API keys, and prints a truthful `off` when the
     app is not running rather than the last thing it saw.
     """
-    import json as _json
-
-    from .state import bar_json, read_state
 
     last = None
     while True:
@@ -105,7 +133,6 @@ def cmd_bar(args: argparse.Namespace) -> None:
 
 def cmd_show(_args: argparse.Namespace) -> None:
     """Raise the window, starting the app if it isn't running."""
-    from .control import show
 
     if not show():
         print("could not start steno", file=sys.stderr)
@@ -114,7 +141,6 @@ def cmd_show(_args: argparse.Namespace) -> None:
 
 def cmd_toggle(_args: argparse.Namespace) -> None:
     """Start or stop recording in the running app."""
-    from .control import activate
 
     if not activate("toggle-record"):
         print("steno is not running", file=sys.stderr)
@@ -122,7 +148,6 @@ def cmd_toggle(_args: argparse.Namespace) -> None:
 
 
 def cmd_quit(_args: argparse.Namespace) -> None:
-    from .control import activate
 
     if not activate("quit"):
         print("steno is not running", file=sys.stderr)
@@ -130,7 +155,7 @@ def cmd_quit(_args: argparse.Namespace) -> None:
 
 
 def cmd_autostart(args: argparse.Namespace) -> None:
-    from . import autostart
+    from . import autostart  # noqa: PLC0415  # only the autostart subcommand needs it
 
     compositor = autostart.started_by_compositor()
     if args.state == "on":
@@ -148,13 +173,12 @@ def cmd_autostart(args: argparse.Namespace) -> None:
 
 def cmd_watch(args: argparse.Namespace) -> None:
     """Print mic-holding apps so you can tune --allow/--deny against real names."""
-    from .detect import list_recording_streams, qualifying
 
     allow = None if args.any_app else DEFAULT_ALLOW
 
     async def loop() -> None:
         seen: set[tuple] = set()
-        print("watching source-outputs — Ctrl+C to stop\n", flush=True)
+        print("watching source-outputs - Ctrl+C to stop\n", flush=True)
         while True:
             streams = await list_recording_streams()
             live = {s.index for s in qualifying(streams, allow)}
@@ -180,18 +204,14 @@ def cmd_watch(args: argparse.Namespace) -> None:
 
 
 def cmd_status(_args: argparse.Namespace) -> None:
-    import datetime as _dt
-
-    from .session import paused_until
 
     until = paused_until()
     if until is not None:
-        when = _dt.datetime.fromtimestamp(until).strftime("%H:%M:%S")  # noqa: DTZ006
+        when = _dt.datetime.fromtimestamp(until).strftime("%H:%M:%S")
         print(f"paused: until {when} ({(until - time.time()) / 60:.0f} min left)")
     else:
         print("paused: no")
     root = data_dir() / "sessions"
-    from .summarize import has_summary, iter_sessions
 
     sessions = iter_sessions(root)
     unsummarized = [s for s in sessions if not has_summary(s)]
@@ -203,9 +223,6 @@ def cmd_status(_args: argparse.Namespace) -> None:
 
 def cmd_pause(args: argparse.Namespace) -> None:
     """Pause detection, telling a running app so its bar and header catch up."""
-    from .control import activate
-    from .session import set_pause
-
     if args.off:
         set_pause(None)
         activate("unpause")
@@ -252,7 +269,7 @@ def _replace_line(text: str, previous: str) -> None:
     """Overwrite the progress line `previous` with `text`.
 
     A bare `\r` only moves the cursor, so a shorter replacement leaves the tail
-    of the longer line on screen — which is how a title once picked up the end
+    of the longer line on screen - which is how a title once picked up the end
     of the model name it was overwriting. Pad to cover it.
     """
     prefix = "\r" if previous else ""
@@ -263,17 +280,14 @@ def _summarize_one(
     session_dir: Path, model: str, brief: str | None, force: bool = True
 ) -> bool:
     """Summarize one session, reporting progress. Returns True if it wrote one."""
-    from .notes import sync_todos
-    from .summarize import has_summary, summarize_session
-
     if not force and has_summary(session_dir):
         print(f"  {session_dir.name}: already summarized (--force to redo)")
         return False
     progress = _progress_line(f"  {session_dir.name}: summarizing with {model}...")
     try:
         summary = asyncio.run(summarize_session(session_dir, model, brief))
-    except Exception as e:  # noqa: BLE001 — one bad session must not abort a batch
-        _replace_line(f"  {session_dir.name}: failed — {e}", progress)
+    except Exception as e:
+        _replace_line(f"  {session_dir.name}: failed - {e}", progress)
         return False
     todos = sync_todos(session_dir, summary.body)
     open_n = sum(1 for t in todos if not t.done)
@@ -286,14 +300,12 @@ def _summarize_one(
 
 def cmd_summarize(args: argparse.Namespace) -> None:
     load_dotenv(config_dir() / ".env")
-    from .claude import claude_path
 
-    if claude_path() is None:
-        print("`claude` is not on PATH. Install Claude Code and log in.", file=sys.stderr)
+    if err := check_ready():
+        print(f"{err} -- summaries run through the chat-completions endpoint.", file=sys.stderr)
         sys.exit(1)
-    from .summarize import iter_sessions, resolve_session
 
-    model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
+    model = model_default()
     brief = load_brief(_brief_path(args))
 
     if args.all:
@@ -322,9 +334,6 @@ def cmd_realign(args: argparse.Namespace) -> None:
     if not os.environ.get("DEEPGRAM_API_KEY"):
         print(f"Missing DEEPGRAM_API_KEY (see {config_dir() / '.env'})", file=sys.stderr)
         sys.exit(1)
-    from .realign import format_plan, has_audio, plan, realign_session
-    from .summarize import iter_sessions, resolve_session
-
     if args.all:
         targets = [s for s in iter_sessions(args.dir) if has_audio(s)]
     else:
@@ -352,8 +361,8 @@ def cmd_realign(args: argparse.Namespace) -> None:
         progress = _progress_line(f"  {job.name}: transcribing {job.minutes:.0f} min...")
         try:
             lines = asyncio.run(realign_session(job.session_dir))
-        except Exception as e:  # noqa: BLE001 — one bad session must not abort a batch
-            _replace_line(f"  {job.name}: failed — {e}", progress)
+        except Exception as e:
+            _replace_line(f"  {job.name}: failed - {e}", progress)
             continue
         _replace_line(f"  {job.name}: {lines} lines re-timed", progress)
 
@@ -372,9 +381,6 @@ def _confirm(prompt: str) -> bool:
 
 def cmd_delete(args: argparse.Namespace) -> None:
     """Move sessions to the trash."""
-    from .retention import audio_bytes, delete_session, human_bytes
-    from .summarize import load_title, resolve_session
-
     try:
         session_dir = resolve_session(args.session, args.dir)
     except FileNotFoundError as e:
@@ -382,7 +388,7 @@ def cmd_delete(args: argparse.Namespace) -> None:
         sys.exit(1)
     title = load_title(session_dir) or session_dir.name
     size = human_bytes(audio_bytes(session_dir))
-    if not args.yes and not _confirm(f"delete “{title}” ({size})? [y/N] "):
+    if not args.yes and not _confirm(f"delete '{title}' ({size})? [y/N] "):
         print("nothing done")
         return
     outcome, where = delete_session(session_dir, permanent=args.permanent)
@@ -403,10 +409,6 @@ def cmd_clean_echo(args: argparse.Namespace) -> None:
     Only worth running on a meeting held on speakers. On headphones the filter
     finds nothing to cancel, says so, and writes nothing.
     """
-    from .echo import cancel_file
-    from .playback import TRACKS, clean_path
-    from .summarize import iter_sessions, resolve_session
-
     if args.all:
         targets = list(iter_sessions(args.dir))
     else:
@@ -430,12 +432,12 @@ def cmd_clean_echo(args: argparse.Namespace) -> None:
         try:
             result = cancel_file(mic, ref, out, suppress=not args.no_suppress)
         except (OSError, ValueError, ImportError) as e:
-            _replace_line(f"  {session_dir.name}: failed — {e}", progress)
+            _replace_line(f"  {session_dir.name}: failed - {e}", progress)
             continue
         if not result.worthwhile:
             _replace_line(
                 f"  {session_dir.name}: nothing to cancel "
-                f"({result.erle_db:.1f} dB) — recorded on headphones",
+                f"({result.erle_db:.1f} dB) - recorded on headphones",
                 progress,
             )
             continue
@@ -450,9 +452,6 @@ def cmd_clean_echo(args: argparse.Namespace) -> None:
 
 def cmd_todos(args: argparse.Namespace) -> None:
     """Everything still open, newest meeting first."""
-    from .notes import ensure_todos
-    from .summarize import iter_sessions, load_title
-
     any_open = False
     for session_dir in iter_sessions(args.dir):
         todos = [t for t in ensure_todos(session_dir) if not t.done or args.all]
@@ -469,9 +468,6 @@ def cmd_todos(args: argparse.Namespace) -> None:
 
 def cmd_export(args: argparse.Namespace) -> None:
     """Print or save a meeting as markdown."""
-    from .export import meeting_markdown
-    from .summarize import resolve_session
-
     try:
         session_dir = resolve_session(args.session, args.dir)
     except FileNotFoundError as e:
@@ -526,11 +522,15 @@ def _brief_show(brief_path: Path) -> None:
 
 
 def _brief_new(brief_path: Path) -> None:
-    if not shutil.which("claude"):
+    # An interactive session, so it stays a claude process -- routed through
+    # the claude-open wrapper when it is on PATH, else the subscription.
+    local_bin = f"{Path.home() / '.local/bin'}:{os.environ.get('PATH', '')}"
+    binary = shutil.which("claude-open", path=local_bin) or shutil.which("claude")
+    if binary is None:
         print(
-            "claude CLI not found. Install Claude Code "
+            "neither claude-open nor claude found. Install Claude Code "
             "(https://docs.claude.com/claude-code) to use --new; "
-            "it uses your subscription, not the API.",
+            "claude-open runs it on z.ai or OpenRouter, plain claude on the subscription.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -541,16 +541,16 @@ def _brief_new(brief_path: Path) -> None:
 
         Keep it tight. The brief is sent to Claude on every advisor query and every
         summary, so every token has to earn its keep:
-        - Aim for 1–3k tokens total. Smaller is better when the meeting is narrow.
+        - Aim for 1-3k tokens total. Smaller is better when the meeting is narrow.
         - Distill, do not dump. Do NOT inline whole project files (CLAUDE.md, README,
           etc.). Pull out the specific facts, numbers, decisions, and gotchas.
         - Its main job in summaries is resolving names, jargon, and acronyms that
-          speech recognition will mangle — so include the proper nouns I say often.
+          speech recognition will mangle - so include the proper nouns I say often.
 
         A strong brief usually contains:
-        - Identity (1–2 sentences): who I am, role, current situation
-        - Context (1–2 sentences): what these meetings are, what I want from them
-        - Substance: the few load-bearing things — specific numbers, design choices,
+        - Identity (1-2 sentences): who I am, role, current situation
+        - Context (1-2 sentences): what these meetings are, what I want from them
+        - Substance: the few load-bearing things - specific numbers, design choices,
           named people and projects, planned next steps, process gotchas.
 
         Steps:
@@ -559,7 +559,7 @@ def _brief_new(brief_path: Path) -> None:
         3. Draft a tight, curated brief and write it to {brief_path}.
         4. If that file already exists, show me the diff before overwriting.
     """)
-    os.execvp("claude", ["claude", "--model", "opus", prompt])
+    os.execvp(binary, [binary, "--model", "opus", prompt])
 
 
 def _preflight() -> None:
@@ -581,10 +581,9 @@ def _preflight() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    from .claude import claude_path
 
-    if claude_path() is None:
-        print("`claude` is not on PATH. Install Claude Code and log in.", file=sys.stderr)
+    if err := check_ready():
+        print(f"{err} -- summaries and questions run through the chat-completions endpoint.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -620,7 +619,7 @@ def _add_detection_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand declared inline
     parser = argparse.ArgumentParser(
         prog="steno",
         description="Steno: listens, keeps up, and turns calls into notes.",

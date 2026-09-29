@@ -21,6 +21,8 @@ from pathlib import Path
 
 from .summarize import SUMMARY_FILENAME, iter_sessions, transcript_path
 
+BYTES_PER_KB = 1024
+
 AUDIO_FILES = ("you.wav", "them.wav", "you.clean.wav", "them.clean.wav")
 KEEP_DAYS_ENV = "STENO_KEEP_AUDIO_DAYS"
 
@@ -36,10 +38,8 @@ def keep_days() -> int:
 def audio_bytes(session_dir: Path) -> int:
     total = 0
     for name in AUDIO_FILES:
-        try:
+        with contextlib.suppress(OSError):
             total += (session_dir / name).stat().st_size
-        except OSError:
-            pass
     return total
 
 
@@ -79,10 +79,8 @@ def prune_audio(root: Path | None = None, days: int | None = None) -> list[Path]
             continue
         freed = audio_bytes(session_dir)
         for name in AUDIO_FILES:
-            try:
+            with contextlib.suppress(OSError):
                 (session_dir / name).unlink()
-            except OSError:
-                pass
         _mark_pruned(session_dir, freed)
         pruned.append(session_dir)
     return pruned
@@ -97,17 +95,15 @@ def _mark_pruned(session_dir: Path, freed: int) -> None:
         meta = {}
     meta["audio_pruned_at"] = time.time()
     meta["audio_freed_bytes"] = freed
-    try:
+    with contextlib.suppress(OSError):
         meta_path.write_text(json.dumps(meta, indent=2) + "\n")
-    except OSError:
-        pass
 
 
 def human_bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
+        if n < BYTES_PER_KB or unit == "GB":
             return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
-        n /= 1024  # type: ignore[assignment]
+        n /= BYTES_PER_KB  # type: ignore[assignment]
     return f"{n} B"
 
 
@@ -152,10 +148,10 @@ def move_to_trash(path: Path) -> Path | None:
         written.write_text(
             "[Trash Info]\n"
             f"Path={urllib.parse.quote(str(path.resolve()))}\n"
-            f"DeletionDate={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n"  # noqa: DTZ005
+            f"DeletionDate={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n"
         )
         destination = files / name
-        os.rename(path, destination)
+        path.rename(destination)
     except OSError:
         # Cross-filesystem, no permission, no space for the info file: whatever
         # the reason, leave nothing behind pointing at a file still in place.
@@ -192,9 +188,7 @@ def delete_audio(session_dir: Path) -> int:
     if not freed:
         return 0
     for name in AUDIO_FILES:
-        try:
+        with contextlib.suppress(OSError):
             (session_dir / name).unlink()
-        except OSError:
-            pass
     _mark_pruned(session_dir, freed)
     return freed

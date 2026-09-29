@@ -7,7 +7,9 @@ import os
 import wave
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlencode
 
+import httpx
 import websockets
 
 from .audio import CHUNK_BYTES, SAMPLE_RATE, spawn_parec, stop_parec
@@ -16,11 +18,38 @@ from .audio import CHUNK_BYTES, SAMPLE_RATE, spawn_parec, stop_parec
 # nobody speaks for ten seconds is a normal meeting.
 KEEPALIVE_S = 8.0
 
-DEEPGRAM_URL = (
-    "wss://api.deepgram.com/v1/listen"
-    f"?model=nova-3&encoding=linear16&sample_rate={SAMPLE_RATE}&channels=1"
-    "&smart_format=true&interim_results=true&endpointing=300"
-)
+# Deepgram's keyterm limit is generous; cap so a verbose brief cannot make the
+# request URL enormous. Plain terms only — a weight suffix is treated literally.
+MAX_KEYTERMS = 30
+
+
+def listen_url(keyterms: list[str] | None = None) -> str:
+    """The streaming endpoint, with the brief's proper nouns boosted.
+
+    `keyterm` is repeatable and takes plain terms; multi-word names go through
+    as one term, because splitting them is how "Jane Doe" arrives as "chain
+    dough". Plain terms only — Deepgram silently treats `term:0.15` as literal.
+    """
+    query = {
+        "model": "nova-3",
+        "encoding": "linear16",
+        "sample_rate": SAMPLE_RATE,
+        "channels": 1,
+        "smart_format": "true",
+        "interim_results": "true",
+        "endpointing": 300,
+    }
+    pairs = list(query.items())
+    # Far-side diarization: who among *them* said it. The near side is one
+    # person by construction and is not run through this socket.
+    pairs.append(("diarize_model", "latest"))
+    pairs.extend(
+        ("keyterm", term.strip())
+        for term in (keyterms or [])[:MAX_KEYTERMS]
+        if term.strip()
+    )
+    return "wss://api.deepgram.com/v1/listen?" + urlencode(pairs)
+
 
 @dataclass
 class Utterance:
@@ -31,25 +60,38 @@ class Utterance:
     # audio it has been sent, and the WAV is fed the same chunks, so this stays
     # true to the file even if the socket drops and reconnects mid-meeting.
     offset: float | None = None
+    # False for a display-only stream: the mic is batch-transcribed after the
+    # meeting, and that pass is the transcript. These lines exist so someone
+    # watching the window sees both sides as they talk, and must not be written
+    # beside the batch or the meeting ends up with every sentence twice.
+    persist: bool = True
+    # Diarized label among the far side ("speaker_0"), or "" when unknown.
+    who: str = ""
 
 
-async def stream_speaker(
+async def stream_speaker(  # noqa: PLR0913, PLR0917 - one capture pipeline config
     speaker: str,
     source: str,
     queue: asyncio.Queue[Utterance],
-    wav: wave.Wave_write,
+    wav: wave.Wave_write | None = None,
+    keyterms: list[str] | None = None,
+    persist: bool = True,
 ) -> None:
-    """Spawn parec on `source`, tee PCM into `wav` and Deepgram, push results to queue."""
+    """Spawn parec on `source`, tee PCM into `wav` (when given) and Deepgram.
+
+    With no `wav` this is display-only: the caller owns the file already and
+    only wants `Heard` events out of the socket.
+    """
     api_key = os.environ["DEEPGRAM_API_KEY"]
     parec = await spawn_parec(source)
     # A reconnect starts Deepgram's clock at zero again, but the WAV keeps
     # growing; everything it reports has to be measured from what is already
     # written or the second half of a meeting seeks to the first half.
-    base = _wav_seconds(wav)
+    base = _wav_seconds(wav) if wav is not None else 0.0
 
     try:
         async with websockets.connect(
-            DEEPGRAM_URL,
+            listen_url(keyterms),
             additional_headers={"Authorization": f"Token {api_key}"},
             max_size=None,
         ) as ws:
@@ -60,7 +102,8 @@ async def stream_speaker(
                     chunk = await parec.stdout.read(CHUNK_BYTES)
                     if not chunk:
                         return
-                    wav.writeframes(chunk)
+                    if wav is not None:
+                        wav.writeframes(chunk)
                     await ws.send(chunk)
 
             async def keepalive() -> None:
@@ -88,6 +131,8 @@ async def stream_speaker(
                         text=text,
                         final=bool(data.get("is_final")),
                         offset=(base + float(start)) if start is not None else None,
+                        persist=persist,
+                        who=_majority_speaker(alt.get("words") or []),
                     ))
             finally:
                 feeder.cancel()
@@ -96,8 +141,27 @@ async def stream_speaker(
         await stop_parec(parec)
 
 
-def _wav_seconds(wav: wave.Wave_write) -> float:
+def _majority_speaker(words: list[dict]) -> str:
+    """The diarized voice that owns most of the words in this fragment.
+
+    A fragment can straddle a turn; attributing it to whoever said most of it
+    is better than dropping the turn or inventing a split the model did not
+    give us. `speaker_0` style, matching Deepgram's numbering from 0.
+    """
+    votes: dict[int, int] = {}
+    for word in words:
+        spk = word.get("speaker")
+        if isinstance(spk, int):
+            votes[spk] = votes.get(spk, 0) + 1
+    if not votes:
+        return ""
+    return f"speaker_{max(votes, key=votes.get)}"
+
+
+def _wav_seconds(wav: wave.Wave_write | None) -> float:
     """How much audio is already in the file."""
+    if wav is None:
+        return 0.0
     try:
         return wav.tell() / SAMPLE_RATE
     except (OSError, AttributeError, ValueError):
@@ -108,7 +172,11 @@ PRERECORDED_URL = "https://api.deepgram.com/v1/listen"
 
 
 async def transcribe_file(
-    path: Path, started_at: float, speaker: str, timeout_s: float = 600.0
+    path: Path,
+    started_at: float,
+    speaker: str,
+    timeout_s: float = 600.0,
+    keyterms: list[str] | None = None,
 ) -> list[dict]:
     """Batch-transcribe a finished WAV into transcript records.
 
@@ -119,15 +187,18 @@ async def transcribe_file(
     when Deepgram finalized it, not when the speaker began — while `offset`
     keeps the exact position in the file, for playback.
     """
-    import httpx
-
     api_key = os.environ["DEEPGRAM_API_KEY"]
-    params = {
-        "model": "nova-3",
-        "smart_format": "true",
-        "utterances": "true",
-        "punctuate": "true",
-    }
+    params: list[tuple[str, str]] = [
+        ("model", "nova-3"),
+        ("smart_format", "true"),
+        ("utterances", "true"),
+        ("punctuate", "true"),
+    ]
+    params.extend(
+        ("keyterm", term.strip())
+        for term in (keyterms or [])[:MAX_KEYTERMS]
+        if term.strip()
+    )
     async with httpx.AsyncClient(timeout=timeout_s) as client:
         resp = await client.post(
             PRERECORDED_URL,
@@ -147,11 +218,16 @@ async def transcribe_file(
         text = (u.get("transcript") or "").strip()
         if not text:
             continue
-        records.append({
+        row = {
             "ts": started_at + float(u.get("end", 0.0)),
             "speaker": speaker,
             "text": text,
             # Exact, because the whole file was timed at once.
             "offset": float(u.get("start", 0.0)),
-        })
+        }
+        # Prerecorded diarization puts the number on the utterance itself.
+        spk = u.get("speaker")
+        if isinstance(spk, int):
+            row["who"] = f"speaker_{spk}"
+        records.append(row)
     return records

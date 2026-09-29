@@ -17,6 +17,9 @@ import json
 import wave
 from pathlib import Path
 
+SECONDS_PER_HOUR = 3600
+SECONDS_PER_MINUTE = 60
+
 # Conversational speech runs about 150 words a minute; 2.5/s is a fair middle.
 WORDS_PER_SECOND = 2.5
 MIN_UTTERANCE_S = 1.0
@@ -186,8 +189,8 @@ def display_offset(record: dict, started_at: float) -> int:
 
 def format_offset(seconds: float) -> str:
     total = max(0, int(seconds))
-    if total >= 3600:
-        return f"{total // 3600}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+    if total >= SECONDS_PER_HOUR:
+        return f"{total // SECONDS_PER_HOUR}:{(total % SECONDS_PER_HOUR) // SECONDS_PER_MINUTE:02d}:{total % 60:02d}"
     return f"{total // 60:02d}:{total % 60:02d}"
 
 

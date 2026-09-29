@@ -52,10 +52,10 @@ INTERFACE = """
 
 def _dbusmenu():
     try:
-        import gi
+        import gi  # noqa: PLC0415  # optional Dbusmenu tray; keep it lazy
 
         gi.require_version("Dbusmenu", "0.4")
-        from gi.repository import (
+        from gi.repository import (  # noqa: PLC0415  # optional Dbusmenu tray
             Dbusmenu,  # pyright: ignore[reportAttributeAccessIssue]
         )
     except (ImportError, ValueError):
@@ -79,16 +79,16 @@ class Tray:
 
     def start(self) -> bool:
         """Export and register. False if there is nothing to put a tray on."""
-        Dbusmenu = _dbusmenu()
+        dbusmenu = _dbusmenu()
         conn = self.app.get_dbus_connection()
-        if Dbusmenu is None or conn is None:
+        if dbusmenu is None or conn is None:
             return False
         self.conn = conn
         info = Gio.DBusNodeInfo.new_for_xml(INTERFACE).interfaces[0]
         self._registration = conn.register_object(
             ITEM_PATH, info, self._on_call, self._on_get, None
         )
-        self._build_menu(Dbusmenu)
+        self._build_menu(dbusmenu)
         # The spec's well-known name, so a host that restarts can find us again.
         name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
         self._name_id = Gio.bus_own_name_on_connection(
@@ -167,31 +167,31 @@ class Tray:
 
     # ------------------------------------------------------------------- menu
 
-    def _build_menu(self, Dbusmenu) -> None:
+    def _build_menu(self, dbusmenu) -> None:
         def item(key: str, label: str = "", action: str | None = None, param=None):
-            node = Dbusmenu.Menuitem.new()
+            node = dbusmenu.Menuitem.new()
             if label:
-                node.property_set(Dbusmenu.MENUITEM_PROP_LABEL, label)
+                node.property_set(dbusmenu.MENUITEM_PROP_LABEL, label)
             else:
-                node.property_set(Dbusmenu.MENUITEM_PROP_TYPE, "separator")
+                node.property_set(dbusmenu.MENUITEM_PROP_TYPE, "separator")
             if action is not None:
                 node.connect(
-                    Dbusmenu.MENUITEM_SIGNAL_ITEM_ACTIVATED,
+                    dbusmenu.MENUITEM_SIGNAL_ITEM_ACTIVATED,
                     lambda *_a: self._activate(action, param),
                 )
             self._items[key] = node
             return node
 
-        root = Dbusmenu.Menuitem.new()
+        root = dbusmenu.Menuitem.new()
         status = item("status", self.view["tooltip"])
-        status.property_set_bool(Dbusmenu.MENUITEM_PROP_ENABLED, False)
+        status.property_set_bool(dbusmenu.MENUITEM_PROP_ENABLED, False)
         root.child_append(status)
         root.child_append(item("sep1"))
         root.child_append(item("show", "Open Steno", "show"))
         root.child_append(item("record", "Start recording", "toggle-record"))
         pause = item("pause", "Pause listening")
         pause.property_set(
-            Dbusmenu.MENUITEM_PROP_CHILD_DISPLAY, Dbusmenu.MENUITEM_CHILD_DISPLAY_SUBMENU
+            dbusmenu.MENUITEM_PROP_CHILD_DISPLAY, dbusmenu.MENUITEM_CHILD_DISPLAY_SUBMENU
         )
         for minutes, label in PAUSE_CHOICES:
             pause.child_append(
@@ -202,22 +202,22 @@ class Tray:
         root.child_append(item("sep2"))
         root.child_append(item("quit", "Quit, stop listening", "quit"))
 
-        self._dbusmenu = Dbusmenu
-        self._server = Dbusmenu.Server.new(MENU_PATH)
+        self._dbusmenu = dbusmenu
+        self._server = dbusmenu.Server.new(MENU_PATH)
         self._server.set_root(root)
         self._sync_menu()
 
     def _sync_menu(self) -> None:
         if self._server is None:
             return
-        Dbusmenu, view, items = self._dbusmenu, self.view, self._items
-        items["status"].property_set(Dbusmenu.MENUITEM_PROP_LABEL, view["tooltip"])
-        items["record"].property_set(Dbusmenu.MENUITEM_PROP_LABEL, view["record_label"])
+        dbusmenu, view, items = self._dbusmenu, self.view, self._items
+        items["status"].property_set(dbusmenu.MENUITEM_PROP_LABEL, view["tooltip"])
+        items["record"].property_set(dbusmenu.MENUITEM_PROP_LABEL, view["record_label"])
         items["record"].property_set_bool(
-            Dbusmenu.MENUITEM_PROP_ENABLED, view["can_record"]
+            dbusmenu.MENUITEM_PROP_ENABLED, view["can_record"]
         )
-        items["pause"].property_set_bool(Dbusmenu.MENUITEM_PROP_VISIBLE, not view["paused"])
-        items["unpause"].property_set_bool(Dbusmenu.MENUITEM_PROP_VISIBLE, view["paused"])
+        items["pause"].property_set_bool(dbusmenu.MENUITEM_PROP_VISIBLE, not view["paused"])
+        items["unpause"].property_set_bool(dbusmenu.MENUITEM_PROP_VISIBLE, view["paused"])
 
     def _activate(self, action: str, param: GLib.Variant | None) -> None:
         # Quitting mid-meeting has to ask, and the question lives in the window.

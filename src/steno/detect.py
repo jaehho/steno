@@ -157,7 +157,7 @@ async def _subscribe_wakeups(queue: asyncio.Queue[None]) -> None:
                         queue.put_nowait(None)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — the poll fallback keeps us correct
+        except Exception:
             await asyncio.sleep(2)
         finally:
             if proc is not None and proc.returncode is None:
@@ -166,7 +166,7 @@ async def _subscribe_wakeups(queue: asyncio.Queue[None]) -> None:
                     await asyncio.wait_for(proc.wait(), timeout=2)
 
 
-async def watch_meetings(
+async def watch_meetings(  # noqa: PLR0913, PLR0917 - the detector's full config surface
     allow: tuple[str, ...] | None = DEFAULT_ALLOW,
     deny: tuple[str, ...] = (),
     start_hold_s: float = START_HOLD_S,
@@ -222,10 +222,8 @@ async def watch_meetings(
                 timeout = min(timeout, max(0.2, start_hold_s - (now - present_since)))
             elif absent_since is not None and in_meeting:
                 timeout = min(timeout, max(0.2, end_grace_s - (now - absent_since)))
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(queue.get(), timeout=timeout)
-            except TimeoutError:
-                pass
     finally:
         waker.cancel()
         with contextlib.suppress(asyncio.CancelledError):

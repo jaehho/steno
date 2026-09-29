@@ -27,6 +27,11 @@ from pathlib import Path
 
 from .playback import clean_path
 
+ERLE_WORTHWHILE_DB = 3.0  # below this the canceller found nothing
+MIN_RMS = 1e-4  # silence floor for the reference channel
+MIN_BLOCKS = 2  # need at least two blocks to estimate a filter
+SAMPLE_WIDTH_16BIT = 2  # bytes per sample in the WAV files we read
+
 # --------------------------------------------------------------------- offline
 
 # 64 ms blocks at 16 kHz. Long enough that an hour of audio is tens of thousands
@@ -68,22 +73,23 @@ class Cancellation:
         Below a few dB the filter found nothing to cancel, which is the normal
         and happy outcome for a meeting recorded on headphones.
         """
-        return self.erle_db >= 3.0
+        return self.erle_db >= ERLE_WORTHWHILE_DB
 
 
 def _read(path: Path):
-    import numpy as np
+    import numpy as np  # noqa: PLC0415  # optional extra (clean-echo only)
 
     with wave.open(str(path)) as handle:
-        if handle.getsampwidth() != 2 or handle.getnchannels() != 1:
-            raise ValueError(f"{path.name}: expected 16-bit mono")
+        if handle.getsampwidth() != SAMPLE_WIDTH_16BIT or handle.getnchannels() != 1:
+            msg = f"{path.name}: expected 16-bit mono"
+            raise ValueError(msg)
         rate = handle.getframerate()
         raw = handle.readframes(handle.getnframes())
     return np.frombuffer(raw, dtype="<i2").astype("float32") / 32768.0, rate
 
 
 def _write(path: Path, samples, rate: int) -> None:
-    import numpy as np
+    import numpy as np  # noqa: PLC0415  # optional extra (clean-echo only)
 
     clipped = np.clip(samples, -1.0, 1.0)
     with wave.open(str(path), "wb") as handle:
@@ -102,7 +108,7 @@ def estimate_delay(mic, ref, rate: int, max_delay_s: float = MAX_DELAY_S) -> int
     and taken as a median, because any single window can land on a stretch where
     only one side is talking and correlate with noise.
     """
-    import numpy as np
+    import numpy as np  # noqa: PLC0415  # optional extra (clean-echo only)
 
     limit = int(max_delay_s * rate)
     usable = min(len(mic), len(ref))
@@ -118,12 +124,12 @@ def estimate_delay(mic, ref, rate: int, max_delay_s: float = MAX_DELAY_S) -> int
         b = ref[start:start + window]
         if len(a) < window or len(b) < window:
             continue
-        if float(np.sqrt(np.mean(b * b))) < 1e-4:
+        if float(np.sqrt(np.mean(b * b))) < MIN_RMS:
             continue  # nothing playing: nothing to align to
         size = 1 << (2 * window - 1).bit_length()
-        A = np.fft.rfft(a, size)
-        B = np.fft.rfft(b, size)
-        cross = A * np.conj(B)
+        a_fft = np.fft.rfft(a, size)
+        b_fft = np.fft.rfft(b, size)
+        cross = a_fft * np.conj(b_fft)
         cross /= np.abs(cross) + 1e-12
         corr = np.fft.irfft(cross, size)
         # Only lags within the plausible range, both signs: which of the two
@@ -138,7 +144,7 @@ def estimate_delay(mic, ref, rate: int, max_delay_s: float = MAX_DELAY_S) -> int
     return int(np.median(votes))
 
 
-def cancel(mic, ref, rate: int, delay: int, suppress: bool = True):
+def cancel(mic, ref, _rate: int, delay: int, suppress: bool = True):
     """Subtract the reference from the microphone. Returns (cleaned, ERLE dB).
 
     A partitioned frequency-domain adaptive filter — the standard multi-delay
@@ -154,7 +160,7 @@ def cancel(mic, ref, rate: int, delay: int, suppress: bool = True):
     wrong on a long one. Blocks where nothing was playing are skipped, since
     they have nothing to teach.
     """
-    import numpy as np
+    import numpy as np  # noqa: PLC0415  # optional extra (clean-echo only)
 
     n = BLOCK
     bins = n + 1
@@ -162,7 +168,7 @@ def cancel(mic, ref, rate: int, delay: int, suppress: bool = True):
     aligned = align(ref, delay, len(mic))
     blocks = len(mic) // n
     out = np.array(mic, dtype="float32", copy=True)
-    if blocks < 2:
+    if blocks < MIN_BLOCKS:
         return out, 0.0
     estimated = np.zeros_like(out)
 
@@ -219,7 +225,7 @@ def align(ref, delay: int, length: int):
     every offset in the transcript is measured against, so its length is not
     ours to change.
     """
-    import numpy as np
+    import numpy as np  # noqa: PLC0415  # optional extra (clean-echo only)
 
     if delay > 0:
         ref = np.concatenate([np.zeros(delay, dtype="float32"), ref])
@@ -245,7 +251,7 @@ def suppress_residual(residual, estimate):
     actually there, the gain stays near one, and your voice comes through — 0.6
     dB of it goes, against 3.4 dB of theirs.
     """
-    import numpy as np
+    import numpy as np  # noqa: PLC0415  # optional extra (clean-echo only)
 
     frame = SUPPRESS_FRAME
     hop = frame // 2
@@ -289,7 +295,8 @@ def cancel_file(
     mic, rate = _read(mic_path)
     ref, ref_rate = _read(ref_path)
     if ref_rate != rate:
-        raise ValueError("tracks were recorded at different sample rates")
+        msg = "tracks were recorded at different sample rates"
+        raise ValueError(msg)
     delay = estimate_delay(mic, ref, rate)
     cleaned, erle = cancel(mic, ref, rate, delay, suppress=suppress)
     result = Cancellation(delay / rate, erle, len(mic) / rate if rate else 0.0)

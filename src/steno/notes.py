@@ -18,6 +18,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import asstlink
+
 NOTES_FILENAME = "notes.md"
 TODOS_FILENAME = "todos.json"
 
@@ -34,6 +36,9 @@ class Todo:
     owner: str = "unassigned"
     done: bool = False
     done_at: float | None = None
+    # asst's short id, once the item has been filed there. Empty means it lives
+    # only in this file — either asst is not installed, or the item is theirs.
+    uid: str = ""
 
     @property
     def key(self) -> str:
@@ -108,16 +113,16 @@ def load_todos(session_dir: Path) -> list[Todo]:
         raw = json.loads(todos_path(session_dir).read_text())
     except (OSError, json.JSONDecodeError):
         return []
-    out = []
-    for row in raw if isinstance(raw, list) else []:
-        if isinstance(row, dict) and row.get("text"):
-            out.append(Todo(
-                text=str(row["text"]),
-                owner=str(row.get("owner", "unassigned")),
-                done=bool(row.get("done", False)),
-                done_at=row.get("done_at"),
-            ))
-    return out
+    return [
+        Todo(
+            text=str(row["text"]),
+            owner=str(row.get("owner", "unassigned")),
+            done=bool(row.get("done", False)),
+            done_at=row.get("done_at"),
+            uid=str(row.get("uid", "") or ""),
+        )
+        for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
+    ]
 
 
 def save_todos(session_dir: Path, todos: list[Todo]) -> None:
@@ -142,10 +147,12 @@ def sync_todos(session_dir: Path, summary_body: str) -> list[Todo]:
         if prior is not None:
             fresh.done = prior.done
             fresh.done_at = prior.done_at
+            fresh.uid = prior.uid
         merged.append(fresh)
         seen.add(fresh.key)
     merged.extend(t for key, t in existing.items() if key not in seen and t.done)
     save_todos(session_dir, merged)
+    file_with_asst(session_dir, merged)
     return merged
 
 
@@ -155,7 +162,31 @@ def set_done(session_dir: Path, key: str, done: bool) -> list[Todo]:
         if t.key == key:
             t.done = done
             t.done_at = time.time() if done else None
+            if t.uid:
+                asstlink.set_done(t.uid, done)
     save_todos(session_dir, todos)
+    return todos
+
+
+def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
+    """Push your own unfiled action items to asst, keeping the returned ids.
+
+    Only `owner == "you"` goes across: what someone else promised is not a
+    task on the user's phone. Idempotent via `--source`, so a re-summarize
+    files nothing twice and keeps the uid it already had.
+    """
+    if not asstlink.available():
+        return todos
+    changed = False
+    for t in todos:
+        if t.owner != "you" or t.uid:
+            continue
+        uid = asstlink.add_todo(session_dir, t.text, t.key)
+        if uid:
+            t.uid = uid
+            changed = True
+    if changed:
+        save_todos(session_dir, todos)
     return todos
 
 

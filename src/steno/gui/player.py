@@ -22,12 +22,15 @@ play, so the window costs nothing to open for someone who never presses it.
 """
 from __future__ import annotations
 
+# ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gst", "1.0")
+
+import contextlib
 
 from gi.repository import GLib, Gst
 
@@ -37,7 +40,7 @@ _initialized = False
 
 
 def _ensure_gst() -> bool:
-    global _initialized
+    global _initialized  # noqa: PLW0603  # one-shot Gst init flag at module scope
     if not _initialized:
         try:
             # Names the PulseAudio stream. Without it the stream is called
@@ -47,7 +50,7 @@ def _ensure_gst() -> bool:
             GLib.set_prgname("steno")
             Gst.init(None)
             _initialized = True
-        except Exception:  # noqa: BLE001 — no GStreamer: playback is off, not fatal
+        except Exception:
             return False
     return True
 
@@ -206,7 +209,7 @@ class Player:
         self.tracks = dict(tracks)
         self._duration = 0.0
         self._pending_seek = 0.0
-        self.set_levels(self._levels or {name: 1.0 for name in tracks})
+        self.set_levels(self._levels or dict.fromkeys(tracks, 1.0))
 
     def _unmute(self) -> None:
         """Play at full volume, every time.
@@ -221,10 +224,8 @@ class Player:
         if self._sink is None:
             return
         for prop, value in (("mute", False), ("volume", 1.0)):
-            try:
+            with contextlib.suppress(TypeError, AttributeError):
                 self._sink.set_property(prop, value)
-            except (TypeError, AttributeError):
-                pass
 
     def _seek(self, seconds: float) -> None:
         pipeline = self._pipeline
@@ -299,7 +300,6 @@ class Player:
         self._tick()
 
     def _on_error(self, _bus, msg) -> None:
-        error, _debug = msg.parse_error()
-        print(f"[steno] playback: {error.message}", flush=True)
+        _error, _debug = msg.parse_error()
         self.stop()
         self._tick()

@@ -17,7 +17,7 @@ OBJECT_PATH = "/" + APP_ID.replace(".", "/")
 
 
 def _bus():
-    from gi.repository import Gio
+    from gi.repository import Gio  # noqa: PLC0415  # gi loads a display; keep it lazy
 
     return Gio.bus_get_sync(Gio.BusType.SESSION, None)
 
@@ -25,7 +25,10 @@ def _bus():
 def is_running() -> bool:
     """Does an app own our name on the session bus?"""
     try:
-        from gi.repository import Gio, GLib
+        from gi.repository import (  # noqa: PLC0415  # gi loads a display; keep it lazy
+            Gio,
+            GLib,
+        )
 
         bus = _bus()
         reply = bus.call_sync(
@@ -34,7 +37,7 @@ def is_running() -> bool:
             GLib.VariantType.new("(b)"), Gio.DBusCallFlags.NONE, 1000, None,
         )
         return bool(reply.unpack()[0])
-    except Exception:  # noqa: BLE001 — no bus, no app; the caller decides
+    except Exception:
         return False
 
 
@@ -43,7 +46,10 @@ def activate(action: str, args: list | None = None) -> bool:
     if not is_running():
         return False
     try:
-        from gi.repository import Gio, GLib
+        from gi.repository import (  # noqa: PLC0415  # gi loads a display; keep it lazy
+            Gio,
+            GLib,
+        )
 
         bus = _bus()
         params = [GLib.Variant("i", a) if isinstance(a, int) else GLib.Variant("s", a)
@@ -53,9 +59,10 @@ def activate(action: str, args: list | None = None) -> bool:
             GLib.Variant("(sava{sv})", (action, params, {})),
             None, Gio.DBusCallFlags.NONE, 2000, None,
         )
-        return True
-    except Exception:  # noqa: BLE001 — a failed click must never take down a bar
+    except Exception:
         return False
+    else:
+        return True
 
 
 def launch(background: bool = False) -> bool:
@@ -74,9 +81,10 @@ def launch(background: bool = False) -> bool:
             start_new_session=True,
             env=os.environ.copy(),
         )
-        return True
     except OSError:
         return False
+    else:
+        return True
 
 
 def show() -> bool:

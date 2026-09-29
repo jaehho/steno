@@ -1,16 +1,17 @@
 """The window: a list of meetings, and the meeting you picked.
 
-Nothing here decides anything about a meeting — it routes engine events into
+Nothing here decides anything about a meeting - it routes engine events into
 widgets and user gestures back into the engine, which the *app* owns. The window
 is closable, disposable, and often absent; closing it stops nothing.
 
 It is one `Adw.NavigationSplitView` whose shape follows the window's: a sidebar
 and a two-column meeting page when wide, the same page stacked into one column
 when narrower, and the list and the meeting as two pages you move between when
-the window is narrow — the tall one parked beside a call.
+the window is narrow - the tall one parked beside a call.
 """
 from __future__ import annotations
 
+# ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 import time
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +58,7 @@ SHORTCUTS = (
     ("Ctrl+G", "Ask about this meeting"),
     ("Ctrl+R", "Start or stop recording"),
     ("Ctrl+Space", "Play or pause a past meeting"),
-    ("Ctrl+ + / −", "Live transcript size"),
+    ("Ctrl+ + / -", "Live transcript size"),
     ("Ctrl+W", "Close the window (keeps listening)"),
     ("Ctrl+Q", "Quit (stops listening)"),
 )
@@ -82,8 +83,8 @@ class Window(Adw.ApplicationWindow):
         self.meeting = MeetingPage(
             on_ask=self._ask_past,
             on_realign=self._realign,
-            on_deleted=lambda d: self.sidebar.forget(d),
-            on_todos_changed=lambda s: self.sidebar.update_todo_counts(s),
+            on_deleted=self.sidebar.forget,
+            on_todos_changed=self.sidebar.update_todo_counts,
             on_toast=self._toast,
         )
         self.insert_action_group("meeting", self.meeting.actions)
@@ -165,11 +166,11 @@ class Window(Adw.ApplicationWindow):
 
         menu = Gio.Menu()
         menu.append("Copy this meeting", "meeting.copy")
-        menu.append("Save this meeting…", "meeting.save")
-        menu.append("Re-time against the audio…", "meeting.realign")
+        menu.append("Save this meeting...", "meeting.save")
+        menu.append("Re-time against the audio...", "meeting.realign")
         danger = Gio.Menu()
-        danger.append("Delete the audio, keep the text…", "meeting.delete-audio")
-        danger.append("Delete this meeting…", "meeting.delete")
+        danger.append("Delete the audio, keep the text...", "meeting.delete-audio")
+        danger.append("Delete this meeting...", "meeting.delete")
         menu.append_section(None, danger)
         self.meeting_menu = Gtk.MenuButton()
         self.meeting_menu.set_icon_name("view-more-symbolic")
@@ -256,6 +257,10 @@ class Window(Adw.ApplicationWindow):
     def _on_select(self, item) -> None:
         if isinstance(item, Session):
             self.meeting.load(item)
+            # Opened from a search: land on the sentence, not the top.
+            query = self.sidebar.query
+            if query:
+                self.meeting.jump_to(query)
             self.stack.set_visible_child_name("meeting")
         elif item == LIVE:
             self.stack.set_visible_child_name("live")
@@ -271,7 +276,7 @@ class Window(Adw.ApplicationWindow):
             subtitle = words.page_subtitle(item.start, item.minutes, item.project)
         elif item == LIVE:
             title = "Meeting in progress"
-            started = datetime.fromtimestamp(self._live_started)  # noqa: DTZ006
+            started = datetime.fromtimestamp(self._live_started)
             parts = [f"Started {started:%H:%M}", self._live_app]
             if not collapsed:
                 parts.append("the summary and to-dos arrive when it ends")
@@ -359,7 +364,7 @@ class Window(Adw.ApplicationWindow):
             self._update_header()
 
     def show_session(self, session_dir: Path | None) -> None:
-        """Open one meeting — where a summary notification lands."""
+        """Open one meeting - where a summary notification lands."""
         self.sidebar.refresh(select=session_dir)
         self.split.set_show_content(True)
 
@@ -384,7 +389,7 @@ class Window(Adw.ApplicationWindow):
             return
         if self._asker is not None and self._asker is not asker:
             # One question at a time: the engine drops a second one, and a box
-            # left saying "Thinking…" forever reads as a hang.
+            # left saying "Thinking..." forever reads as a hang.
             asker.done("Still answering the question asked elsewhere; ask again in a moment.")
             return
         self._asker = asker
@@ -412,7 +417,7 @@ class Window(Adw.ApplicationWindow):
         if bridge is None:
             done(session_dir, 0, "engine is not running")
             return
-        from ..realign import realign_session
+        from ..realign import realign_session  # noqa: PLC0415  # only when re-timing
 
         future = bridge.submit(realign_session(session_dir))
         if future is None:
@@ -422,7 +427,7 @@ class Window(Adw.ApplicationWindow):
         def finished(f) -> None:
             try:
                 lines, error = f.result(), ""
-            except Exception as e:  # noqa: BLE001 — report it, never take the window down
+            except Exception as e:
                 lines, error = 0, str(e)
             GLib.idle_add(done, session_dir, lines, error)
 
@@ -435,7 +440,6 @@ class Window(Adw.ApplicationWindow):
     def _toast(self, text: str, open_session: Path | None = None) -> None:
         # Never steal focus or animate during a meeting; a toast is the loudest
         # this window is allowed to be while someone is talking.
-        print(f"[steno] {text}", flush=True)
         toast = Adw.Toast.new(text)
         toast.set_timeout(5)
         if open_session is not None:
@@ -465,6 +469,7 @@ class Window(Adw.ApplicationWindow):
         self.meeting.flush_notes()
         self.meeting.stop_playback()
         self.set_visible(False)
+        self.app._set_audience(False)
         self.app.note_still_listening()
         return True
 
@@ -477,7 +482,7 @@ class Window(Adw.ApplicationWindow):
                 "Quitting will end the recording, transcribe your side, and write "
                 "the summary. That takes a few seconds.\n\n"
                 "To put the window away without stopping anything, close it "
-                "instead — Steno keeps listening."
+                "instead - Steno keeps listening."
             ),
         )
         dialog.add_response("cancel", "Keep recording")

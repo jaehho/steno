@@ -12,12 +12,16 @@ and to debug than a protocol. No GUI or engine import, so it is testable and the
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
 from pathlib import Path
 
 from . import runtime_dir
+
+SECONDS_PER_MINUTE = 60
+SECONDS_PER_HOUR = 3600
 
 STATE_FILENAME = "state.json"
 
@@ -86,10 +90,8 @@ def clear_state() -> None:
         return
     if isinstance(raw, dict) and int(raw.get("pid", 0)) != os.getpid():
         return
-    try:
+    with contextlib.suppress(OSError):
         state_path().unlink()
-    except OSError:
-        pass
 
 
 def _alive(pid: int) -> bool:
@@ -122,10 +124,10 @@ def read_state() -> dict:
 
 def _elapsed(since: float, now: float) -> str:
     seconds = max(0, int(now - since))
-    if seconds < 60:
+    if seconds < SECONDS_PER_MINUTE:
         return f"{seconds}s"
-    if seconds < 3600:
-        return f"{seconds // 60}m"
+    if seconds < SECONDS_PER_HOUR:
+        return f"{seconds // SECONDS_PER_MINUTE}m"
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}"
 
 

@@ -7,7 +7,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claude
+from . import claude, data_dir
+from .cost import prerecorded_cost, stream_cost
+from .redact import redact_text
+from .speakers import label as speaker_label
+from .speakers import learn_from
+
+MIN_RECORDS_FOR_DURATION = 2  # first and last timestamps
 
 SUMMARY_FILENAME = "summary.md"
 META_FILENAME = "meta.json"
@@ -54,8 +60,8 @@ Each is a directory under {root}:
 {listing}
 
 If the meeting is clearly about one of these, set `project` to its directory \
-name. You may then read that directory with Read, Grep and Glob: its CLAUDE.md, \
-README and TODO.md, and whatever files, modules, or components the conversation \
+name. You may then read that directory with list_dir, read_file and grep: its \
+CLAUDE.md, README and TODO.md, and whatever files, modules, or components the \
 names. Use it for two things only: to spell correctly what the speech \
 recognition mangled, and to name the file or module an action item touches. \
 Every statement in the summary must still be something said in the meeting. A \
@@ -105,8 +111,8 @@ def _describe(project: Path, width: int = 140) -> str:
             lines = (project / name).read_text(errors="replace").splitlines()
         except OSError:
             continue
-        for line in lines:
-            line = line.strip()
+        for raw_line in lines:
+            line = raw_line.strip()
             if line and not line.startswith(("#", "[!", "![", "<", "@", "```", "---")):
                 return line if len(line) <= width else line[: width - 1] + "…"
     return ""
@@ -128,8 +134,8 @@ def load_records(session_dir: Path) -> list[dict]:
     if not path.is_file():
         return []
     records = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
         if not line:
             continue
         try:
@@ -140,16 +146,28 @@ def load_records(session_dir: Path) -> list[dict]:
     return records
 
 
-def format_for_model(records: list[dict]) -> str:
-    """Render as `[mm:ss] speaker: text`, relative to session start."""
+def format_for_model(
+    records: list[dict], redact: bool = True, names: dict[str, str] | None = None
+) -> str:
+    """Render as `[mm:ss] speaker: text`, relative to session start.
+
+    PII is scrubbed here, on the way out to a model. The transcript on disk is
+    never touched; only this rendering is. `names` maps diarized voices to the
+    people they turned out to be, so the summary can say who promised what.
+    """
     if not records:
         return ""
+    names = names or {}
     t0 = records[0].get("ts", 0.0)
     lines = []
     for r in records:
         offset = int(r.get("ts", t0) - t0)
         stamp = f"{offset // 60:02d}:{offset % 60:02d}"
-        lines.append(f"[{stamp}] {r.get('speaker', '?')}: {r.get('text', '')}")
+        text = r.get("text", "")
+        if redact:
+            text = redact_text(str(text))
+        who = speaker_label(r, names) if names else r.get("speaker", "?")
+        lines.append(f"[{stamp}] {who}: {text}")
     return "\n".join(lines)
 
 
@@ -162,8 +180,20 @@ def parse_summary(text: str) -> Summary:
     return Summary(title="Untitled meeting", body=body)
 
 
+def has_body(text: str) -> bool:
+    """False when all that came back is a title (or nothing at all).
+
+    A flash model sometimes stops after `# Title`. That is a failed summary, not
+    a short one: the page strips the title and would show an empty body.
+    """
+    lines = text.strip().splitlines()
+    if lines and lines[0].startswith("# "):
+        lines = lines[1:]
+    return any(line.strip() for line in lines)
+
+
 def duration_minutes(records: list[dict]) -> float:
-    if len(records) < 2:
+    if len(records) < MIN_RECORDS_FOR_DURATION:
         return 0.0
     return (records[-1].get("ts", 0.0) - records[0].get("ts", 0.0)) / 60.0
 
@@ -177,7 +207,11 @@ async def summarize_session(
     """Summarize one session and write summary.md + meta.json. Raises on failure."""
     records = load_records(session_dir)
     if not records:
-        raise ValueError(f"no transcript in {session_dir}")
+        msg = f"no transcript in {session_dir}"
+        raise ValueError(msg)
+    # Names before the model sees the lines: "Alice will send it" is the whole
+    # point of diarizing the far side.
+    names = learn_from(session_dir, records)
 
     root = projects or projects_root()
     known = list_projects(root)
@@ -191,20 +225,24 @@ async def summarize_session(
     if known:
         system += "\n\n" + projects_prompt(root, known)
 
-    out = await claude.run_structured(
-        format_for_model(records),
-        system=system,
-        model=model,
-        schema=SCHEMA,
-        read_root=root if known else None,
-    )
-    summary = parse_summary(str(out.get("summary", "")))
-    project = out.get("project")
-    summary.project = project if project in known else None
-
-    (session_dir / SUMMARY_FILENAME).write_text(summary.body + "\n")
-    write_meta(session_dir, summary, records, model)
-    return summary
+    # A heading-only reply is a known flake, not a short meeting: ask again.
+    for _ in range(3):
+        out = await claude.run_structured(
+            format_for_model(records, names=names),
+            system=system,
+            model=model,
+            schema=SCHEMA,
+            read_root=root if known else None,
+        )
+        summary = parse_summary(str(out.get("summary", "")))
+        if has_body(summary.body):
+            project = out.get("project")
+            summary.project = project if project in known else None
+            (session_dir / SUMMARY_FILENAME).write_text(summary.body + "\n")
+            write_meta(session_dir, summary, records, model)
+            return summary
+    msg = "the model returned only a title, after 3 attempts"
+    raise claude.ClaudeError(msg)
 
 
 def write_meta(
@@ -218,13 +256,16 @@ def write_meta(
             meta = json.loads(meta_path.read_text())
         except (OSError, json.JSONDecodeError):
             meta = {}
+    minutes = duration_minutes(records)
     meta.update({
         "title": summary.title,
         "summarized_at": time.time(),
         "summary_model": model,
         "project": summary.project,
         "lines": len(records),
-        "duration_min": round(duration_minutes(records), 1),
+        "duration_min": round(minutes, 1),
+        # Far side streamed live, mic batched after. An estimate, not a bill.
+        "cost_usd": round(stream_cost(minutes) + prerecorded_cost(minutes), 4),
     })
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
 
@@ -249,11 +290,14 @@ def load_project(session_dir: Path) -> str | None:
 
 
 def has_summary(session_dir: Path) -> bool:
-    return (session_dir / SUMMARY_FILENAME).is_file()
+    """A summary.md that is more than its title line."""
+    try:
+        return has_body((session_dir / SUMMARY_FILENAME).read_text(errors="replace"))
+    except OSError:
+        return False
 
 
 def sessions_root(root: Path | None = None) -> Path:
-    from . import data_dir
     return root if root is not None else data_dir() / "sessions"
 
 
@@ -297,7 +341,8 @@ def resolve_session(spec: str | None, root: Path | None = None) -> Path:
     if spec is None:
         sessions = iter_sessions(root)
         if not sessions:
-            raise FileNotFoundError(f"no sessions with a transcript under {sessions_root(root)}")
+            msg = f"no sessions with a transcript under {sessions_root(root)}"
+            raise FileNotFoundError(msg)
         return sessions[0]
     as_path = Path(spec)
     if as_path.is_dir():
@@ -305,4 +350,5 @@ def resolve_session(spec: str | None, root: Path | None = None) -> Path:
     candidate = sessions_root(root) / spec
     if candidate.is_dir():
         return candidate
-    raise FileNotFoundError(f"no such session: {spec}")
+    msg = f"no such session: {spec}"
+    raise FileNotFoundError(msg)

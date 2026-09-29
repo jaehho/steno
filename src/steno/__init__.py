@@ -6,10 +6,11 @@ from pathlib import Path
 
 __version__ = "0.11.0"
 
-# All current Claude models are natively 1M context, so no beta header is needed.
-# Summaries and the advisor share this; override per-run with CLAUDE_MODEL.
-# Passed to `claude -p --model`, which takes full IDs and aliases alike.
-DEFAULT_MODEL = "claude-opus-5"
+def model_default() -> str:
+    """STENO_MODEL wins; else the active provider's default. Flip it per run."""
+    from . import claude  # noqa: PLC0415  # keep httpx out of bare `import steno`
+    return (os.environ.get("STENO_MODEL") or os.environ.get("CLAUDE_MODEL")
+            or claude.default_model())
 
 LEGACY_NAME = "meeting-copilot"
 APP_NAME = "steno"
