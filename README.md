@@ -79,6 +79,7 @@ steno pause 45m            stop detecting for a while; --off to resume
 steno quit                 stop the listener
 steno bar                  waybar JSON on stdout, one line per change
 steno summarize [NAME]     (re)summarize a session; --all to catch up
+steno export [NAME] [-o F] print or save a meeting as markdown
 steno realign [NAME]       re-time an old session against its audio (costs a pass)
 steno delete [NAME]        move a meeting to the trash
 steno todos                what you owe, across every meeting
@@ -93,9 +94,9 @@ paused) and lists every meeting. A meeting in progress sits at the top under
 ask Claude about what's being said. A past meeting is one page — its summary,
 to-dos, your notes, a question box, and the full transcript, where **clicking
 any line plays that moment back**. The ⋯ menu acts on the meeting you are
-looking at: re-time it against its audio, drop the audio but keep the words, or
-delete it. Deleting goes to your desktop trash, all of it together, recoverable
-from there.
+looking at: re-time it against its audio, drop the audio but keep the words,
+copy or save the meeting as markdown, or delete it. Deleting goes to your
+desktop trash, all of it together, recoverable from there.
 
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window

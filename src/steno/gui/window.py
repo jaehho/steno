@@ -164,6 +164,8 @@ class Window(Adw.ApplicationWindow):
         header.pack_start(titles)
 
         menu = Gio.Menu()
+        menu.append("Copy this meeting", "meeting.copy")
+        menu.append("Save this meeting…", "meeting.save")
         menu.append("Re-time against the audio…", "meeting.realign")
         danger = Gio.Menu()
         danger.append("Delete the audio, keep the text…", "meeting.delete-audio")

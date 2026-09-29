@@ -467,6 +467,28 @@ def cmd_todos(args: argparse.Namespace) -> None:
         print("nothing open")
 
 
+def cmd_export(args: argparse.Namespace) -> None:
+    """Print or save a meeting as markdown."""
+    from .export import meeting_markdown
+    from .summarize import resolve_session
+
+    try:
+        session_dir = resolve_session(args.session, args.dir)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    md = meeting_markdown(session_dir)
+    if args.output is None:
+        print(md, end="")
+        return
+    try:
+        args.output.write_text(md)
+    except OSError as e:
+        print(f"could not write {args.output}: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"wrote {args.output}")
+
+
 def _brief_path(args: argparse.Namespace) -> Path:
     """Explicit flag, else the config-dir brief, else one in the cwd."""
     if getattr(args, "brief", None) is not None:
@@ -702,6 +724,14 @@ def main() -> None:
     p_todos.add_argument("--all", action="store_true", help="Include finished items")
     p_todos.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_todos.set_defaults(func=cmd_todos)
+
+    p_export = sub.add_parser("export", help="Print or save a meeting as markdown")
+    p_export.add_argument("session", nargs="?", default=None,
+                          help="Session name or path; default: most recent")
+    p_export.add_argument("-o", "--output", type=Path, default=None,
+                          help="Write to this file instead of stdout")
+    p_export.add_argument("--dir", type=Path, default=None, help="Sessions directory")
+    p_export.set_defaults(func=cmd_export)
 
     p_watch = sub.add_parser(
         "watch", help="Print apps opening the mic, to tune --allow/--deny"

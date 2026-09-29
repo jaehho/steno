@@ -16,8 +16,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
+from ..export import default_filename, meeting_markdown
 from ..notes import Todo, ensure_todos, set_done
 from ..playback import (
     audio_duration,
@@ -92,6 +93,8 @@ class MeetingPage(Gtk.Box):
 
         self.actions = Gio.SimpleActionGroup()
         for name, handler in (
+            ("copy", self._copy_meeting),
+            ("save", self._save_meeting),
             ("realign", self._confirm_realign),
             ("delete-audio", self._confirm_delete_audio),
             ("delete", self._confirm_delete),
@@ -417,6 +420,52 @@ class MeetingPage(Gtk.Box):
             self._on_ask(self.current.dir, question)
 
     # ------------------------------------------------------------ this meeting
+
+    def _copy_meeting(self) -> None:
+        s = self.current
+        if s is None:
+            return
+        self.flush_notes()
+        md = meeting_markdown(s.dir)
+        clipboard = self.get_clipboard()
+        if clipboard is None:
+            display = Gdk.Display.get_default()
+            clipboard = display.get_clipboard() if display is not None else None
+        if clipboard is None:
+            self._toast("No clipboard available")
+            return
+        clipboard.set(md)
+        self._toast("Copied this meeting")
+
+    def _save_meeting(self) -> None:
+        s = self.current
+        if s is None:
+            return
+        self.flush_notes()
+        dialog = Gtk.FileDialog()
+        dialog.set_initial_name(default_filename(s.dir))
+
+        def on_save(dlg: Gtk.FileDialog, result: Gio.AsyncResult) -> None:
+            try:
+                file = dlg.save_finish(result)
+            except GLib.Error:
+                return  # cancelled
+            if file is None:
+                return
+            path = file.get_path()
+            if path is None:
+                self._toast("Could not write that file")
+                return
+            try:
+                Path(path).write_text(meeting_markdown(s.dir))
+            except OSError as e:
+                self._toast(f"Could not save: {e}")
+                return
+            self._toast(f"Saved to {Path(path).name}")
+
+        root = self.get_root()
+        parent = root if isinstance(root, Gtk.Window) else None
+        dialog.save(parent, None, on_save)
 
     def _dialog(self, heading: str, body: str, confirm: str, on_confirm,
                 destructive: bool = True) -> None:
