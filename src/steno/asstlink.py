@@ -80,7 +80,15 @@ def _parse_completed(raw: str | None) -> bool | None:
 
 
 def add_todo(session_dir: Path, text: str, todo_key: str) -> str | None:
-    """File one action item under the meeting's source. Returns asst's id."""
+    """File one action item under the meeting's source. Returns asst's id.
+
+    Only a recorded meeting may create tasks. A scratch directory (the test
+    suite's `mkdtemp`, a half-made export, anything without `meta.json`) must
+    never reach the phone — that is how fixture to-dos filled the Inbox twice
+    (gotcha #13).
+    """
+    if not (session_dir / "meta.json").is_file():
+        return None
     raw = _run([
         "add",
         "--literal",

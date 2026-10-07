@@ -57,9 +57,21 @@ class TestRun(unittest.TestCase):
     def test_missing_asst_is_silent(self):
         with mock.patch.object(asstlink, "available", lambda: False):
             self.assertIsNone(asstlink._run(["add", "x"]))
-        self.assertIsNone(asstlink.add_todo(Path("/tmp/s"), "Send", "send"))
-        self.assertFalse(asstlink.set_done("0F27", True))
-        self.assertIsNone(asstlink.completed("0F27"))
+            self.assertIsNone(asstlink.add_todo(Path("/tmp/s"), "Send", "send"))
+            self.assertFalse(asstlink.set_done("0F27", True))
+            self.assertIsNone(asstlink.completed("0F27"))
+
+    def test_scratch_dir_never_files(self):
+        """A temp session is not a meeting. asst on PATH must not be enough.
+
+        Gotcha #13 filed fixture to-dos from `mkdtemp` dirs; the write is
+        gated on `meta.json`, not on the test runner importing our package.
+        """
+        scratch = Path(tempfile.mkdtemp())
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink.subprocess, "run") as run:
+            self.assertIsNone(asstlink.add_todo(scratch, "Send", "send"))
+        run.assert_not_called()
 
     def test_json_flag_leads(self):
         """`--json` after `--` is title text (clap), so it must come first.
@@ -67,10 +79,12 @@ class TestRun(unittest.TestCase):
         A trailing `--json` turned every filed item into
         "Send the figures by Friday --json" and left the caller without an id.
         """
+        session = Path(tempfile.mkdtemp())
+        (session / "meta.json").write_text("{}\n")
         with mock.patch.object(asstlink, "available", lambda: True), \
              mock.patch.object(asstlink.subprocess, "run") as run:
             run.return_value = mock.Mock(returncode=0, stdout='{"id":"0F27"}', stderr="")
-            uid = asstlink.add_todo(Path("/tmp/s"), "Send the figures", "send the figures")
+            uid = asstlink.add_todo(session, "Send the figures", "send the figures")
         self.assertEqual(uid, "0F27")
         cmd = run.call_args[0][0]
         self.assertEqual(cmd[:2], ["asst", "--json"])
