@@ -46,7 +46,7 @@ class TestLearn(unittest.TestCase):
         return [
             {"speaker": "them", "who": "speaker_0", "text": "hello everyone"},
             {"speaker": "them", "who": "speaker_1", "text": "this is Alice"},
-            {"speaker": "them", "who": "speaker_0", "text": "Bob speaking"},
+            {"speaker": "them", "who": "speaker_0", "text": "yes, Bob speaking"},
             {"speaker": "them", "who": "speaker_2", "text": "nothing useful here"},
         ]
 
@@ -65,3 +65,37 @@ class TestLearn(unittest.TestCase):
         learn_from(self.dir, self._records())
         self.assertEqual(load_names(self.dir)["speaker_1"], "Alice")
         self.assertTrue((self.dir / "speakers.json").is_file())
+
+
+class TestCalledBoundary(unittest.TestCase):
+    """"Word here" at a sentence boundary is speech, not a name (issue 14)."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def _learn(self, text):
+        row = {"speaker": "them", "who": "speaker_0", "text": text}
+        return learn_from(self.dir, [row])
+
+    def test_utterance_initial_here_is_not_a_name(self):
+        # 20261006-161241: this line taught the map `So`.
+        names = self._learn("So here again, we're showing what happens when you...")
+        self.assertEqual(names, {})
+
+    def test_here_after_sentence_punctuation_is_not_a_name(self):
+        names = self._learn("Great point. So here again, we're showing it.")
+        self.assertEqual(names, {})
+
+    def test_mid_sentence_here_is_a_name(self):
+        names = self._learn("Well, Alice here - go ahead with the numbers.")
+        self.assertEqual(names.get("speaker_0"), "Alice")
+
+    def test_mid_sentence_speaking_is_a_name(self):
+        names = self._learn("It's Alice speaking, from the design team.")
+        self.assertEqual(names.get("speaker_0"), "Alice")
+
+    def test_real_mention_after_a_false_one_still_wins(self):
+        names = self._learn(
+            "So here again. Well, Alice here will take that one."
+        )
+        self.assertEqual(names.get("speaker_0"), "Alice")

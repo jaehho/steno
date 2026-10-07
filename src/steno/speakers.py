@@ -24,9 +24,11 @@ NAMES_FILENAME = "speakers.json"
 _INTRODUCED = re.compile(
     r"\b(?:this is|i'm|i am|it's|it is|my name is)\s+([A-Z][a-zA-Z''-]{1,24})\b"
 )
+# "alice here", "bob speaking" - but only mid-sentence; `_called` checks.
 _CALLED = re.compile(
     r"\b([A-Z][a-zA-Z''-]{1,24})\s+(?:here|speaking)\b"
 )
+_SENTENCE_END = (".", "!", "?")
 
 
 def names_path(session_dir: Path) -> Path:
@@ -61,6 +63,21 @@ def label(record: dict, names: dict[str, str]) -> str:
     return str(record.get("speaker", "them"))
 
 
+def _called(text: str) -> str | None:
+    """The name in an "Alice here" / "Alice speaking" mention, or None.
+
+    Mid-sentence only: ASR capitalizes the first word of an utterance and
+    the word after sentence punctuation, so "So here again, ..." looks
+    like an introduction but is just speech (issue 14). A false name is
+    worse than a numbered voice.
+    """
+    for m in _CALLED.finditer(text):
+        before = text[: m.start()].rstrip()
+        if before and not before.endswith(_SENTENCE_END):
+            return m.group(1)
+    return None
+
+
 def learn_from(session_dir: Path, records: list[dict]) -> dict[str, str]:
     """Fill the name map from introductions in the transcript.
 
@@ -73,10 +90,9 @@ def learn_from(session_dir: Path, records: list[dict]) -> dict[str, str]:
         text = str(row.get("text") or "")
         if not who or who in names or not text:
             continue
-        for pattern in (_INTRODUCED, _CALLED):
-            m = pattern.search(text)
-            if m:
-                names[who] = m.group(1)
-                break
+        m = _INTRODUCED.search(text)
+        name = m.group(1) if m else _called(text)
+        if name:
+            names[who] = name
     save_names(session_dir, names)
     return names
