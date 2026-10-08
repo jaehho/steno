@@ -289,6 +289,19 @@ def load_project(session_dir: Path) -> str | None:
         return None
 
 
+def save_project(session_dir: Path, project: str | None) -> None:
+    """Set or clear the project link. Only that key; the rest of meta survives."""
+    meta_path = session_dir / META_FILENAME
+    meta: dict = {}
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    meta["project"] = project
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+
+
 def has_summary(session_dir: Path) -> bool:
     """A summary.md that is more than its title line."""
     try:

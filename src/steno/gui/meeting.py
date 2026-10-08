@@ -32,7 +32,12 @@ from ..playback import (
 )
 from ..realign import plan
 from ..retention import audio_bytes, delete_audio, delete_session, human_bytes
-from ..summarize import load_records
+from ..summarize import (
+    list_projects,
+    load_records,
+    projects_root,
+    save_project,
+)
 from . import words
 from .player import Player
 from .sidebar import Session
@@ -64,14 +69,14 @@ class MeetingPage(Gtk.Box):
         on_ask: Callable[[Path, str], None],
         on_realign: Callable[..., None] | None,
         on_deleted: Callable[[Path], None],
-        on_todos_changed: Callable[[Session], None],
+        on_session_changed: Callable[[Session], None],
         on_toast: Callable[[str], None],
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._on_ask = on_ask
         self._on_realign = on_realign
         self._on_deleted = on_deleted
-        self._on_todos_changed = on_todos_changed
+        self._on_session_changed = on_session_changed
         self._toast = on_toast
         self._realigning = False
         self.current: Session | None = None
@@ -96,6 +101,7 @@ class MeetingPage(Gtk.Box):
         for name, handler in (
             ("copy", self._copy_meeting),
             ("save", self._save_meeting),
+            ("project", self._set_project),
             ("realign", self._confirm_realign),
             ("delete-audio", self._confirm_delete_audio),
             ("delete", self._confirm_delete),
@@ -340,7 +346,7 @@ class MeetingPage(Gtk.Box):
             self.todo_count.set_text(
                 words.todo_count(sum(not t.done for t in ensure_todos(s.dir)))
             )
-            self._on_todos_changed(s)
+            self._on_session_changed(s)
 
         check.connect("toggled", toggled)
         return row
@@ -507,6 +513,46 @@ class MeetingPage(Gtk.Box):
         root = self.get_root()
         parent = root if isinstance(root, Gtk.Window) else None
         dialog.save(parent, None, on_save)
+
+    def _set_project(self) -> None:
+        s = self.current
+        if s is None:
+            return
+        self.flush_notes()
+        names = list(list_projects(projects_root()))
+        # A link to a directory that has since been renamed or deleted must
+        # still be visible, or the picker would silently drop it on save.
+        if s.project and s.project not in names:
+            names.insert(0, s.project)
+        labels = ["None", *names]
+        choice = Gtk.DropDown.new_from_strings(labels)
+        try:
+            choice.set_selected(labels.index(s.project) if s.project else 0)
+        except ValueError:
+            choice.set_selected(0)
+
+        dialog = Adw.AlertDialog(
+            heading="Project",
+            body="Which project is this meeting about?",
+        )
+        dialog.set_extra_child(choice)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("cancel")
+
+        def on_response(_d, response: str) -> None:
+            if response != "save":
+                return
+            index = choice.get_selected()
+            project = names[index - 1] if index >= 1 else None
+            save_project(s.dir, project)
+            s.project = project
+            self._on_session_changed(s)
+            self._toast(f"Project: {project}" if project else "Project cleared")
+
+        dialog.connect("response", on_response)
+        dialog.present(self)
 
     def _dialog(self, heading: str, body: str, confirm: str, on_confirm,
                 destructive: bool = True) -> None:

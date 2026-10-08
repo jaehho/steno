@@ -80,21 +80,24 @@ class Window(Adw.ApplicationWindow):
         self._css = Gtk.CssProvider()
         self._apply_css()
 
-        self.meeting = MeetingPage(
-            on_ask=self._ask_past,
-            on_realign=self._realign,
-            on_deleted=self.sidebar.forget,
-            on_todos_changed=self.sidebar.update_todo_counts,
-            on_toast=self._toast,
-        )
-        self.insert_action_group("meeting", self.meeting.actions)
-
+        # Sidebar first: MeetingPage takes bound methods off it. (A lambda that
+        # looks the attribute up at call time would also work; this order is
+        # just harder to re-break.)
         self.sidebar = Sidebar(
             self.root,
             on_select=self._on_select,
             on_status_button=self._on_status_button,
             on_activate=lambda: self.split.set_show_content(True),
         )
+
+        self.meeting = MeetingPage(
+            on_ask=self._ask_past,
+            on_realign=self._realign,
+            on_deleted=self.sidebar.forget,
+            on_session_changed=self._on_session_changed,
+            on_toast=self._toast,
+        )
+        self.insert_action_group("meeting", self.meeting.actions)
 
         self.split = Adw.NavigationSplitView()
         self.split.set_min_sidebar_width(260)
@@ -167,6 +170,7 @@ class Window(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Copy this meeting", "meeting.copy")
         menu.append("Save this meeting...", "meeting.save")
+        menu.append("Set project...", "meeting.project")
         menu.append("Re-time against the audio...", "meeting.realign")
         danger = Gio.Menu()
         danger.append("Delete the audio, keep the text...", "meeting.delete-audio")
@@ -266,6 +270,11 @@ class Window(Adw.ApplicationWindow):
             self.stack.set_visible_child_name("live")
         else:
             self.stack.set_visible_child_name("empty")
+        self._update_header()
+
+    def _on_session_changed(self, session: Session) -> None:
+        """Project or to-dos changed in the meeting page: refresh list and title."""
+        self.sidebar.update_session(session)
         self._update_header()
 
     def _update_header(self) -> None:

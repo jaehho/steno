@@ -12,7 +12,12 @@ from unittest import mock
 import httpx
 
 from steno import claude
-from steno.summarize import list_projects, load_project, summarize_session
+from steno.summarize import (
+    list_projects,
+    load_project,
+    save_project,
+    summarize_session,
+)
 
 SCHEMA = {"type": "object", "required": ["a"], "properties": {"a": {"type": "string"}}}
 
@@ -300,6 +305,29 @@ class TestProjects(unittest.TestCase):
 
     def test_missing_root(self):
         self.assertEqual(list_projects(Path("/nonexistent/steno")), {})
+
+    def test_save_project_only_touches_that_key(self):
+        """A manual link must not clobber title, cost, or anything else."""
+        session = Path(tempfile.mkdtemp())
+        (session / "meta.json").write_text(json.dumps({
+            "title": "Beamformer Review",
+            "project": None,
+            "cost_usd": 0.12,
+        }) + "\n")
+        save_project(session, "thesis")
+        meta = json.loads((session / "meta.json").read_text())
+        self.assertEqual(meta["project"], "thesis")
+        self.assertEqual(meta["title"], "Beamformer Review")
+        self.assertEqual(meta["cost_usd"], 0.12)
+        self.assertEqual(load_project(session), "thesis")
+
+        save_project(session, None)
+        self.assertIsNone(load_project(session))
+
+    def test_save_project_creates_meta_when_missing(self):
+        session = Path(tempfile.mkdtemp())
+        save_project(session, "thesis")
+        self.assertEqual(load_project(session), "thesis")
 
 
 class TestEndpointConfig(unittest.TestCase):

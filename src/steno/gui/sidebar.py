@@ -322,8 +322,11 @@ class Sidebar(Gtk.Box):
             parts.append(format_meter(minutes, dollars))
         self.footer.set_text(" · ".join(parts))
 
-    def update_todo_counts(self, session: Session) -> None:
+    def update_session(self, session: Session) -> None:
+        """The meeting page changed this session's project or to-dos in place."""
+        session.project = load_project(session.dir)
         session.open_todos = open_count(session.dir)
+        session._haystack = None  # search includes project
         self._update_footer()
         index = next((i for i, it in enumerate(self.items) if it is session), -1)
         row = self.list.get_row_at_index(index) if index >= 0 else None
