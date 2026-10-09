@@ -53,10 +53,10 @@ from .sidebar import Session
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
 
 NUDGE_S = 10.0
-# How often a visible meeting re-reads asst, so a phone check-off shows up
-# without a reload. asst is local; a few seconds is fine, and a long gap
-# looks like the link being broken rather than a poll.
-PULL_S = 15
+# asstd emits a D-Bus `Changed` on every task write, which is how a phone
+# check-off arrives within a second. The timer is only a fallback for when
+# that signal is missing (daemon restarted under us, no session bus).
+PULL_S = 60
 
 # What "listen to" means for each side. Both sides at once is the default,
 # because that is what the meeting sounded like; the solo settings are for the
@@ -94,6 +94,8 @@ class MeetingPage(Gtk.Box):
         self._realigning = False
         self._pull_timer = 0
         self._pull_in_flight = False
+        self._asst_watch: int | None = None
+        self._asst_bus = None
         self.current: Session | None = None
         self._records: list[dict] = []
         self._offsets: list[float] = []
@@ -323,8 +325,38 @@ class MeetingPage(Gtk.Box):
 
     def _arm_pull(self, s: Session) -> None:
         self.stop_pull()
+        self._watch_asst()
         self._pull_timer = GLib.timeout_add_seconds(PULL_S, self._on_pull_tick)
         self._start_pull(s)
+
+    def _watch_asst(self) -> None:
+        """Follow asstd's Changed signal so a phone tick lands in a second.
+
+        asst's CLI is only a client; the daemon owns the store and announces
+        writes. Without the bus we fall back to the timer alone.
+        """
+        if self._asst_watch is not None:
+            return
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        except GLib.Error:
+            return
+        self._asst_bus = bus
+        self._asst_watch = bus.signal_subscribe(
+            "dev.jaeho.Asst.Daemon",
+            "dev.jaeho.Asst1",
+            "Changed",
+            "/dev/jaeho/Asst",
+            None,
+            Gio.DBusSignalFlags.NONE,
+            self._on_asst_changed,
+        )
+
+    def _on_asst_changed(self, *_args) -> None:
+        # A burst of signals (sync, a multi-edit) is one pull, already
+        # coalesced by `_pull_in_flight`.
+        if self.current is not None:
+            self._start_pull(self.current)
 
     def _on_pull_tick(self) -> bool:
         if self.current is not None:

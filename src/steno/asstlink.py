@@ -10,7 +10,8 @@ for them, which is why an unset project stays out of those lists.
 
 Without `asst` on PATH nothing here does anything — the local `todos.json` is
 still the whole story, and a meeting must never fail because a task app is not
-installed.
+installed. The CLI is only a client: writes need **asstd** (the daemon) on the
+session bus. The GTK window is not required.
 """
 
 from __future__ import annotations
