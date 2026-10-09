@@ -44,6 +44,9 @@ class Todo:
     src: str = ""
     # asst list the task sits in (`Inbox`, `thesis`, …). Empty when unfiled.
     list_name: str = ""
+    # A checkbox that did not reach asst (daemon down). Kept until it lands,
+    # so a later pull cannot un-tick what the user just ticked.
+    dirty: bool = False
 
     @property
     def key(self) -> str:
@@ -126,6 +129,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             uid=str(row.get("uid", "") or ""),
             src=str(row.get("src", "") or ""),
             list_name=str(row.get("list_name", "") or ""),
+            dirty=bool(row.get("dirty", False)),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
     ]
@@ -185,7 +189,7 @@ def set_done(session_dir: Path, key: str, done: bool) -> list[Todo]:
             t.done = done
             t.done_at = time.time() if done else None
             if t.uid:
-                asstlink.set_done(t.uid, done)
+                t.dirty = not asstlink.set_done(t.uid, done)
     save_todos(session_dir, todos)
     return todos
 
@@ -219,16 +223,39 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
     return todos
 
 
-def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
-    """Adopt asst's checked state for this meeting. Read-only toward asst.
+def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
+    """Retry anything that failed to reach asst.
 
-    Remote wins when asst answers: a phone check-off has to show up here. A
-    task deleted in asst is deleted here too — a row that has reached the
-    phone and then vanished from it was removed on purpose, and keeping it
-    would only re-file it on the next re-summarize. Rows that never filed
-    (theirs, or yours not yet sent) are local and stay.
+    asstd can be down for a minute; a tick or a new item must not be lost,
+    and when the daemon returns the next pull must not undo what the user
+    already did. Call this before reading remote state.
     """
     todos = load_todos(session_dir) if todos is None else todos
+    if not asstlink.available():
+        return todos
+    todos = file_with_asst(session_dir, todos)
+    changed = False
+    for t in todos:
+        if t.dirty and t.uid and asstlink.set_done(t.uid, t.done):
+            t.dirty = False
+            changed = True
+    if changed:
+        save_todos(session_dir, todos)
+    return todos
+
+
+def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
+    """Adopt asst's checked state for this meeting.
+
+    First push whatever is still dirty or unfiled (asstd may have just come
+    back). Then remote wins when asst answers: a phone check-off has to show
+    up here. A row still dirty keeps its local tick. A task deleted in asst
+    is deleted here too — a row that has reached the phone and then vanished
+    from it was removed on purpose. Rows that never filed (theirs, or yours
+    not yet sent) are local and stay.
+    """
+    todos = load_todos(session_dir) if todos is None else todos
+    todos = flush_asst(session_dir, todos)
     if not asstlink.available():
         return todos
     remote = asstlink.fetch_session(session_dir)
@@ -246,9 +273,13 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
         _with_src(session_dir, t)
         hit = by_src.get(t.src) or by_key.get(t.key)
         if hit is None:
-            if t.uid:
+            if t.uid and not t.dirty:
                 changed = True
                 continue  # asst deleted it; drop the row with it
+            kept.append(t)
+            continue
+        if t.dirty:
+            # Our tick has not landed; a stale remote must not undo it.
             kept.append(t)
             continue
         done = bool(hit["completed"])

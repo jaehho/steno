@@ -234,6 +234,72 @@ class TestPullTodos(unittest.TestCase):
         self.assertEqual(out[0].uid, "0F27")
 
 
+class TestOutageFallback(unittest.TestCase):
+    """asstd can vanish for a minute; nothing the user did may be lost."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_failed_tick_is_dirty_and_survives_a_pull(self):
+        save_todos(self.dir, [
+            Todo(text="Send", owner="you", uid="0F27",
+                 src=asstlink.source_key(self.dir, "send")),
+        ])
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "set_done", return_value=False):
+            set_done(self.dir, "send", True)
+        self.assertTrue(load_todos(self.dir)[0].dirty)
+
+        # asstd is back but still says open; the local tick must win until
+        # the push lands.
+        remote = {
+            asstlink.source_key(self.dir, "send"): {
+                "id": "0F27", "completed": False, "list": "Inbox",
+            },
+        }
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "fetch_session", return_value=remote), \
+             mock.patch.object(asstlink, "set_done", return_value=False):
+            out = pull_todos(self.dir)
+        self.assertTrue(out[0].done)
+
+    def test_dirty_tick_is_retried_when_asstd_returns(self):
+        save_todos(self.dir, [
+            Todo(text="Send", owner="you", uid="0F27", done=True, dirty=True,
+                 src=asstlink.source_key(self.dir, "send")),
+        ])
+        remote = {
+            asstlink.source_key(self.dir, "send"): {
+                "id": "0F27", "completed": True, "list": "Inbox",
+            },
+        }
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "set_done", return_value=True) as push, \
+             mock.patch.object(asstlink, "fetch_session", return_value=remote):
+            out = pull_todos(self.dir)
+        push.assert_called_once_with("0F27", True)
+        self.assertFalse(out[0].dirty)
+        self.assertTrue(out[0].done)
+
+    def test_unfiled_items_are_retried_on_pull(self):
+        save_todos(self.dir, [
+            Todo(text="Send", owner="you",
+                 src=asstlink.source_key(self.dir, "send")),
+        ])
+        remote = {
+            asstlink.source_key(self.dir, "send"): {
+                "id": "BEEF", "completed": False, "list": "Inbox",
+            },
+        }
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "target_list", return_value=None), \
+             mock.patch.object(asstlink, "add_todo", return_value="BEEF") as add, \
+             mock.patch.object(asstlink, "fetch_session", return_value=remote):
+            out = pull_todos(self.dir)
+        self.assertEqual(add.call_count, 1)
+        self.assertEqual(out[0].uid, "BEEF")
+
+
 class TestForgetAsst(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
