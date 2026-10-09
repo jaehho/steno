@@ -181,6 +181,19 @@ def move_todos(uids: list[str], list_name: str | None) -> int:
     return moved
 
 
+def rm_todos(uids: list[str]) -> int:
+    """Delete filed tasks. Returns how many asst accepted.
+
+    Used when the meeting itself goes away. asst is the task store: if the
+    meeting is gone, the tasks it filed should not outlive it on the phone.
+    """
+    removed = 0
+    for uid in uids:
+        if uid and _run(["rm", uid]) is not None:
+            removed += 1
+    return removed
+
+
 def fetch_session(session_dir: Path) -> dict[str, dict] | None:
     """This meeting's asst tasks, keyed by their `--source` string.
 

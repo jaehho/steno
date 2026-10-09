@@ -197,7 +197,7 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
     """
     if not asstlink.available():
         return todos
-    pending = [t for t in todos if t.owner == "you" and not t.uid]
+    pending = [t for t in todos if t.owner == "you" and not t.uid and not t.done]
     if not pending:
         return todos
     list_name = asstlink.target_list(session_dir)
@@ -219,8 +219,10 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     """Adopt asst's checked state for this meeting. Read-only toward asst.
 
     Remote wins when asst answers: a phone check-off has to show up here. A
-    task deleted in asst drops its uid and leaves the local done flag alone.
-    Nothing is filed or deleted on the way back.
+    task deleted in asst is deleted here too — a row that has reached the
+    phone and then vanished from it was removed on purpose, and keeping it
+    would only re-file it on the next re-summarize. Rows that never filed
+    (theirs, or yours not yet sent) are local and stay.
     """
     todos = load_todos(session_dir) if todos is None else todos
     if not asstlink.available():
@@ -234,14 +236,16 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
         k[len(prefix):] if k.startswith(prefix) else k.rsplit("/", 1)[-1]: v
         for k, v in remote.items()
     }
+    kept: list[Todo] = []
     changed = False
     for t in todos:
         _with_src(session_dir, t)
         hit = by_src.get(t.src) or by_key.get(t.key)
         if hit is None:
             if t.uid:
-                t.uid = ""
                 changed = True
+                continue  # asst deleted it; drop the row with it
+            kept.append(t)
             continue
         done = bool(hit["completed"])
         uid = str(hit.get("id") or t.uid)
@@ -250,9 +254,10 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
             t.done_at = time.time() if done else None
             t.uid = uid
             changed = True
+        kept.append(t)
     if changed:
-        save_todos(session_dir, todos)
-    return todos
+        save_todos(session_dir, kept)
+    return kept
 
 
 def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) -> int:
@@ -266,6 +271,26 @@ def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) 
     if moved:
         save_todos(session_dir, todos)
     return moved
+
+
+def forget_asst(session_dir: Path, todos: list[Todo] | None = None) -> int:
+    """The meeting is going away: take its asst tasks with it.
+
+    uids are cleared in `todos.json` before the folder is trashed, so a later
+    restore from the trash looks like unfiled local rows rather than rows whose
+    phone tasks were deleted behind the user's back.
+    """
+    todos = load_todos(session_dir) if todos is None else todos
+    uids = [t.uid for t in todos if t.uid]
+    removed = asstlink.rm_todos(uids) if (uids and asstlink.available()) else 0
+    changed = False
+    for t in todos:
+        if t.uid:
+            t.uid = ""
+            changed = True
+    if changed:
+        save_todos(session_dir, todos)
+    return removed
 
 
 def ensure_todos(session_dir: Path) -> list[Todo]:

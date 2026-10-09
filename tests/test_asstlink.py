@@ -192,6 +192,17 @@ class TestMove(unittest.TestCase):
         self.assertTrue(all(c[-1] == "thesis" for c in cmds))
 
 
+class TestRm(unittest.TestCase):
+    def test_removes_only_filed_uids(self):
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "_run") as run:
+            run.return_value = "{}"
+            removed = asstlink.rm_todos(["0F27", "", "ABCD"])
+        self.assertEqual(removed, 2)
+        self.assertEqual([c[0][0] for c in run.call_args_list],
+                         [["rm", "0F27"], ["rm", "ABCD"]])
+
+
 class TestSuiteIsolation(unittest.TestCase):
     def test_asst_is_off_by_default(self):
         """tests/__init__ keeps the suite out of the user's real inbox."""

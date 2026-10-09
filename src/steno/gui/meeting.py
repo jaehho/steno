@@ -22,7 +22,14 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from .. import asstlink
 from ..export import default_filename, meeting_markdown
-from ..notes import Todo, ensure_todos, move_with_asst, pull_todos, set_done
+from ..notes import (
+    Todo,
+    ensure_todos,
+    forget_asst,
+    move_with_asst,
+    pull_todos,
+    set_done,
+)
 from ..playback import (
     audio_duration,
     display_offset,
@@ -641,14 +648,16 @@ class MeetingPage(Gtk.Box):
             f"Delete “{s.title or s.dir.name}”?",
             f"{self._describe(s)}\n\n"
             "The recording, transcript, summary, to-dos and your notes all go to "
-            "the trash together. You can put them back from there.",
+            "the trash together. Your action items are also removed from asst.",
             "Move to trash",
             lambda: self._delete(s),
         )
 
     def _delete(self, s: Session) -> None:
+        self.stop_pull()
         self.stop_playback()
         self.notes.bind(None)
+        forget_asst(s.dir)
         outcome, where = delete_session(s.dir)
         if outcome == "failed":
             self._dialog(
@@ -664,6 +673,7 @@ class MeetingPage(Gtk.Box):
         self._toast(f"Moved to trash: {where.name if where else s.dir.name}")
 
     def _delete_permanently(self, s: Session) -> None:
+        forget_asst(s.dir)
         outcome, _ = delete_session(s.dir, permanent=True)
         if outcome == "deleted":
             self.current = None

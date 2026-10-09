@@ -10,6 +10,8 @@ from steno import asstlink
 from steno.notes import (
     Todo,
     ensure_todos,
+    file_with_asst,
+    forget_asst,
     load_notes,
     load_todos,
     open_count,
@@ -185,16 +187,24 @@ class TestPullTodos(unittest.TestCase):
         self.assertTrue(out[0].done)
         self.assertEqual(out[0].uid, "0F27")
 
-    def test_missing_remote_clears_uid_keeps_local_done(self):
+    def test_missing_remote_drops_the_row_that_reached_asst(self):
+        """Delete on the phone means delete here. Keeping it re-files it later."""
         save_todos(self.dir, [
-            Todo(text="Send", owner="you", uid="0F27", done=True,
+            Todo(text="Send", owner="you", uid="0F27",
                  src=asstlink.source_key(self.dir, "send")),
+            Todo(text="They will reply", owner="them"),
         ])
         with mock.patch.object(asstlink, "available", lambda: True), \
              mock.patch.object(asstlink, "fetch_session", return_value={}):
             out = pull_todos(self.dir)
-        self.assertEqual(out[0].uid, "")
-        self.assertTrue(out[0].done)
+        self.assertEqual([t.text for t in out], ["They will reply"])
+
+    def test_unfiled_rows_stay_when_remote_is_empty(self):
+        save_todos(self.dir, [Todo(text="Yours", owner="you")])
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "fetch_session", return_value={}):
+            out = pull_todos(self.dir)
+        self.assertEqual([t.text for t in out], ["Yours"])
 
     def test_asst_down_leaves_everything_alone(self):
         save_todos(self.dir, [
@@ -219,6 +229,34 @@ class TestPullTodos(unittest.TestCase):
              mock.patch.object(asstlink, "fetch_session", return_value=remote):
             out = pull_todos(self.dir)
         self.assertEqual(out[0].uid, "0F27")
+
+
+class TestForgetAsst(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_meeting_delete_removes_phone_tasks_and_clears_uids(self):
+        todos = [
+            Todo(text="Send", owner="you", uid="0F27",
+                 src=asstlink.source_key(self.dir, "send")),
+            Todo(text="They", owner="them"),
+        ]
+        save_todos(self.dir, todos)
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "rm_todos", return_value=1) as rm:
+            removed = forget_asst(self.dir)
+        self.assertEqual(removed, 1)
+        rm.assert_called_once_with(["0F27"])
+        after = load_todos(self.dir)
+        self.assertEqual(after[0].uid, "")
+        self.assertEqual(after[0].text, "Send")
+
+    def test_done_rows_are_not_refiled(self):
+        save_todos(self.dir, [Todo(text="Done", owner="you", done=True)])
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "add_todo") as add:
+            file_with_asst(self.dir, load_todos(self.dir))
+        add.assert_not_called()
 
 
 class TestNotes(unittest.TestCase):
