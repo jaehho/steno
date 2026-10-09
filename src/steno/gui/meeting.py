@@ -54,9 +54,9 @@ from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
 
 NUDGE_S = 10.0
 # How often a visible meeting re-reads asst, so a phone check-off shows up
-# without a reload. Slow on purpose: asst is local, but a poll that fights
-# the user's own click is worse than one that lags by half a minute.
-PULL_S = 45
+# without a reload. asst is local; a few seconds is fine, and a long gap
+# looks like the link being broken rather than a poll.
+PULL_S = 15
 
 # What "listen to" means for each side. Both sides at once is the default,
 # because that is what the meeting sounded like; the solo settings are for the
@@ -359,12 +359,28 @@ class MeetingPage(Gtk.Box):
     def _load_todos(self, s: Session, todos: list[Todo]) -> None:
         while (child := self.todo_box.get_first_child()) is not None:
             self.todo_box.remove(child)
-        self.todo_count.set_text(words.todo_count(sum(not t.done for t in todos)))
+        yours = [t for t in todos if t.owner != "them"]
+        theirs = [t for t in todos if t.owner == "them"]
+        self.todo_count.set_text(words.todo_count(sum(not t.done for t in yours)))
         if not todos:
             self.todo_box.append(hint_label("Nothing to do out of this one."))
             return
-        for todo in todos:
-            self.todo_box.append(self._todo_row(s, todo))
+        # Two groups, not one list with a tiny owner tag. Your work is the
+        # to-do; what they owe is a reminder, so it sits under its own head.
+        if yours:
+            self.todo_box.append(self._group_label("Yours"))
+            for todo in yours:
+                self.todo_box.append(self._todo_row(s, todo))
+        if theirs:
+            self.todo_box.append(self._group_label("They owe"))
+            for todo in theirs:
+                self.todo_box.append(self._todo_row(s, todo))
+
+    def _group_label(self, text: str) -> Gtk.Widget:
+        label = Gtk.Label(label=text, xalign=0.0)
+        label.add_css_class("sec")
+        label.set_margin_top(4 if self.todo_box.get_first_child() is None else 10)
+        return label
 
     def _todo_row(self, s: Session, todo: Todo) -> Gtk.Widget:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -383,23 +399,14 @@ class MeetingPage(Gtk.Box):
         check.set_child(label)
 
         row.append(check)
-        # Owner and asst list, stacked on the right. The list is a quiet
-        # destination tag (`Inbox`, `thesis`), not a state colour.
-        meta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        meta.set_valign(Gtk.Align.START)
-        meta.set_margin_top(4)
-        if todo.owner in ("you", "them"):
-            owner = Gtk.Label(label=todo.owner.capitalize(), xalign=1.0)
-            owner.add_css_class("hint")
-            owner.add_css_class(f"owner-{todo.owner}")
-            meta.append(owner)
+        # asst list, right-aligned. The group header already says whose it is.
         if todo.list_name:
             where = Gtk.Label(label=todo.list_name, xalign=1.0)
             where.add_css_class("hint")
             where.add_css_class("todo-list")
-            meta.append(where)
-        if meta.get_first_child() is not None:
-            row.append(meta)
+            where.set_valign(Gtk.Align.START)
+            where.set_margin_top(4)
+            row.append(where)
 
         def toggled(button):
             set_done(s.dir, todo.key, button.get_active())
@@ -407,7 +414,10 @@ class MeetingPage(Gtk.Box):
             if button.get_active():
                 label.add_css_class("todo-done")
             self.todo_count.set_text(
-                words.todo_count(sum(not t.done for t in ensure_todos(s.dir)))
+                words.todo_count(
+                    sum(not t.done and t.owner != "them"
+                        for t in ensure_todos(s.dir))
+                )
             )
             self._on_session_changed(s)
 
@@ -647,7 +657,9 @@ class MeetingPage(Gtk.Box):
         if size:
             parts.append(human_bytes(size) + " of audio")
         if s.open_todos:
-            parts.append(f"{s.open_todos} open to-do{'s' if s.open_todos != 1 else ''}")
+            parts.append(
+                f"{s.open_todos} open to-do{'s' if s.open_todos != 1 else ''}"
+            )
         return " · ".join(parts)
 
     def _confirm_delete(self) -> None:

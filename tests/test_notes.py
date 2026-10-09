@@ -144,10 +144,12 @@ class TestTodoState(unittest.TestCase):
         set_done(self.dir, key, False)
         self.assertIsNone(load_todos(self.dir)[0].done_at)
 
-    def test_open_count(self):
+    def test_open_count_is_only_your_work(self):
+        """What they owe is not a to-do on this machine."""
         sync_todos(self.dir, SUMMARY)
+        self.assertEqual(open_count(self.dir), 2)  # two "you", not the "them"
         set_done(self.dir, load_todos(self.dir)[0].key, True)
-        self.assertEqual(open_count(self.dir), 2)
+        self.assertEqual(open_count(self.dir), 1)
 
     def test_corrupt_file_is_not_fatal(self):
         (self.dir / "todos.json").write_text("{not json")

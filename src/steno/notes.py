@@ -322,4 +322,9 @@ def ensure_todos(session_dir: Path) -> list[Todo]:
 
 
 def open_count(session_dir: Path) -> int:
-    return sum(1 for t in ensure_todos(session_dir) if not t.done)
+    """Open items that are yours.
+
+    What someone else promised is not a to-do on this machine; counting it
+    made the sidebar badge shout about other people's work.
+    """
+    return sum(1 for t in ensure_todos(session_dir) if not t.done and t.owner != "them")
