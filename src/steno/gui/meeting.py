@@ -383,13 +383,23 @@ class MeetingPage(Gtk.Box):
         check.set_child(label)
 
         row.append(check)
+        # Owner and asst list, stacked on the right. The list is a quiet
+        # destination tag (`Inbox`, `thesis`), not a state colour.
+        meta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        meta.set_valign(Gtk.Align.START)
+        meta.set_margin_top(4)
         if todo.owner in ("you", "them"):
             owner = Gtk.Label(label=todo.owner.capitalize(), xalign=1.0)
             owner.add_css_class("hint")
             owner.add_css_class(f"owner-{todo.owner}")
-            owner.set_valign(Gtk.Align.START)
-            owner.set_margin_top(4)
-            row.append(owner)
+            meta.append(owner)
+        if todo.list_name:
+            where = Gtk.Label(label=todo.list_name, xalign=1.0)
+            where.add_css_class("hint")
+            where.add_css_class("todo-list")
+            meta.append(where)
+        if meta.get_first_child() is not None:
+            row.append(meta)
 
         def toggled(button):
             set_done(s.dir, todo.key, button.get_active())

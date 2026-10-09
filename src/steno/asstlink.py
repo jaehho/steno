@@ -199,9 +199,9 @@ def fetch_session(session_dir: Path) -> dict[str, dict] | None:
 
     Two process calls cover open and completed; `completed` defaults to 20
     rows, so the limit has to be explicit or old check-offs look open again.
-    Each value is `{"id", "completed"}`. Pull is read-only: nothing is filed
-    or deleted here. None when asst cannot answer — that is not the same as
-    "no tasks", and must not clear local uids.
+    Each value is `{"id", "completed", "list"}`. Pull is read-only: nothing is
+    filed or deleted here. None when asst cannot answer — that is not the same
+    as "no tasks", and must not clear local uids.
     """
     open_raw = _run(["ls"])
     done_raw = _run(["completed", "-n", COMPLETED_LIMIT])
@@ -218,5 +218,6 @@ def fetch_session(session_dir: Path) -> dict[str, dict] | None:
                 "id": str(row.get("id") or ""),
                 "completed": str(row.get("status") or "").lower() == "completed"
                 or row.get("completed") is not None,
+                "list": str(row.get("list_name") or ""),
             }
     return out

@@ -42,6 +42,8 @@ class Todo:
     # The `--source` this row was filed under. Frozen at first save so a
     # re-summarize that rephrases the text still finds the same phone task.
     src: str = ""
+    # asst list the task sits in (`Inbox`, `thesis`, …). Empty when unfiled.
+    list_name: str = ""
 
     @property
     def key(self) -> str:
@@ -123,6 +125,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             done_at=row.get("done_at"),
             uid=str(row.get("uid", "") or ""),
             src=str(row.get("src", "") or ""),
+            list_name=str(row.get("list_name", "") or ""),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
     ]
@@ -209,6 +212,7 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
         uid = asstlink.add_todo(session_dir, t.text, key, list_name)
         if uid:
             t.uid = uid
+            t.list_name = list_name or "Inbox"
             changed = True
     if changed:
         save_todos(session_dir, todos)
@@ -249,10 +253,12 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
             continue
         done = bool(hit["completed"])
         uid = str(hit.get("id") or t.uid)
-        if t.done != done or t.uid != uid:
+        list_name = str(hit.get("list") or t.list_name)
+        if t.done != done or t.uid != uid or t.list_name != list_name:
             t.done = done
             t.done_at = time.time() if done else None
             t.uid = uid
+            t.list_name = list_name
             changed = True
         kept.append(t)
     if changed:
@@ -269,6 +275,9 @@ def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) 
         return 0
     moved = asstlink.move_todos(uids, list_name)
     if moved:
+        for t in todos:
+            if t.uid:
+                t.list_name = list_name or "Inbox"
         save_todos(session_dir, todos)
     return moved
 
@@ -287,6 +296,7 @@ def forget_asst(session_dir: Path, todos: list[Todo] | None = None) -> int:
     for t in todos:
         if t.uid:
             t.uid = ""
+            t.list_name = ""
             changed = True
     if changed:
         save_todos(session_dir, todos)

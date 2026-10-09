@@ -178,7 +178,7 @@ class TestPullTodos(unittest.TestCase):
         ])
         remote = {
             asstlink.source_key(self.dir, "send the report"): {
-                "id": "0F27", "completed": True,
+                "id": "0F27", "completed": True, "list": "thesis",
             },
         }
         with mock.patch.object(asstlink, "available", lambda: True), \
@@ -186,6 +186,7 @@ class TestPullTodos(unittest.TestCase):
             out = pull_todos(self.dir)
         self.assertTrue(out[0].done)
         self.assertEqual(out[0].uid, "0F27")
+        self.assertEqual(out[0].list_name, "thesis")
 
     def test_missing_remote_drops_the_row_that_reached_asst(self):
         """Delete on the phone means delete here. Keeping it re-files it later."""

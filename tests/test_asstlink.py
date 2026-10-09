@@ -157,10 +157,12 @@ class TestPull(unittest.TestCase):
     def test_indexes_by_source_and_marks_completed(self):
         open_rows = [{
             "id": "b0bd", "status": "needs-action",
+            "list_name": "Inbox",
             "source": "steno:20261002-163144/send the report",
         }]
         done_rows = [{
             "id": "21e6", "status": "completed",
+            "list_name": "thesis",
             "completed": "2026-10-08T05:05:47Z",
             "source": "steno:20261002-163144/think about it",
         }]
@@ -168,6 +170,7 @@ class TestPull(unittest.TestCase):
         self.assertEqual(out["steno:20261002-163144/send the report"]["completed"], False)
         self.assertEqual(out["steno:20261002-163144/think about it"]["completed"], True)
         self.assertEqual(out["steno:20261002-163144/think about it"]["id"], "21e6")
+        self.assertEqual(out["steno:20261002-163144/send the report"]["list"], "Inbox")
 
     def test_other_sessions_are_ignored(self):
         out = self._fetch([{"id": "x", "status": "needs-action",

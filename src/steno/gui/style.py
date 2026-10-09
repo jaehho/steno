@@ -193,6 +193,7 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
     .todo-done {{ color: {colors['overlay0']}; text-decoration: line-through; }}
     .owner-you  {{ color: {colors['teal']}; }}
     .owner-them {{ color: {colors['overlay2']}; }}
+    .todo-list {{ color: {colors['overlay0']}; }}
 
     .player-bar {{
         background: {colors['mantle']};
