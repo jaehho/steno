@@ -39,12 +39,14 @@ class Todo:
     # asst's short id, once the item has been filed there. Empty means it lives
     # only in this file — either asst is not installed, or the item is theirs.
     uid: str = ""
+    # The `--source` this row was filed under. Frozen at first save so a
+    # re-summarize that rephrases the text still finds the same phone task.
+    src: str = ""
 
     @property
     def key(self) -> str:
-        """Identity is the wording, normalized — so a re-summarize that rephrases
-        nothing keeps your checkmarks, and one that rewrites a line loses only
-        that line."""
+        """Wording, normalized — so a re-summarize that rephrases nothing keeps
+        your checkmarks, and one that rewrites a line loses only that line."""
         return " ".join(self.text.lower().split())
 
 
@@ -120,6 +122,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             done=bool(row.get("done", False)),
             done_at=row.get("done_at"),
             uid=str(row.get("uid", "") or ""),
+            src=str(row.get("src", "") or ""),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
     ]
@@ -132,25 +135,41 @@ def save_todos(session_dir: Path, todos: list[Todo]) -> None:
     )
 
 
+def _with_src(session_dir: Path, todo: Todo) -> None:
+    """Freeze the asst source on first save. A later rephrase gets a new one."""
+    if not todo.src:
+        todo.src = asstlink.source_key(session_dir, todo.key)
+
+
 def sync_todos(session_dir: Path, summary_body: str) -> list[Todo]:
     """Reconcile the summary's action items with what's already on disk.
 
-    Checked-off state is preserved by text. Items the user has completed are
-    kept even if a re-summarize drops them — deleting the record of finished
-    work would be the one unrecoverable thing this file could do.
+    Checked-off state is preserved by source, then by text. Items the user has
+    completed are kept even if a re-summarize drops them — deleting the record
+    of finished work would be the one unrecoverable thing this file could do.
+    An open item already on the phone is kept too: the model must not orphan a
+    task asst is holding. A rephrase becomes a second row (new source) rather
+    than a silent rewrite of the phone task.
     """
-    existing = {t.key: t for t in load_todos(session_dir)}
+    existing = load_todos(session_dir)
+    by_src = {t.src: t for t in existing if t.src}
+    by_key = {t.key: t for t in existing}
     merged: list[Todo] = []
-    seen: set[str] = set()
+    seen: set[int] = set()
     for fresh in parse_action_items(summary_body):
-        prior = existing.get(fresh.key)
-        if prior is not None:
+        _with_src(session_dir, fresh)
+        prior = by_src.get(fresh.src) or by_key.get(fresh.key)
+        if prior is not None and id(prior) not in seen:
             fresh.done = prior.done
             fresh.done_at = prior.done_at
             fresh.uid = prior.uid
+            fresh.src = prior.src
+            seen.add(id(prior))
         merged.append(fresh)
-        seen.add(fresh.key)
-    merged.extend(t for key, t in existing.items() if key not in seen and t.done)
+    merged.extend(
+        t for t in existing
+        if id(t) not in seen and (t.done or t.uid or t.owner == "you")
+    )
     save_todos(session_dir, merged)
     file_with_asst(session_dir, merged)
     return merged
@@ -173,21 +192,80 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
 
     Only `owner == "you"` goes across: what someone else promised is not a
     task on the user's phone. Idempotent via `--source`, so a re-summarize
-    files nothing twice and keeps the uid it already had.
+    files nothing twice and keeps the uid it already had. Destination is the
+    meeting's project list when asst has one, else the inbox.
     """
     if not asstlink.available():
         return todos
+    pending = [t for t in todos if t.owner == "you" and not t.uid]
+    if not pending:
+        return todos
+    list_name = asstlink.target_list(session_dir)
+    prefix = asstlink.source_prefix(session_dir)
     changed = False
-    for t in todos:
-        if t.owner != "you" or t.uid:
-            continue
-        uid = asstlink.add_todo(session_dir, t.text, t.key)
+    for t in pending:
+        _with_src(session_dir, t)
+        key = t.src[len(prefix):] if t.src.startswith(prefix) else t.key
+        uid = asstlink.add_todo(session_dir, t.text, key, list_name)
         if uid:
             t.uid = uid
             changed = True
     if changed:
         save_todos(session_dir, todos)
     return todos
+
+
+def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
+    """Adopt asst's checked state for this meeting. Read-only toward asst.
+
+    Remote wins when asst answers: a phone check-off has to show up here. A
+    task deleted in asst drops its uid and leaves the local done flag alone.
+    Nothing is filed or deleted on the way back.
+    """
+    todos = load_todos(session_dir) if todos is None else todos
+    if not asstlink.available():
+        return todos
+    remote = asstlink.fetch_session(session_dir)
+    if remote is None:
+        return todos
+    by_src = remote
+    prefix = asstlink.source_prefix(session_dir)
+    by_key = {
+        k[len(prefix):] if k.startswith(prefix) else k.rsplit("/", 1)[-1]: v
+        for k, v in remote.items()
+    }
+    changed = False
+    for t in todos:
+        _with_src(session_dir, t)
+        hit = by_src.get(t.src) or by_key.get(t.key)
+        if hit is None:
+            if t.uid:
+                t.uid = ""
+                changed = True
+            continue
+        done = bool(hit["completed"])
+        uid = str(hit.get("id") or t.uid)
+        if t.done != done or t.uid != uid:
+            t.done = done
+            t.done_at = time.time() if done else None
+            t.uid = uid
+            changed = True
+    if changed:
+        save_todos(session_dir, todos)
+    return todos
+
+
+def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) -> int:
+    """Follow a project change into asst. Returns how many tasks moved."""
+    if not asstlink.available():
+        return 0
+    uids = [t.uid for t in todos if t.owner == "you" and t.uid]
+    if not uids:
+        return 0
+    moved = asstlink.move_todos(uids, list_name)
+    if moved:
+        save_todos(session_dir, todos)
+    return moved
 
 
 def ensure_todos(session_dir: Path) -> list[Todo]:

@@ -24,6 +24,12 @@ class TestSourceKey(unittest.TestCase):
         b = asstlink.source_key(Path("/tmp/b"), "x")
         self.assertNotEqual(a, b)
 
+    def test_prefix_is_the_session_folder(self):
+        self.assertEqual(
+            asstlink.source_prefix(Path("/tmp/20260927-100000")),
+            "steno:20260927-100000/",
+        )
+
 
 class TestParse(unittest.TestCase):
     def test_add_returns_the_short_id(self):
@@ -92,6 +98,99 @@ class TestRun(unittest.TestCase):
         self.assertLess(cmd.index("--json"), cmd.index("--"))
         self.assertEqual(cmd[-1], "Send the figures")
 
+    def test_list_name_is_passed_only_when_asked(self):
+        session = Path(tempfile.mkdtemp())
+        (session / "meta.json").write_text("{}\n")
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout='{"id":"0F27"}', stderr="")
+            asstlink.add_todo(session, "Send", "send")
+            asstlink.add_todo(session, "Send", "send", "thesis")
+        first, second = (c[0][0] for c in run.call_args_list)
+        self.assertNotIn("--list", first)
+        self.assertIn("--list", second)
+        self.assertEqual(second[second.index("--list") + 1], "thesis")
+
+
+class TestTargetList(unittest.TestCase):
+    def setUp(self):
+        self.session = Path(tempfile.mkdtemp())
+        (self.session / "meta.json").write_text(
+            json.dumps({"project": "thesis"}) + "\n"
+        )
+
+    def test_exact_list(self):
+        with mock.patch.object(asstlink, "list_names", lambda: ["thesis", "steno"]):
+            self.assertEqual(asstlink.target_list(self.session), "thesis")
+
+    def test_unambiguous_prefix(self):
+        with mock.patch.object(asstlink, "list_names", lambda: ["thesis-notes", "steno"]):
+            self.assertEqual(asstlink.target_list(self.session), "thesis-notes")
+
+    def test_unknown_project_falls_back_to_inbox(self):
+        with mock.patch.object(asstlink, "list_names", lambda: ["steno", "dotfiles"]):
+            self.assertIsNone(asstlink.target_list(self.session))
+
+    def test_no_project_is_inbox(self):
+        (self.session / "meta.json").write_text("{}\n")
+        with mock.patch.object(asstlink, "list_names", lambda: ["thesis"]):
+            self.assertIsNone(asstlink.target_list(self.session))
+
+
+class TestPull(unittest.TestCase):
+    def setUp(self):
+        # fetch_session only uses the session folder name in the source prefix.
+        self.session = Path("/tmp/20261002-163144")
+
+    def _fetch(self, open_rows, done_rows=None, failed=False):
+        def _run(args):
+            if failed:
+                return None
+            if args[0] == "ls":
+                return json.dumps(open_rows)
+            return json.dumps(done_rows or [])
+
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "_run", side_effect=_run):
+            return asstlink.fetch_session(self.session)
+
+    def test_indexes_by_source_and_marks_completed(self):
+        open_rows = [{
+            "id": "b0bd", "status": "needs-action",
+            "source": "steno:20261002-163144/send the report",
+        }]
+        done_rows = [{
+            "id": "21e6", "status": "completed",
+            "completed": "2026-10-08T05:05:47Z",
+            "source": "steno:20261002-163144/think about it",
+        }]
+        out = self._fetch(open_rows, done_rows)
+        self.assertEqual(out["steno:20261002-163144/send the report"]["completed"], False)
+        self.assertEqual(out["steno:20261002-163144/think about it"]["completed"], True)
+        self.assertEqual(out["steno:20261002-163144/think about it"]["id"], "21e6")
+
+    def test_other_sessions_are_ignored(self):
+        out = self._fetch([{"id": "x", "status": "needs-action",
+                            "source": "steno:other/send"}])
+        self.assertEqual(out, {})
+
+    def test_failure_is_none_not_empty(self):
+        """A dead asst must not look like 'every task was deleted'."""
+        self.assertIsNone(self._fetch([], failed=True))
+
+
+class TestMove(unittest.TestCase):
+    def test_moves_only_filed_uids(self):
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "_run") as run:
+            run.return_value = "{}"
+            moved = asstlink.move_todos(["0F27", "", "ABCD"], "thesis")
+        self.assertEqual(moved, 2)
+        cmds = [c[0][0] for c in run.call_args_list]
+        self.assertEqual([c[1:3] for c in cmds],
+                         [["0F27", "--list"], ["ABCD", "--list"]])
+        self.assertTrue(all(c[-1] == "thesis" for c in cmds))
+
 
 class TestSuiteIsolation(unittest.TestCase):
     def test_asst_is_off_by_default(self):
@@ -122,11 +221,13 @@ class TestFileWithAsst(unittest.TestCase):
             self.notes.Todo(text="They will reply", owner="them"),
         ]
         with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "target_list", return_value="thesis"), \
              mock.patch.object(asstlink, "add_todo", side_effect=["0F27", "BAD"]) as add:
             out = self.notes.file_with_asst(self.dir, todos)
         self.assertEqual(out[0].uid, "0F27")
         self.assertEqual(out[1].uid, "")
         self.assertEqual(add.call_count, 1)
+        self.assertEqual(add.call_args[0][3], "thesis")
 
     def test_already_filed_is_skipped(self):
         todos = [self.notes.Todo(text="Send", owner="you", uid="ABCD")]

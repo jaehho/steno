@@ -9,6 +9,7 @@ because the only honest fix for "did they really say that?" is to hear it.
 from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,8 +20,9 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
+from .. import asstlink
 from ..export import default_filename, meeting_markdown
-from ..notes import Todo, ensure_todos, set_done
+from ..notes import Todo, ensure_todos, move_with_asst, pull_todos, set_done
 from ..playback import (
     audio_duration,
     display_offset,
@@ -44,6 +46,10 @@ from .sidebar import Session
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
 
 NUDGE_S = 10.0
+# How often a visible meeting re-reads asst, so a phone check-off shows up
+# without a reload. Slow on purpose: asst is local, but a poll that fights
+# the user's own click is worse than one that lags by half a minute.
+PULL_S = 45
 
 # What "listen to" means for each side. Both sides at once is the default,
 # because that is what the meeting sounded like; the solo settings are for the
@@ -79,6 +85,8 @@ class MeetingPage(Gtk.Box):
         self._on_session_changed = on_session_changed
         self._toast = on_toast
         self._realigning = False
+        self._pull_timer = 0
+        self._pull_in_flight = False
         self.current: Session | None = None
         self._records: list[dict] = []
         self._offsets: list[float] = []
@@ -298,6 +306,44 @@ class MeetingPage(Gtk.Box):
         self.notes.bind(s.dir)
         self.ask.clear()
         self._load_transcript(s)
+        self._arm_pull(s)
+
+    def stop_pull(self) -> None:
+        """Leave the meeting page: stop asking asst about this one."""
+        if self._pull_timer:
+            GLib.source_remove(self._pull_timer)
+            self._pull_timer = 0
+
+    def _arm_pull(self, s: Session) -> None:
+        self.stop_pull()
+        self._pull_timer = GLib.timeout_add_seconds(PULL_S, self._on_pull_tick)
+        self._start_pull(s)
+
+    def _on_pull_tick(self) -> bool:
+        if self.current is not None:
+            self._start_pull(self.current)
+        return GLib.SOURCE_CONTINUE
+
+    def _start_pull(self, s: Session) -> None:
+        """Read asst off-thread so a slow daemon cannot freeze the page."""
+        if self._pull_in_flight:
+            return
+        self._pull_in_flight = True
+
+        def work() -> None:
+            todos = pull_todos(s.dir)
+            GLib.idle_add(self._apply_pull, s, todos)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_pull(self, s: Session, todos: list[Todo]) -> bool:
+        self._pull_in_flight = False
+        # A slow pull must not paint the meeting the user has already left.
+        if self.current is None or self.current.dir != s.dir:
+            return GLib.SOURCE_REMOVE
+        self._load_todos(s, todos)
+        self._on_session_changed(s)
+        return GLib.SOURCE_REMOVE
 
     def reload(self) -> None:
         if self.current is not None:
@@ -548,8 +594,17 @@ class MeetingPage(Gtk.Box):
             project = names[index - 1] if index >= 1 else None
             save_project(s.dir, project)
             s.project = project
+            todos = ensure_todos(s.dir)
+            list_name = asstlink.target_list(s.dir, project)
+            moved = move_with_asst(s.dir, todos, list_name)
+            if moved:
+                self._load_todos(s, todos)
             self._on_session_changed(s)
-            self._toast(f"Project: {project}" if project else "Project cleared")
+            where = list_name or "Inbox"
+            base = f"Project: {project}" if project else "Project cleared"
+            if moved:
+                base = f"{base} · {moved} task(s) → {where}"
+            self._toast(base)
 
         dialog.connect("response", on_response)
         dialog.present(self)

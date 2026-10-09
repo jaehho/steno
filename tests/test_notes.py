@@ -4,14 +4,19 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from steno import asstlink
 from steno.notes import (
+    Todo,
     ensure_todos,
     load_notes,
     load_todos,
     open_count,
     parse_action_items,
+    pull_todos,
     save_notes,
+    save_todos,
     set_done,
     sync_todos,
 )
@@ -86,6 +91,50 @@ class TestTodoState(unittest.TestCase):
         texts = [t.text for t in load_todos(self.dir) if t.done]
         self.assertEqual(texts, [first.text])
 
+    def test_open_filed_item_survives_a_resummarize(self):
+        """A re-summarize must not orphan a task the phone is holding."""
+        save_todos(self.dir, [
+            Todo(text="Send the report", owner="you", uid="0F27",
+                 src="steno:x/send the report"),
+        ])
+        with mock.patch.object(asstlink, "available", lambda: False):
+            sync_todos(self.dir, "# T\n\n## Action items\n- Something else\n")
+        texts = [t.text for t in load_todos(self.dir)]
+        self.assertIn("Send the report", texts)
+        self.assertIn("Something else", texts)
+
+    def test_open_unfiled_orphan_is_dropped(self):
+        """Nothing on the phone: the model dropping it is allowed."""
+        save_todos(self.dir, [Todo(text="Vanish", owner="them")])
+        with mock.patch.object(asstlink, "available", lambda: False):
+            sync_todos(self.dir, "# T\n\n## Action items\n- Fresh\n")
+        self.assertEqual([t.text for t in load_todos(self.dir)], ["Fresh"])
+
+    def test_src_is_frozen_across_a_clean_rerun(self):
+        with mock.patch.object(asstlink, "available", lambda: False):
+            first = sync_todos(self.dir, SUMMARY)
+            again = sync_todos(self.dir, SUMMARY)
+        self.assertEqual(first[0].src, again[0].src)
+        self.assertTrue(again[0].src.startswith("steno:"))
+
+    def test_rephrase_keeps_both_rows_and_files_only_the_new_one(self):
+        save_todos(self.dir, [
+            Todo(text="Send the report", owner="you", uid="0F27",
+                 src="steno:x/send the report"),
+        ])
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "target_list", return_value=None), \
+             mock.patch.object(asstlink, "add_todo", return_value="BEEF") as add:
+            merged = sync_todos(
+                self.dir,
+                "# T\n\n## Action items\n**You**\n- Email the report\n",
+            )
+        self.assertEqual([t.text for t in merged],
+                         ["Email the report", "Send the report"])
+        self.assertEqual(merged[0].uid, "BEEF")
+        self.assertEqual(merged[1].uid, "0F27")
+        self.assertEqual(add.call_count, 1)
+
     def test_unchecking_clears_the_timestamp(self):
         sync_todos(self.dir, SUMMARY)
         key = load_todos(self.dir)[0].key
@@ -114,6 +163,62 @@ class TestTodoState(unittest.TestCase):
         sync_todos(self.dir, SUMMARY)
         set_done(self.dir, load_todos(self.dir)[0].key, True)
         self.assertTrue(ensure_todos(self.dir)[0].done)
+
+
+class TestPullTodos(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_adopts_remote_done_and_uid(self):
+        save_todos(self.dir, [
+            Todo(text="Send the report", owner="you",
+                 src=asstlink.source_key(self.dir, "send the report")),
+        ])
+        remote = {
+            asstlink.source_key(self.dir, "send the report"): {
+                "id": "0F27", "completed": True,
+            },
+        }
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "fetch_session", return_value=remote):
+            out = pull_todos(self.dir)
+        self.assertTrue(out[0].done)
+        self.assertEqual(out[0].uid, "0F27")
+
+    def test_missing_remote_clears_uid_keeps_local_done(self):
+        save_todos(self.dir, [
+            Todo(text="Send", owner="you", uid="0F27", done=True,
+                 src=asstlink.source_key(self.dir, "send")),
+        ])
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "fetch_session", return_value={}):
+            out = pull_todos(self.dir)
+        self.assertEqual(out[0].uid, "")
+        self.assertTrue(out[0].done)
+
+    def test_asst_down_leaves_everything_alone(self):
+        save_todos(self.dir, [
+            Todo(text="Send", owner="you", uid="0F27",
+                 src=asstlink.source_key(self.dir, "send")),
+        ])
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "fetch_session", return_value=None):
+            out = pull_todos(self.dir)
+        self.assertEqual(out[0].uid, "0F27")
+        self.assertFalse(out[0].done)
+
+    def test_legacy_text_source_reattaches(self):
+        """A row filed before `src` existed still finds its phone task."""
+        save_todos(self.dir, [Todo(text="Send the report", owner="you")])
+        remote = {
+            asstlink.source_key(self.dir, "send the report"): {
+                "id": "0F27", "completed": False,
+            },
+        }
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "fetch_session", return_value=remote):
+            out = pull_todos(self.dir)
+        self.assertEqual(out[0].uid, "0F27")
 
 
 class TestNotes(unittest.TestCase):

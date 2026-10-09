@@ -4,10 +4,15 @@ asst owns the task list; steno only files items and mirrors the checkbox. The
 link is `asst add --source steno:<session>/<key>`, which is idempotent on that
 key, so re-summarizing a meeting never duplicates its to-dos on the phone.
 
+Your items file into the asst list named after the meeting's project when that
+list exists; otherwise the inbox. A list tied to a GitHub repo will open issues
+for them, which is why an unset project stays out of those lists.
+
 Without `asst` on PATH nothing here does anything — the local `todos.json` is
 still the whole story, and a meeting must never fail because a task app is not
 installed.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,6 +21,7 @@ import subprocess
 from pathlib import Path
 
 TIMEOUT_S = 15.0
+COMPLETED_LIMIT = "9999"
 
 
 def available() -> bool:
@@ -25,6 +31,10 @@ def available() -> bool:
 def source_key(session_dir: Path, todo_key: str) -> str:
     """The `--source` that makes a re-run a no-op. Stable per session and text."""
     return f"steno:{session_dir.name}/{todo_key}"
+
+
+def source_prefix(session_dir: Path) -> str:
+    return f"steno:{session_dir.name}/"
 
 
 def _run(args: list[str]) -> str | None:
@@ -79,7 +89,57 @@ def _parse_completed(raw: str | None) -> bool | None:
     return None
 
 
-def add_todo(session_dir: Path, text: str, todo_key: str) -> str | None:
+def _parse_tasks(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return (
+        [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+    )
+
+
+def list_names() -> list[str]:
+    """Every asst list name. Empty when asst cannot answer."""
+    rows = _parse_tasks(_run(["lists"]))
+    return [str(r["name"]) for r in rows if r.get("name")]
+
+
+def target_list(session_dir: Path, project: str | None = None) -> str | None:
+    """asst list for this meeting's project, or None for the inbox.
+
+    A project with no matching list is not an error: meeting items still file,
+    just into the inbox. asst accepts an unambiguous case-insensitive prefix,
+    so match that way here and fall back rather than let `add` fail.
+    """
+    if project is None:
+        project = _project_of(session_dir)
+    if not project:
+        return None
+    names = list_names()
+    if project in names:
+        return project
+    low = project.lower()
+    hits = [n for n in names if n.lower().startswith(low)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _project_of(session_dir: Path) -> str | None:
+    try:
+        value = json.loads((session_dir / "meta.json").read_text()).get("project")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    return str(value) if value else None
+
+
+def add_todo(
+    session_dir: Path,
+    text: str,
+    todo_key: str,
+    list_name: str | None = None,
+) -> str | None:
     """File one action item under the meeting's source. Returns asst's id.
 
     Only a recorded meeting may create tasks. A scratch directory (the test
@@ -89,12 +149,10 @@ def add_todo(session_dir: Path, text: str, todo_key: str) -> str | None:
     """
     if not (session_dir / "meta.json").is_file():
         return None
-    raw = _run([
-        "add",
-        "--literal",
-        "--source", source_key(session_dir, todo_key),
-        "--", text,
-    ])
+    args = ["add", "--literal", "--source", source_key(session_dir, todo_key)]
+    if list_name:
+        args.extend(["--list", list_name])
+    raw = _run([*args, "--", text])
     return _parse_id(raw)
 
 
@@ -107,3 +165,45 @@ def set_done(uid: str, done: bool) -> bool:
 def completed(uid: str) -> bool | None:
     """Read one task's checked state back. None when asst cannot answer."""
     return _parse_completed(_run(["show", uid]))
+
+
+def move_todos(uids: list[str], list_name: str | None) -> int:
+    """Move filed tasks to `list_name` (None = the inbox). Returns how many moved.
+
+    Only touches rows that already have an asst id. A missing id is left alone
+    rather than treated as a failure the meeting should care about.
+    """
+    target = list_name or "inbox"
+    moved = 0
+    for uid in uids:
+        if uid and _run(["edit", uid, "--list", target]) is not None:
+            moved += 1
+    return moved
+
+
+def fetch_session(session_dir: Path) -> dict[str, dict] | None:
+    """This meeting's asst tasks, keyed by their `--source` string.
+
+    Two process calls cover open and completed; `completed` defaults to 20
+    rows, so the limit has to be explicit or old check-offs look open again.
+    Each value is `{"id", "completed"}`. Pull is read-only: nothing is filed
+    or deleted here. None when asst cannot answer — that is not the same as
+    "no tasks", and must not clear local uids.
+    """
+    open_raw = _run(["ls"])
+    done_raw = _run(["completed", "-n", COMPLETED_LIMIT])
+    if open_raw is None and done_raw is None:
+        return None
+    prefix = source_prefix(session_dir)
+    out: dict[str, dict] = {}
+    for raw in (open_raw, done_raw):
+        for row in _parse_tasks(raw):
+            source = row.get("source")
+            if not isinstance(source, str) or not source.startswith(prefix):
+                continue
+            out[source] = {
+                "id": str(row.get("id") or ""),
+                "completed": str(row.get("status") or "").lower() == "completed"
+                or row.get("completed") is not None,
+            }
+    return out

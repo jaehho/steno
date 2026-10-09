@@ -32,7 +32,7 @@ from .detect import (
 )
 from .echo import cancel_file
 from .export import meeting_markdown
-from .notes import ensure_todos, sync_todos
+from .notes import pull_todos, sync_todos
 from .playback import TRACKS, clean_path
 from .realign import format_plan, has_audio, plan, realign_session
 from .retention import audio_bytes, delete_session, human_bytes
@@ -446,6 +446,11 @@ def cmd_clean_echo(args: argparse.Namespace) -> None:
             f"(speakers reach the mic {result.delay_s * 1000:.0f} ms late)",
             progress,
         )
+        if result.muted_s:
+            minutes = result.seconds / 60.0 if result.seconds else 0.0
+            share = 100.0 * result.muted_s / result.seconds if result.seconds else 0.0
+            print(f"    muted {result.muted_s:.0f}s of far-dominant residual "
+                  f"({share:.0f}% of {minutes:.1f} min)")
         print(f"    -> {out.name}  (`steno realign {session_dir.name}` to "
               f"re-transcribe from it)")
 
@@ -454,7 +459,7 @@ def cmd_todos(args: argparse.Namespace) -> None:
     """Everything still open, newest meeting first."""
     any_open = False
     for session_dir in iter_sessions(args.dir):
-        todos = [t for t in ensure_todos(session_dir) if not t.done or args.all]
+        todos = [t for t in pull_todos(session_dir) if not t.done or args.all]
         if not todos:
             continue
         any_open = True

@@ -266,10 +266,12 @@ class Window(Adw.ApplicationWindow):
             if query:
                 self.meeting.jump_to(query)
             self.stack.set_visible_child_name("meeting")
-        elif item == LIVE:
-            self.stack.set_visible_child_name("live")
         else:
-            self.stack.set_visible_child_name("empty")
+            self.meeting.stop_pull()
+            if item == LIVE:
+                self.stack.set_visible_child_name("live")
+            else:
+                self.stack.set_visible_child_name("empty")
         self._update_header()
 
     def _on_session_changed(self, session: Session) -> None:
