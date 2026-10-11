@@ -48,6 +48,9 @@ class SummaryReady:
     session_dir: Path
     title: str
     body: str
+    # Asked for from the window, which is open and about to show it: no
+    # desktop notification needed.
+    requested: bool = False
 
 
 @dataclass(frozen=True)

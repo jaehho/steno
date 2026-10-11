@@ -90,7 +90,7 @@ class EngineBridge:
             return None
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
-    def stop(self, timeout: float = 30.0) -> None:
+    def stop(self, timeout: float = 90.0) -> None:
         """Stop the engine, giving an in-flight meeting time to finalize.
 
         A meeting that is ending has a batch transcription and a summary still
@@ -103,10 +103,12 @@ class EngineBridge:
         engine = self.engine
         if engine is not None and engine.current is not None:
             engine.stop_now()
-            deadline = timeout
-            while engine.current is not None and deadline > 0:
-                thread.join(0.1)
-                deadline -= 0.1
+        # `busy`, not `current`: `current` clears the moment a meeting ends,
+        # while the batch pass and the summary are still running.
+        deadline = timeout
+        while engine is not None and engine.busy and deadline > 0:
+            thread.join(0.1)
+            deadline -= 0.1
         task = self._task
         if task is not None:
             loop.call_soon_threadsafe(task.cancel)

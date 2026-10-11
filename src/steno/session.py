@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -137,6 +138,11 @@ class Engine:
         self.end_grace_s = end_grace_s
 
         self.current: Recording | None = None
+        # Post-meeting work in flight (batch transcription, a summary). `current`
+        # is already None while it runs, so a quit that only looked at `current`
+        # cancelled the very work that makes a recording worth keeping.
+        self._finalizing = 0
+        self._finishers: set[asyncio.Task] = set()
         self.transcript: list[dict] = []
         self.queue: asyncio.Queue[Utterance] = asyncio.Queue()
         self._commands: asyncio.Queue[str] = asyncio.Queue()
@@ -163,6 +169,9 @@ class Engine:
             commands.cancel()
             if self.current is not None:
                 await self._end()
+            # A meeting that has just ended is still being turned into notes.
+            if self._finishers:
+                await asyncio.gather(*self._finishers, return_exceptions=True)
 
     async def _watch(self) -> None:
         async for event in watch_meetings(
@@ -172,27 +181,52 @@ class Engine:
             end_grace_s=self.end_grace_s,
             is_paused=lambda: paused_until() is not None,
         ):
-            if event.kind == "start":
-                await self._start(event.app)
-            elif self.current is not None and not self.current.manual:
-                # A manually started recording outlives the app that triggered
-                # detection: the user asked for it, so only they end it.
-                await self._end()
+            await self._guarded(self._on_detect, event)
+
+    async def _on_detect(self, event) -> None:
+        if event.kind == "start":
+            await self._start(event.app)
+        elif self.current is not None and not self.current.manual:
+            # A manually started recording outlives the app that triggered
+            # detection: the user asked for it, so only they end it.
+            await self._end()
+
+    async def _guarded(self, handler, *args) -> None:
+        """Run one step of the watch or command loop; a failure is not the end.
+
+        One full disk or unmounted data directory used to raise out of the
+        loop, end the engine's thread, and leave the bar saying "listening"
+        for good. Say what went wrong, and keep listening.
+        """
+        try:
+            await handler(*args)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.emit(EngineError("engine", f"{type(e).__name__}: {e}", fatal=True))
+            self._settle()
 
     async def _serve_commands(self) -> None:
         """Serve `start_now()` / `stop_now()` / `set_audience()` from our loop."""
         while True:
-            cmd = await self._commands.get()
-            if cmd == "start" and self.current is None:
-                await self._start("manual", manual=True)
-            elif cmd == "stop" and self.current is not None:
-                await self._end()
-            elif cmd == "audience-on":
-                self._audience = True
-                self._start_you_display()
-            elif cmd == "audience-off":
-                self._audience = False
-                self._stop_you_display()
+            await self._guarded(self._on_command, await self._commands.get())
+
+    async def _on_command(self, cmd: str) -> None:
+        if cmd == "start" and self.current is None:
+            await self._start("manual", manual=True)
+        elif cmd == "stop" and self.current is not None:
+            await self._end()
+        elif cmd == "audience-on":
+            self._audience = True
+            self._start_you_display()
+        elif cmd == "audience-off":
+            self._audience = False
+            self._stop_you_display()
+
+    @property
+    def busy(self) -> bool:
+        """A meeting is being recorded or is still being turned into notes."""
+        return self.current is not None or self._finalizing > 0
 
     def start_now(self) -> None:
         """Ask the engine to begin recording. Safe to call from another thread."""
@@ -221,6 +255,7 @@ class Engine:
             return
         started_at = time.time()
         session_dir = self.root / time.strftime("%Y%m%d-%H%M%S", time.localtime(started_at))
+        created = not session_dir.exists()
         session_dir.mkdir(parents=True, exist_ok=True)
         rec = Recording(
             session_dir=session_dir, started_at=started_at, app=app, manual=manual
@@ -228,18 +263,26 @@ class Engine:
         self.current = rec
         self.transcript = []
 
-        rec.transcript_jsonl = (session_dir / "transcript.jsonl").open("a")
-        _rewrite_meta(session_dir, started_at, app, manual)
-
+        you_wav = them_wav = None
         try:
+            rec.transcript_jsonl = (session_dir / "transcript.jsonl").open("a")
+            _rewrite_meta(session_dir, started_at, app, manual)
             mic = await capture_mic()
             sink_mon = await default_sink_monitor()
             you_wav = open_wav(session_dir / "you.wav")
             them_wav = open_wav(session_dir / "them.wav")
         except Exception as e:
+            for handle in (you_wav, them_wav, rec.transcript_jsonl):
+                if handle is not None:
+                    with contextlib.suppress(Exception):
+                        handle.close()
             self.current = None
+            # Nothing was recorded: an empty session left behind would be
+            # listed forever as a meeting that never got its summary.
+            if created:
+                shutil.rmtree(session_dir, ignore_errors=True)
             self.emit(EngineError("capture", f"could not open audio: {e}", fatal=True))
-            self._status("idle")
+            self._settle()
             return
         rec.handles = [you_wav, them_wav]
 
@@ -265,22 +308,76 @@ class Engine:
             self._start_you_display()
 
     async def _end(self) -> None:
+        """Stop capturing, then finish the meeting in the background.
+
+        Returns as soon as the capture is closed. The batch transcription and
+        the summary can take minutes, and the detector shares this task: a
+        call that opens the mic while the last one is being summarized must
+        still be caught from its first seconds.
+        """
         rec = self.current
         if rec is None:
             return
-        self.current = None
-        self._stop_you_display()
-        rec.stop()
-        await asyncio.sleep(0.2)  # let cancelled writers unwind before we read
-        if rec.transcript_jsonl is not None:
-            with contextlib.suppress(Exception):
-                rec.transcript_jsonl.close()
+        # Counted before `current` clears, so there is no instant at which a
+        # meeting is neither recording nor being finished (a quit that looked
+        # at `busy` in that gap cancelled the summary before it started).
+        self._finalizing += 1
+        try:
+            self.current = None
+            self._stop_you_display()
+            rec.stop()
+            await asyncio.sleep(0.2)  # let cancelled writers unwind before we read
+            if rec.transcript_jsonl is not None:
+                with contextlib.suppress(Exception):
+                    rec.transcript_jsonl.close()
 
-        duration = time.time() - rec.started_at
-        self.emit(MeetingEnded(rec.session_dir, duration))
-        self._status("finalizing", rec.session_dir.name)
-        await self._finish(rec)
-        self._status("paused" if paused_until() else "idle")
+            duration = time.time() - rec.started_at
+            self.emit(MeetingEnded(rec.session_dir, duration))
+            self._status("finalizing", rec.session_dir.name)
+            task = asyncio.create_task(self._finalize(rec))
+        except BaseException:
+            self._finalizing -= 1
+            raise
+        self._finishers.add(task)
+        task.add_done_callback(self._finishers.discard)
+
+    async def _finalize(self, rec: Recording) -> None:
+        try:
+            await self._finish(rec)
+        except Exception as e:
+            self.emit(EngineError("summary", f"finishing the meeting failed: {e}"))
+        finally:
+            self._finalizing -= 1
+        self._settle()
+
+    def _settle(self) -> None:
+        """Back to listening, unless another meeting is recording or finishing."""
+        if self.current is None and self._finalizing == 0:
+            self._status("paused" if paused_until() else "idle")
+
+    async def summarize_now(self, session_dir: Path) -> None:
+        """Write (or rewrite) one past meeting's summary, on request.
+
+        For a meeting whose summary never came: the model host was down, the
+        key was wrong, steno was quit mid-write. Same path as the end of a
+        meeting, so the to-dos and the title follow.
+        """
+        self._finalizing += 1
+        try:
+            self.emit(Finalizing(session_dir, "writing the summary"))
+            try:
+                summary = await summarize_session(
+                    session_dir, self.model, self._meeting_brief("")
+                )
+            except Exception as e:
+                self.emit(EngineError("summary", f"summary failed: {e}"))
+                return
+            self.emit(SummaryReady(
+                session_dir, summary.title, summary.body, requested=True
+            ))
+        finally:
+            self._finalizing -= 1
+            self._settle()
 
     # ------------------------------------------------------------------ capture
 
