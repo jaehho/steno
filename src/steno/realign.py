@@ -152,5 +152,7 @@ def _stamp(session_dir: Path, anchor: float, lines: int) -> None:
     })
     # It is no longer an inference: every line now carries a measured offset.
     meta.pop("started_at_derived", None)
+    # Both tracks were just transcribed: your side is no longer missing.
+    meta.pop("mic_pending", None)
     with contextlib.suppress(OSError):
         meta_path.write_text(json.dumps(meta, indent=2) + "\n")

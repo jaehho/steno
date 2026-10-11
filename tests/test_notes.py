@@ -9,11 +9,13 @@ from unittest import mock
 from steno import asstlink
 from steno.notes import (
     Todo,
+    _edit,
     ensure_todos,
     file_with_asst,
     forget_asst,
     load_notes,
     load_todos,
+    move_with_asst,
     open_count,
     parse_action_items,
     pull_todos,
@@ -241,6 +243,67 @@ class TestPullTodos(unittest.TestCase):
         self.assertTrue(out[0].done)
         self.assertTrue(load_todos(self.dir)[0].done)
         self.assertTrue(load_todos(self.dir)[0].dirty)
+
+    def test_a_row_filed_during_the_fetch_is_not_dropped(self):
+        """A summary landing files rows after the pull took its snapshot of
+        the phone. They are absent from it without having been deleted."""
+        save_todos(self.dir, [Todo(text="Send", owner="you")])
+
+        def slow_fetch(_dir):
+            def file(current):
+                current[0].uid = "U9"
+                return True
+            _edit(self.dir, file)  # the filing lands while we wait on asst
+            return {}
+
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "add_todo", return_value=None), \
+             mock.patch.object(asstlink, "fetch_session", side_effect=slow_fetch):
+            out = pull_todos(self.dir)
+        self.assertEqual([(t.text, t.uid) for t in out], [("Send", "U9")])
+
+    def test_a_tick_while_a_row_is_being_filed_is_not_undone(self):
+        save_todos(self.dir, [Todo(text="Send", owner="you")])
+
+        def add(*_a, **_k):
+            set_done_local(self.dir, "send", True)  # ticked during the call
+            return "U9"
+
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "target_list", return_value=None), \
+             mock.patch.object(asstlink, "add_todo", side_effect=add):
+            file_with_asst(self.dir, load_todos(self.dir))
+        row = load_todos(self.dir)[0]
+        self.assertEqual((row.uid, row.done, row.dirty), ("U9", True, True))
+
+    def test_asst_timing_out_returns_what_is_on_disk_now(self):
+        key = asstlink.source_key(self.dir, "send")
+        save_todos(self.dir, [Todo(text="Send", owner="you", uid="U1", src=key)])
+
+        def slow_none(_dir):
+            set_done_local(self.dir, "send", True)
+
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "set_done", return_value=False), \
+             mock.patch.object(asstlink, "fetch_session", side_effect=slow_none):
+            out = pull_todos(self.dir)
+        self.assertTrue(out[0].done)
+
+    def test_a_tick_during_a_move_survives(self):
+        key = asstlink.source_key(self.dir, "send")
+        save_todos(self.dir, [Todo(text="Send", owner="you", uid="U1", src=key)])
+        held = load_todos(self.dir)
+
+        def move(_uids, _list):
+            set_done_local(self.dir, "send", True)
+            return 1
+
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "move_todos", side_effect=move):
+            move_with_asst(self.dir, held, "thesis")
+        row = load_todos(self.dir)[0]
+        self.assertTrue(row.done)
+        self.assertEqual(row.list_name, "thesis")
 
     def test_listing_a_meeting_does_not_file_to_asst(self):
         """ensure_todos runs for every row when the list is built."""

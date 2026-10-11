@@ -36,8 +36,15 @@ from .events import (
     StatusChanged,
     SummaryReady,
 )
+from .playback import session_start
 from .redact import redact_text
-from .summarize import META_FILENAME, load_records, summarize_session, update_meta
+from .summarize import (
+    META_FILENAME,
+    load_meta,
+    load_records,
+    summarize_session,
+    update_meta,
+)
 from .transcribe import Utterance, stream_speaker, transcribe_file
 
 PAUSE_FILENAME = "paused-until"
@@ -99,6 +106,9 @@ class Recording:
     tasks: list[asyncio.Task] = field(default_factory=list)
     handles: list = field(default_factory=list)
     transcript_jsonl: IO[str] | None = None
+    # Taken at the start: a meeting that began during the last one's
+    # finishing must not hand it the wrong app's names.
+    keyterms: list[str] = field(default_factory=list)
 
     def stop(self) -> None:
         for t in self.tasks:
@@ -143,6 +153,8 @@ class Engine:
         # cancelled the very work that makes a recording worth keeping.
         self._finalizing = 0
         self._finishers: set[asyncio.Task] = set()
+        # Meetings being turned into notes right now; one summary at a time.
+        self._notes_in_progress: set[Path] = set()
         self.transcript: list[dict] = []
         self.queue: asyncio.Queue[Utterance] = asyncio.Queue()
         self._commands: asyncio.Queue[str] = asyncio.Queue()
@@ -174,14 +186,25 @@ class Engine:
                 await asyncio.gather(*self._finishers, return_exceptions=True)
 
     async def _watch(self) -> None:
-        async for event in watch_meetings(
-            allow=self.allow,
-            deny=self.deny,
-            start_hold_s=self.start_hold_s,
-            end_grace_s=self.end_grace_s,
-            is_paused=lambda: paused_until() is not None,
-        ):
-            await self._guarded(self._on_detect, event)
+        while True:
+            try:
+                async for event in watch_meetings(
+                    allow=self.allow,
+                    deny=self.deny,
+                    start_hold_s=self.start_hold_s,
+                    end_grace_s=self.end_grace_s,
+                    is_paused=lambda: paused_until() is not None,
+                ):
+                    await self._guarded(self._on_detect, event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # The detector itself failed (a `pactl` that would not spawn).
+                # Ending here would stop listening with the bar still saying so.
+                self.emit(EngineError("engine", f"detection failed: {e}; retrying", fatal=True))
+                await asyncio.sleep(5)
+            else:
+                return
 
     async def _on_detect(self, event) -> None:
         if event.kind == "start":
@@ -286,26 +309,37 @@ class Engine:
             return
         rec.handles = [you_wav, them_wav]
 
-        # Stamped here, immediately before capture starts, rather than when we
-        # decided to record: two `pactl` subprocesses sit in between, and this is
-        # the number every transcript line is mapped back onto the audio with.
-        rec.started_at = started_at = time.time()
-        _rewrite_meta(session_dir, started_at, app, manual)
+        try:
+            # Stamped here, immediately before capture starts, rather than when
+            # we decided to record: two `pactl` subprocesses sit in between, and
+            # this is the number every transcript line is mapped back onto the
+            # audio with.
+            rec.started_at = started_at = time.time()
+            _rewrite_meta(session_dir, started_at, app, manual)
 
-        # Names the brief cares about, so "Mimo" is not transcribed "me moan".
-        # Extracted once per meeting: the brief is short, and a live meeting
-        # must not re-read a file on every utterance.
-        self._keyterms = self._load_keyterms(app)
+            # Names the brief cares about, so "Mimo" is not transcribed "me
+            # moan". Extracted once per meeting: the brief is short, and a live
+            # meeting must not re-read a file on every utterance.
+            rec.keyterms = self._keyterms = self._load_keyterms(app)
 
-        rec.tasks = [
-            asyncio.create_task(self._record_mic(mic, you_wav)),
-            asyncio.create_task(self._stream_them(sink_mon, them_wav)),
-            asyncio.create_task(self._pump()),
-        ]
-        self.emit(MeetingStarted(session_dir, app, started_at, manual))
-        self._status("recording", app)
-        if self._audience:
-            self._start_you_display()
+            rec.tasks = [
+                asyncio.create_task(self._record_mic(mic, you_wav)),
+                asyncio.create_task(self._stream_them(sink_mon, them_wav)),
+                asyncio.create_task(self._pump()),
+            ]
+            self.emit(MeetingStarted(session_dir, app, started_at, manual))
+            self._status("recording", app)
+            if self._audience:
+                self._start_you_display()
+        except Exception:
+            # Left as it was, `current` would stay set with nothing capturing,
+            # and every later detection would be ignored as "already recording".
+            rec.stop()
+            if rec.transcript_jsonl is not None:
+                with contextlib.suppress(Exception):
+                    rec.transcript_jsonl.close()
+            self.current = None
+            raise
 
     async def _end(self) -> None:
         """Stop capturing, then finish the meeting in the background.
@@ -331,16 +365,10 @@ class Engine:
                 with contextlib.suppress(Exception):
                     rec.transcript_jsonl.close()
 
-            # Until the batch pass of your side has landed, say so on disk.
-            # A kill or a quit in between must not look like a meeting whose
-            # words are all there (retention would then delete the audio).
-            if (rec.session_dir / "you.wav").is_file():
-                with contextlib.suppress(OSError):
-                    update_meta(rec.session_dir, mic_pending=True)
-
             duration = time.time() - rec.started_at
             self.emit(MeetingEnded(rec.session_dir, duration))
             self._status("finalizing", rec.session_dir.name)
+            self._notes_in_progress.add(rec.session_dir)
             task = asyncio.create_task(self._finalize(rec))
         except BaseException:
             self._finalizing -= 1
@@ -352,8 +380,12 @@ class Engine:
         try:
             await self._finish(rec)
         except Exception as e:
-            self.emit(EngineError("summary", f"finishing the meeting failed: {e}"))
+            self.emit(EngineError(
+                "summary", f"finishing the meeting failed: {e}",
+                session_dir=rec.session_dir,
+            ))
         finally:
+            self._notes_in_progress.discard(rec.session_dir)
             self._finalizing -= 1
         self._settle()
 
@@ -367,24 +399,65 @@ class Engine:
 
         For a meeting whose summary never came: the model host was down, the
         key was wrong, steno was quit mid-write. Same path as the end of a
-        meeting, so the to-dos and the title follow.
+        meeting, so the to-dos and the title follow. If your side was never
+        transcribed (the app was quit or killed first) that pass is done too:
+        a summary of half a conversation is the failure being repaired.
         """
+        if session_dir in self._notes_in_progress:
+            # Being finished right now; the summary is coming. Say so.
+            self.emit(Finalizing(session_dir, "writing the summary"))
+            return
+        self._notes_in_progress.add(session_dir)
         self._finalizing += 1
         try:
+            if load_meta(session_dir).get("mic_pending") and (session_dir / "you.wav").is_file():
+                await self._repair_mic(session_dir)
             self.emit(Finalizing(session_dir, "writing the summary"))
             try:
                 summary = await summarize_session(
                     session_dir, self.model, self._meeting_brief("")
                 )
             except Exception as e:
-                self.emit(EngineError("summary", f"summary failed: {e}"))
+                self.emit(EngineError(
+                    "summary", f"summary failed: {e}", session_dir=session_dir
+                ))
                 return
             self.emit(SummaryReady(
                 session_dir, summary.title, summary.body, requested=True
             ))
         finally:
+            self._notes_in_progress.discard(session_dir)
             self._finalizing -= 1
             self._settle()
+
+    async def _repair_mic(self, session_dir: Path) -> None:
+        existing = load_records(session_dir)
+        mine, ok = await self._mic_pass(
+            session_dir, session_start(session_dir, existing), self._load_keyterms("")
+        )
+        if not ok:
+            return
+        records = sorted(existing + mine, key=lambda r: r["ts"])
+        if records:
+            write_transcripts(session_dir, records)
+        with contextlib.suppress(OSError):
+            update_meta(session_dir, mic_pending=None)
+
+    async def _mic_pass(
+        self, session_dir: Path, started_at: float, keyterms: list[str]
+    ) -> tuple[list[dict], bool]:
+        """Batch-transcribe your side. (records, whether it worked)."""
+        self.emit(Finalizing(session_dir, "transcribing your side"))
+        try:
+            mine = await transcribe_file(
+                session_dir / "you.wav", started_at, "you", keyterms=keyterms
+            )
+        except Exception as e:
+            self.emit(EngineError(
+                "transcribe", f"mic transcription failed: {e}", session_dir=session_dir
+            ))
+            return [], False
+        return mine, True
 
     # ------------------------------------------------------------------ capture
 
@@ -412,6 +485,7 @@ class Engine:
 
     async def _pump(self) -> None:
         """Persist finals, and pass everything up so the live view can show it."""
+        save_failed = False
         while True:
             u = await self.queue.get()
             rec = self.current
@@ -427,8 +501,17 @@ class Engine:
             if u.who:
                 row["who"] = u.who
             self.transcript.append(row)
-            rec.transcript_jsonl.write(json.dumps(row) + "\n")
-            rec.transcript_jsonl.flush()
+            try:
+                rec.transcript_jsonl.write(json.dumps(row) + "\n")
+                rec.transcript_jsonl.flush()
+            except (OSError, ValueError) as e:
+                # Disk full, or the file went away. The live view keeps
+                # working; say once that the transcript on disk is not.
+                if not save_failed:
+                    save_failed = True
+                    self.emit(EngineError(
+                        "engine", f"could not save the transcript: {e}", fatal=True
+                    ))
 
     # ------------------------------------------------------------- finalization
 
@@ -436,23 +519,25 @@ class Engine:
         """Batch-transcribe the mic, merge both sides, then summarize."""
         you_wav = rec.session_dir / "you.wav"
         mine: list[dict] = []
+        mic_done = True
         if you_wav.is_file():
-            self.emit(Finalizing(rec.session_dir, "transcribing your side"))
-            try:
-                mine = await transcribe_file(
-                    you_wav, rec.started_at, "you", keyterms=self._keyterms
-                )
-            except Exception as e:
-                self.emit(EngineError("transcribe", f"mic transcription failed: {e}"))
-            else:
-                with contextlib.suppress(OSError):
-                    update_meta(rec.session_dir, mic_pending=None)
+            mine, mic_done = await self._mic_pass(
+                rec.session_dir, rec.started_at, rec.keyterms
+            )
 
         records = sorted(load_records(rec.session_dir) + mine, key=lambda r: r["ts"])
         if not records:
-            self.emit(EngineError("summary", "nothing was transcribed; no summary"))
+            self.emit(EngineError(
+                "summary", "nothing was transcribed; no summary",
+                session_dir=rec.session_dir,
+            ))
             return
         write_transcripts(rec.session_dir, records)
+        if mic_done:
+            # Only now, with your lines on disk: a kill before this point
+            # leaves the meeting marked as missing your side.
+            with contextlib.suppress(OSError):
+                update_meta(rec.session_dir, mic_pending=None)
 
         if not self.summarize:
             return
@@ -461,7 +546,9 @@ class Engine:
         try:
             summary = await summarize_session(rec.session_dir, self.model, brief)
         except Exception as e:
-            self.emit(EngineError("summary", f"summary failed: {e}"))
+            self.emit(EngineError(
+                "summary", f"summary failed: {e}", session_dir=rec.session_dir
+            ))
             return
         self.emit(SummaryReady(rec.session_dir, summary.title, summary.body))
 
@@ -562,9 +649,13 @@ class Engine:
 
 
 def _rewrite_meta(session_dir: Path, started_at: float, app: str, manual: bool) -> None:
+    # `mic_pending` from the first second: a kill or crash mid-meeting leaves
+    # your side untranscribed, and retention must not read that as finished.
+    # It is cleared once your lines are merged into the transcript.
     with contextlib.suppress(OSError):
         (session_dir / META_FILENAME).write_text(json.dumps({
             "started_at": started_at, "app": app, "manual": manual,
+            "mic_pending": True,
         }, indent=2) + "\n")
 
 

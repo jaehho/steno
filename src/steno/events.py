@@ -71,6 +71,9 @@ class EngineError:
     where: str
     message: str
     fatal: bool = False
+    # The meeting it is about, when there is one: a failure for one meeting
+    # must not clear another's "writing the summary".
+    session_dir: Path | None = None
 
 
 @dataclass(frozen=True)

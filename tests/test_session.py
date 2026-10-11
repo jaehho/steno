@@ -32,6 +32,7 @@ class TestBusy(unittest.TestCase):
         return SimpleNamespace(
             stop=lambda: None, transcript_jsonl=None,
             started_at=time.time() - 60, session_dir=self.root, app="zoom",
+            keyterms=[],
         )
 
     def test_a_meeting_is_never_neither_recording_nor_busy(self):
@@ -68,22 +69,52 @@ class TestBusy(unittest.TestCase):
         asyncio.run(scenario())
         self.assertEqual(seen, [True, True, True, False])
 
-    def test_your_side_is_marked_pending_until_it_is_transcribed(self):
+    def test_a_new_meeting_is_marked_pending_from_the_start(self):
+        """A crash mid-meeting leaves your side untranscribed; retention must
+        not read that as finished."""
+        session._rewrite_meta(self.root, 1.0, "zoom", False)
+        self.assertTrue(load_meta(self.root)["mic_pending"])
+
+    def test_pending_clears_only_once_your_lines_are_on_disk(self):
         engine, _events = make_engine(self.root)
         (self.root / "you.wav").write_bytes(b"\0")
+        (self.root / "transcript.jsonl").write_text(
+            '{"ts": 5.0, "speaker": "them", "text": "hi"}\n'
+        )
+        session._rewrite_meta(self.root, 1.0, "zoom", False)
+        engine.summarize = False
         seen: list[bool] = []
 
-        async def scenario():
-            async def finish(_rec):
-                seen.append(bool(load_meta(self.root).get("mic_pending")))
+        async def mic_pass(_dir, _started, _keyterms):
+            return [{"ts": 6.0, "speaker": "you", "text": "hello"}], True
 
-            engine._finish = finish
-            engine.current = self.recording()
-            await engine._end()
-            await asyncio.gather(*engine._finishers)
+        real_write = session.write_transcripts
 
-        asyncio.run(scenario())
+        def write(d, records):
+            seen.append(bool(load_meta(d).get("mic_pending")))  # still set here
+            real_write(d, records)
+
+        engine._mic_pass = mic_pass
+        with mock.patch.object(session, "write_transcripts", write):
+            asyncio.run(engine._finish(self.recording()))
         self.assertEqual(seen, [True])
+        self.assertNotIn("mic_pending", load_meta(self.root))
+
+    def test_a_failed_mic_pass_leaves_it_pending(self):
+        engine, _events = make_engine(self.root)
+        (self.root / "you.wav").write_bytes(b"\0")
+        (self.root / "transcript.jsonl").write_text(
+            '{"ts": 5.0, "speaker": "them", "text": "hi"}\n'
+        )
+        session._rewrite_meta(self.root, 1.0, "zoom", False)
+        engine.summarize = False
+
+        async def mic_pass(_dir, _started, _keyterms):
+            return [], False
+
+        engine._mic_pass = mic_pass
+        asyncio.run(engine._finish(self.recording()))
+        self.assertTrue(load_meta(self.root)["mic_pending"])
 
     def test_a_failed_finish_is_reported_and_clears_busy(self):
         engine, events = make_engine(self.root)
@@ -121,6 +152,31 @@ class TestBusy(unittest.TestCase):
         self.assertTrue(errors[0].fatal)
 
 
+class TestStartFailure(unittest.TestCase):
+    def test_a_failure_after_capture_opened_leaves_no_phantom_recording(self):
+        """`current` set with nothing capturing made every later detection
+        'already recording' until someone pressed Stop."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        engine, events = make_engine(root)
+
+        async def capture():
+            return "mic"
+
+        def boom(_app=""):
+            msg = "bad brief"
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, msg)
+
+        with mock.patch.object(session, "capture_mic", capture), \
+             mock.patch.object(session, "default_sink_monitor", capture), \
+             mock.patch.object(engine, "_load_keyterms", boom):
+            asyncio.run(engine._guarded(engine._start, "zoom"))
+        self.assertIsNone(engine.current)
+        self.assertFalse(engine.busy)
+        self.assertTrue(any(isinstance(e, EngineError) for e in events))
+
+
 class TestSummarizeNow(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -145,6 +201,44 @@ class TestSummarizeNow(unittest.TestCase):
         ready = next(e for e in events if isinstance(e, SummaryReady))
         self.assertTrue(ready.requested)
         self.assertEqual(ready.title, "Plan")
+
+    def test_a_meeting_being_finished_is_not_summarized_twice(self):
+        engine, events = make_engine(self.root)
+        engine._notes_in_progress.add(self.dir)
+        called = []
+
+        async def fake(*_a):
+            called.append(1)
+            return Summary(title="x", body="# x")
+
+        with mock.patch.object(session, "summarize_session", fake):
+            asyncio.run(engine.summarize_now(self.dir))
+        self.assertEqual(called, [])
+        self.assertIsInstance(events[0], Finalizing)  # the page says "writing"
+
+    def test_an_orphaned_meeting_gets_its_mic_pass_first(self):
+        engine, events = make_engine(self.root)
+        (self.dir / "you.wav").write_bytes(b"\0")
+        (self.dir / "transcript.jsonl").write_text(
+            '{"ts": 5.0, "speaker": "them", "text": "hi"}\n'
+        )
+        session._rewrite_meta(self.dir, 1.0, "zoom", False)
+        order = []
+
+        async def mic(_dir, _started, _kt):
+            order.append("mic")
+            return [{"ts": 6.0, "speaker": "you", "text": "ok"}], True
+
+        async def fake(*_a):
+            order.append("summary")
+            return Summary(title="x", body="# x")
+
+        engine._mic_pass = mic
+        with mock.patch.object(session, "summarize_session", fake):
+            asyncio.run(engine.summarize_now(self.dir))
+        self.assertEqual(order, ["mic", "summary"])
+        self.assertNotIn("mic_pending", load_meta(self.dir))
+        self.assertTrue(any(isinstance(e, SummaryReady) for e in events))
 
     def test_failure_is_reported_not_raised(self):
         engine, events = make_engine(self.root)

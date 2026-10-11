@@ -289,6 +289,10 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
                 hit = filed.get(row.src)
                 if hit and not row.uid:
                     row.uid, row.list_name = hit
+                    # It was filed open. If it was ticked while that call was
+                    # in flight, asst has not heard, and the next pull would
+                    # read "open there" and undo the tick.
+                    row.dirty = row.done
                     changed = True
             return changed
 
@@ -341,9 +345,13 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     todos = flush_asst(session_dir, todos)
     if not asstlink.available():
         return todos
+    # Rows already on the phone before the fetch. A row filed *during* it
+    # (a summary landing) is absent from the snapshot without having been
+    # deleted, and must not be dropped as if it had.
+    had_uid = {t.key for t in load_todos(session_dir) if t.uid}
     remote = asstlink.fetch_session(session_dir)
     if remote is None:
-        return todos
+        return load_todos(session_dir)
     prefix = asstlink.source_prefix(session_dir)
     by_key = {
         k[len(prefix):] if k.startswith(prefix) else k.rsplit("/", 1)[-1]: v
@@ -357,7 +365,7 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
             _with_src(session_dir, t)
             hit = remote.get(t.src) or by_key.get(t.key)
             if hit is None:
-                if t.uid and not t.dirty:
+                if t.uid and not t.dirty and t.key in had_uid:
                     changed = True
                     continue  # asst deleted it; drop the row with it
                 kept.append(t)
@@ -391,10 +399,16 @@ def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) 
         return 0
     moved = asstlink.move_todos(uids, list_name)
     if moved:
+        def relist(current: list[Todo]) -> bool:
+            for t in current:
+                if t.uid:
+                    t.list_name = list_name or "Inbox"
+            return True
+
+        _edit(session_dir, relist)
         for t in todos:
             if t.uid:
                 t.list_name = list_name or "Inbox"
-        save_todos(session_dir, todos)
     return moved
 
 
@@ -408,14 +422,20 @@ def forget_asst(session_dir: Path, todos: list[Todo] | None = None) -> int:
     todos = load_todos(session_dir) if todos is None else todos
     uids = [t.uid for t in todos if t.uid]
     removed = asstlink.rm_todos(uids) if (uids and asstlink.available()) else 0
-    changed = False
+
+    def unfile(current: list[Todo]) -> bool:
+        changed = False
+        for t in current:
+            if t.uid:
+                t.uid = ""
+                t.list_name = ""
+                changed = True
+        return changed
+
+    _edit(session_dir, unfile)
     for t in todos:
-        if t.uid:
-            t.uid = ""
-            t.list_name = ""
-            changed = True
-    if changed:
-        save_todos(session_dir, todos)
+        t.uid = ""
+        t.list_name = ""
     return removed
 
 
