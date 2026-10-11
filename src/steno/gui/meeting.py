@@ -349,7 +349,19 @@ class MeetingPage(Gtk.Box):
         """
         self.current = s
         self._working.pop(s.dir, None)
+        # The batch pass of your side was merged into the transcript before
+        # the summary was written; the page still shows the far side alone.
+        self.refresh_transcript()
         self._show_summary(s, ensure_todos(s.dir))
+
+    def refresh_transcript(self, session_dir: Path | None = None) -> None:
+        """Re-read the transcript if it changed on disk. Notes and the ask box
+        are left alone; an unchanged transcript is not rebuilt (scroll stays)."""
+        s = self.current
+        if s is None or (session_dir is not None and s.dir != session_dir):
+            return
+        if load_records(s.dir) != self._records:
+            self._load_transcript(s)
 
     def mark_working(self, session_dir: Path, text: str) -> None:
         """Say what is being done to a meeting, or (empty text) that it is done."""
@@ -361,10 +373,14 @@ class MeetingPage(Gtk.Box):
         if current is not None and current.dir == session_dir:
             self._show_summary(current, ensure_todos(session_dir))
 
-    def clear_working(self) -> None:
-        """Whatever was being written failed: stop saying it is in progress."""
-        for session_dir in list(self._working):
-            self.mark_working(session_dir, "")
+    def clear_working(self, session_dir: Path | None = None) -> None:
+        """Whatever was being written failed: stop saying it is in progress.
+
+        For that meeting when the failure says which; otherwise for all, since
+        that is the only safe reading of an error that names none.
+        """
+        for pending in [session_dir] if session_dir is not None else list(self._working):
+            self.mark_working(pending, "")
 
     def _summarize(self) -> None:
         s = self.current

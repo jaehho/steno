@@ -78,6 +78,7 @@ class App(Adw.Application):
         self._first_activation = True
         self._said_still_listening = False
         self._error_noticed: dict[str, float] = {}
+        self._todo_workers: list[threading.Thread] = []
         self.tray: Tray | None = None
 
     # ------------------------------------------------------------------ startup
@@ -122,6 +123,9 @@ class App(Adw.Application):
     def do_shutdown(self) -> None:
         if self.bridge is not None:
             self.bridge.stop()
+        # To-dos being derived from a summary that landed while quitting.
+        for worker in self._todo_workers:
+            worker.join(timeout=20)
         if self.tray is not None:
             self.tray.stop()
         clear_state()
@@ -235,8 +239,8 @@ class App(Adw.Application):
             # hide the one thing that must always be visible.
             if until and self._window is not None:
                 self._window._toast(
-                    "Still recording. It won't start by itself again "
-                    f"for {minutes} min after this one ends"
+                    "Still recording. Detection stays paused until "
+                    f"{time.strftime('%H:%M', time.localtime(until))}"
                 )
             return
         if until:
@@ -305,7 +309,9 @@ class App(Adw.Application):
                 self._window.on_event(event)
             return GLib.SOURCE_REMOVE
 
-        threading.Thread(target=work, name="steno-todos", daemon=True).start()
+        worker = threading.Thread(target=work, name="steno-todos", daemon=True)
+        self._todo_workers = [w for w in self._todo_workers if w.is_alive()] + [worker]
+        worker.start()
 
     def _republish(self) -> bool:
         """Re-assert what we are doing, and notice a pause that has lapsed."""

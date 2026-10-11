@@ -531,3 +531,7 @@ class Sidebar(Gtk.Box):
         neighbour = remaining[min(index, len(remaining) - 1)] if remaining and index >= 0 else None
         key = LIVE if neighbour == LIVE else (neighbour.dir if isinstance(neighbour, Session) else None)
         self._repopulate(key)
+        if self.selected is None:
+            # Nothing to move to (the search left no neighbour): the page must
+            # not keep showing, and editing, a meeting that is in the trash.
+            self._on_select(None)

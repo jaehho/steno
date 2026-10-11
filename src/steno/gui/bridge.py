@@ -105,10 +105,16 @@ class EngineBridge:
             engine.stop_now()
         # `busy`, not `current`: `current` clears the moment a meeting ends,
         # while the batch pass and the summary are still running.
+        # The GTK thread is the one waiting, so keep serving its main loop:
+        # the window keeps painting, and the summary's events (its to-dos, the
+        # notification) are delivered instead of queued behind a frozen UI.
+        context = GLib.MainContext.default()
         deadline = timeout
         while engine is not None and engine.busy and deadline > 0:
-            thread.join(0.1)
-            deadline -= 0.1
+            while context.pending():
+                context.iteration(False)
+            thread.join(0.05)
+            deadline -= 0.05
         task = self._task
         if task is not None:
             loop.call_soon_threadsafe(task.cancel)

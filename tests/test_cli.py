@@ -93,6 +93,15 @@ class TestMainDispatch(unittest.TestCase):
         args = self.run_main("--brief", "/x/brief.md", "--any-app")
         self.assertEqual(args.brief, Path("/x/brief.md"))
 
+    def test_a_flag_value_that_names_a_command_is_still_a_value(self):
+        """`--allow pause` is the app called pause, not the pause command."""
+        args = self.run_main("--allow", "pause")
+        self.assertEqual(args.allow, "pause")
+
+    def test_brief_path_named_like_a_command(self):
+        args = self.run_main("--brief", "show", "--any-app")
+        self.assertEqual(args.brief, Path("show"))
+
     def test_unknown_flag_after_a_subcommand_is_an_error(self):
         with mock.patch.object(sys, "argv", ["steno", "status", "--bogus"]), \
              redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

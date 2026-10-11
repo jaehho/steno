@@ -376,9 +376,12 @@ class Window(Adw.ApplicationWindow):
                 self.meeting.mark_working(
                     event.session_dir, event.step[0].upper() + event.step[1:] + "…"
                 )
+            if event.step.startswith("writing"):
+                # Your side has just been merged in; show it before the summary.
+                self.meeting.refresh_transcript(event.session_dir)
         elif isinstance(event, EngineError):
             if event.where in ("summary", "transcribe"):
-                self.meeting.clear_working()
+                self.meeting.clear_working(event.session_dir)
             self._toast(f"{event.where}: {event.message}")
 
     def _begin_live(self, session_dir: Path, app: str, started_at: float) -> None:

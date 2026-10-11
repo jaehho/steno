@@ -631,6 +631,23 @@ def _preflight() -> None:
         )
 
 
+# Options that take a value, so `--allow pause` is not read as `pause`.
+_VALUE_FLAGS = {"--brief", "--allow", "--deny", "--dir", "--start-hold", "--end-grace"}
+
+
+def _names_a_command(argv: list[str], commands: set[str]) -> bool:
+    """Is the first positional word a subcommand? Option values are skipped."""
+    skip = False
+    for token in argv:
+        if skip:
+            skip = False
+        elif token in _VALUE_FLAGS:
+            skip = True
+        elif not token.startswith("-"):
+            return token in commands
+    return False
+
+
 def _add_detection_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--allow", default=None,
@@ -804,7 +821,7 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
 
     argv = sys.argv[1:]
     asked_for_help = {"-h", "--help", "--version"}.intersection(argv)
-    if not set(sub.choices).intersection(argv) and not asked_for_help:
+    if not _names_a_command(argv, set(sub.choices)) and not asked_for_help:
         # Bare `steno` opens the window; that is what this tool is, so the
         # detection flags (`steno --allow zoom`) mean the window's.
         argv = ["gui", *argv]
