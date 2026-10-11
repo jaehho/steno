@@ -55,6 +55,24 @@ class TestParseActionItems(unittest.TestCase):
         texts = [t.text for t in parse_action_items(SUMMARY)]
         self.assertNotIn("Whether the discount applies retroactively", texts)
 
+    def test_owner_and_bullet_variants(self):
+        body = (
+            "## Action items\n"
+            "**You:**\n- Send the deck\n"
+            "**Them**:\n* Revised quote\n"
+            "### Unassigned\n1. Book the room\n"
+        )
+        got = [(t.owner, t.text) for t in parse_action_items(body)]
+        self.assertEqual(got, [
+            ("you", "Send the deck"),
+            ("them", "Revised quote"),
+            ("unassigned", "Book the room"),
+        ])
+
+    def test_an_owner_heading_does_not_end_the_section(self):
+        body = "## Action items\n### You\n- One\n## Open questions\n- Not a todo\n"
+        self.assertEqual([t.text for t in parse_action_items(body)], ["One"])
+
     def test_no_section_yields_nothing(self):
         self.assertEqual(parse_action_items("# Title\n\n## TL;DR\n- nothing"), [])
 

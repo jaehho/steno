@@ -155,6 +155,10 @@ async def _subscribe_wakeups(queue: asyncio.Queue[None]) -> None:
                 if b"source-output" in raw:
                     with contextlib.suppress(asyncio.QueueFull):
                         queue.put_nowait(None)
+            # pactl exited by itself (the sound server is not up yet, or went
+            # away). Without a pause this respawned over a thousand times a
+            # second against a down server.
+            await asyncio.sleep(2)
         except asyncio.CancelledError:
             raise
         except Exception:

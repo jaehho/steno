@@ -1,8 +1,11 @@
 """Meeting detection: parsing pactl, and deciding what counts as a meeting."""
 from __future__ import annotations
 
+import asyncio
 import unittest
+from unittest import mock
 
+from steno import detect
 from steno.detect import (
     SELF_CLIENT_NAME,
     parse_source_outputs,
@@ -104,3 +107,41 @@ class TestQualifying(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWakeups(unittest.TestCase):
+    def test_a_pactl_that_exits_is_not_respawned_in_a_tight_loop(self):
+        """With the sound server down, `pactl subscribe` exits at once; the
+        loop respawned it over a thousand times a second."""
+        spawns = []
+
+        class Stdout:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        class Proc:
+            stdout = Stdout()
+            returncode = 0
+
+        async def spawn(*_a, **_kw):
+            spawns.append(1)
+            if len(spawns) > 1:
+                msg = "respawned without a pause"
+                raise AssertionError(msg)
+            return Proc()
+
+        async def sleep(_seconds):
+            raise asyncio.CancelledError
+
+        async def run():
+            queue: asyncio.Queue = asyncio.Queue()
+            await detect._subscribe_wakeups(queue)
+
+        with mock.patch.object(detect.asyncio, "create_subprocess_exec", spawn), \
+             mock.patch.object(detect.asyncio, "sleep", sleep), \
+             self.assertRaises(asyncio.CancelledError):
+            asyncio.run(run())
+        self.assertEqual(len(spawns), 1)  # slept (and was cancelled) after one

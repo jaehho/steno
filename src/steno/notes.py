@@ -24,8 +24,13 @@ NOTES_FILENAME = "notes.md"
 TODOS_FILENAME = "todos.json"
 
 # `- [ ] text` / `**You**` headers, as the summary writes them.
-_BULLET_RE = re.compile(r"^\s*[-*]\s+(?:\[[ xX]\]\s*)?(.+?)\s*$")
-_OWNER_RE = re.compile(r"^\s*\*\*(You|Them|Unassigned)\*\*\s*:?\s*$", re.IGNORECASE)
+# Models vary: `- x`, `* x`, `1. x`, and an owner as `**You**`, `**You:**`,
+# `**You**:` or a `### You` heading. Dropping any of these loses a promise.
+_BULLET_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.+?)\s*$")
+_OWNER_RE = re.compile(
+    r"^\s*(?:#{3,}\s+)?(?:\*\*)?(You|Them|Unassigned)\s*:?\s*(?:\*\*)?\s*:?\s*$",
+    re.IGNORECASE,
+)
 _ACTION_HEADING_RE = re.compile(r"^\s*#+\s*action\s+items?\s*$", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s*#+\s+")
 
@@ -99,14 +104,14 @@ def parse_action_items(summary_body: str) -> list[Todo]:
             in_section = True
             owner = "unassigned"
             continue
-        if in_section and _HEADING_RE.match(line):
-            break  # the next section ends the list
         if not in_section:
             continue
         m = _OWNER_RE.match(line)
         if m:
             owner = m.group(1).lower()
             continue
+        if _HEADING_RE.match(line):
+            break  # the next section ends the list
         m = _BULLET_RE.match(line)
         if m:
             text = m.group(1).strip()
