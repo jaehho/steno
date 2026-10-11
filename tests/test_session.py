@@ -11,7 +11,7 @@ from unittest import mock
 
 from steno import session
 from steno.events import EngineError, Finalizing, MeetingEnded, SummaryReady
-from steno.summarize import Summary
+from steno.summarize import Summary, load_meta
 
 
 def make_engine(root: Path) -> tuple[session.Engine, list]:
@@ -67,6 +67,23 @@ class TestBusy(unittest.TestCase):
 
         asyncio.run(scenario())
         self.assertEqual(seen, [True, True, True, False])
+
+    def test_your_side_is_marked_pending_until_it_is_transcribed(self):
+        engine, _events = make_engine(self.root)
+        (self.root / "you.wav").write_bytes(b"\0")
+        seen: list[bool] = []
+
+        async def scenario():
+            async def finish(_rec):
+                seen.append(bool(load_meta(self.root).get("mic_pending")))
+
+            engine._finish = finish
+            engine.current = self.recording()
+            await engine._end()
+            await asyncio.gather(*engine._finishers)
+
+        asyncio.run(scenario())
+        self.assertEqual(seen, [True])
 
     def test_a_failed_finish_is_reported_and_clears_busy(self):
         engine, events = make_engine(self.root)

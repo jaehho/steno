@@ -37,7 +37,7 @@ from .events import (
     SummaryReady,
 )
 from .redact import redact_text
-from .summarize import META_FILENAME, load_records, summarize_session
+from .summarize import META_FILENAME, load_records, summarize_session, update_meta
 from .transcribe import Utterance, stream_speaker, transcribe_file
 
 PAUSE_FILENAME = "paused-until"
@@ -331,6 +331,13 @@ class Engine:
                 with contextlib.suppress(Exception):
                     rec.transcript_jsonl.close()
 
+            # Until the batch pass of your side has landed, say so on disk.
+            # A kill or a quit in between must not look like a meeting whose
+            # words are all there (retention would then delete the audio).
+            if (rec.session_dir / "you.wav").is_file():
+                with contextlib.suppress(OSError):
+                    update_meta(rec.session_dir, mic_pending=True)
+
             duration = time.time() - rec.started_at
             self.emit(MeetingEnded(rec.session_dir, duration))
             self._status("finalizing", rec.session_dir.name)
@@ -437,6 +444,9 @@ class Engine:
                 )
             except Exception as e:
                 self.emit(EngineError("transcribe", f"mic transcription failed: {e}"))
+            else:
+                with contextlib.suppress(OSError):
+                    update_meta(rec.session_dir, mic_pending=None)
 
         records = sorted(load_records(rec.session_dir) + mine, key=lambda r: r["ts"])
         if not records:

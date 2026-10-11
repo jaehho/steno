@@ -289,6 +289,25 @@ def load_project(session_dir: Path) -> str | None:
         return None
 
 
+def load_meta(session_dir: Path) -> dict:
+    try:
+        meta = json.loads((session_dir / META_FILENAME).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def update_meta(session_dir: Path, **changes: object) -> None:
+    """Set keys in meta.json, dropping any whose value is None. The rest stays."""
+    meta = load_meta(session_dir)
+    for key, value in changes.items():
+        if value is None:
+            meta.pop(key, None)
+        else:
+            meta[key] = value
+    (session_dir / META_FILENAME).write_text(json.dumps(meta, indent=2) + "\n")
+
+
 def save_project(session_dir: Path, project: str | None) -> None:
     """Set or clear the project link. Only that key; the rest of meta survives."""
     meta_path = session_dir / META_FILENAME

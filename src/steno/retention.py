@@ -19,7 +19,7 @@ import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
-from .summarize import SUMMARY_FILENAME, iter_sessions, transcript_path
+from .summarize import SUMMARY_FILENAME, iter_sessions, load_meta, transcript_path
 
 BYTES_PER_KB = 1024
 
@@ -60,6 +60,10 @@ def is_prunable(session_dir: Path, cutoff: float) -> bool:
     if not (session_dir / SUMMARY_FILENAME).is_file():
         return False
     if audio_bytes(session_dir) == 0:
+        return False
+    if load_meta(session_dir).get("mic_pending"):
+        # Your side was never transcribed; the microphone track is the only
+        # copy of what you said.
         return False
     try:
         return transcript_path(session_dir).stat().st_mtime < cutoff

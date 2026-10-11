@@ -75,6 +75,14 @@ class TestPruning(unittest.TestCase):
         make_session(self.root, "20200101-000000", summary=False, age_days=90)
         self.assertEqual(retention.prune_audio(self.root, days=30), [])
 
+    def test_never_prunes_a_session_whose_mic_pass_never_finished(self):
+        """The far side's transcript and a summary exist, but your side was
+        never transcribed (a quit mid-finish): the audio is the only copy."""
+        session = make_session(self.root, "20200101-000000", age_days=90)
+        (session / "meta.json").write_text(json.dumps({"mic_pending": True}))
+        self.assertEqual(retention.prune_audio(self.root, days=30), [])
+        self.assertTrue((session / "you.wav").exists())
+
     def test_never_prunes_a_session_with_no_transcript(self):
         make_session(self.root, "20200101-000000", transcript=False, age_days=90)
         self.assertEqual(retention.prune_audio(self.root, days=30), [])
