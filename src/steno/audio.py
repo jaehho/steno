@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import wave
 from pathlib import Path
 
@@ -29,11 +30,19 @@ async def spawn_parec(source: str) -> asyncio.subprocess.Process:
 
 
 async def stop_parec(proc: asyncio.subprocess.Process) -> None:
-    proc.terminate()
+    """Stop a capture. Safe when it has already died (a sink that went away).
+
+    A ProcessLookupError here replaced the CancelledError that was ending the
+    task, and the retry loop around it then started a new capture after the
+    meeting was over.
+    """
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
     try:
         await asyncio.wait_for(proc.wait(), timeout=2)
     except TimeoutError:
-        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
 
 
 async def record_only(source: str, wav: wave.Wave_write) -> None:

@@ -99,6 +99,36 @@ class TestMainDispatch(unittest.TestCase):
             cli.main()
 
 
+class TestPreflight(unittest.TestCase):
+    """With no terminal, a refusal to start has to reach the desktop."""
+
+    def run_preflight(self, tty: bool):
+        calls = []
+
+        class Err(io.StringIO):
+            def isatty(self):
+                return tty
+
+        def record(argv, **_kw):
+            calls.append(argv)
+
+        with mock.patch.dict(os.environ, {"DEEPGRAM_API_KEY": ""}), \
+             mock.patch.object(cli.shutil, "which", return_value="/usr/bin/notify-send"), \
+             mock.patch.object(cli.subprocess, "run", side_effect=record), \
+             redirect_stderr(Err()), self.assertRaises(SystemExit):
+            cli._preflight()
+        return calls
+
+    def test_no_terminal_notifies(self):
+        calls = self.run_preflight(tty=False)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "notify-send")
+        self.assertIn("DEEPGRAM_API_KEY", calls[0][-1])
+
+    def test_a_terminal_only_prints(self):
+        self.assertEqual(self.run_preflight(tty=True), [])
+
+
 class TestPause(unittest.TestCase):
     def pause(self, duration: str):
         with mock.patch.object(cli, "set_pause") as set_pause, \

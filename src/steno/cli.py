@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import datetime as _dt
 import json as _json
 import math
 import os
 import shutil
+import subprocess
 import sys
 import textwrap
 import time
@@ -591,29 +593,42 @@ def _brief_new(brief_path: Path) -> None:
     os.execvp(binary, [binary, "--model", "opus", prompt])
 
 
+def _cannot_start(message: str) -> None:
+    """Say why the app will not start, where the person will see it.
+
+    From rofi, autostart or a bar click there is no terminal, so stderr alone
+    is a silent no-op and the listener simply never exists.
+    """
+    print(message, file=sys.stderr)
+    if not sys.stderr.isatty() and shutil.which("notify-send"):
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["notify-send", "-a", "Steno", "Steno cannot start", message],
+                timeout=5, check=False,
+            )
+    sys.exit(1)
+
+
 def _preflight() -> None:
     missing_env = [k for k in ("DEEPGRAM_API_KEY",) if not os.environ.get(k)]
     if missing_env:
         cfg = config_dir() / ".env"
-        print(
+        _cannot_start(
             f"Missing env: {', '.join(missing_env)}.\n"
             f"Put keys in {cfg} (run `steno init` to create a template) "
-            f"or export them in your shell.",
-            file=sys.stderr,
+            f"or export them in your shell."
         )
-        sys.exit(1)
     missing_tools = [t for t in ("pactl", "parec") if not shutil.which(t)]
     if missing_tools:
-        print(
+        _cannot_start(
             f"Missing tools: {', '.join(missing_tools)}. "
-            f"Install pipewire-pulse (or pulseaudio).",
-            file=sys.stderr,
+            f"Install pipewire-pulse (or pulseaudio)."
         )
-        sys.exit(1)
 
     if err := check_ready():
-        print(f"{err} -- summaries and questions run through the chat-completions endpoint.", file=sys.stderr)
-        sys.exit(1)
+        _cannot_start(
+            f"{err} -- summaries and questions run through the chat-completions endpoint."
+        )
 
 
 def _add_detection_flags(parser: argparse.ArgumentParser) -> None:
