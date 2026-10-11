@@ -18,12 +18,28 @@ from pathlib import Path
 
 NAMES_FILENAME = "speakers.json"
 
-# "this is alice", "i'm alice", "alice speaking" - the moments a voice
+# "my name is Alice", "I'm Alice", "this is Alice" - the moments a voice
 # announces itself. Deliberately narrow: a false name on a transcript is worse
-# than a numbered voice.
+# than a numbered voice, and the summary will say "Monday will send the deck".
+# The lead-in is matched without regard to case ("I'm" is how ASR writes it);
+# the name itself must be capitalized. "this is" only opens an utterance
+# ("This is Alice from Acme"), since mid-sentence it is "this is Python".
+_NAME = r"([A-Z][a-zA-Z'\u2019-]{1,24})\b"
 _INTRODUCED = re.compile(
-    r"\b(?:this is|i'm|i am|it's|it is|my name is)\s+([A-Z][a-zA-Z''-]{1,24})\b"
+    r"\b(?i:my name is|i['\u2019]m|i am)\s+" + _NAME
 )
+_OPENING = re.compile(r"^\W*(?i:this is)\s+" + _NAME)
+# Capitalized words that follow those lead-ins without being anyone's name.
+_NOT_NAMES = frozenset({
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December",
+    "Okay", "Ok", "Sorry", "Good", "Fine", "Great", "Sure", "Here", "Back",
+    "Just", "Not", "Glad", "Happy", "Going", "Trying", "Looking", "Using",
+    "Still", "Also", "Really", "Very", "Now", "Well", "Yes", "No", "Thanks",
+    "Thank", "Afraid", "Done", "Ready", "Late", "Early", "Online", "Muted",
+    "Alone", "Calling", "Wondering", "Thinking", "Saying",
+})
 # "alice here", "bob speaking" - but only mid-sentence; `_called` checks.
 _CALLED = re.compile(
     r"\b([A-Z][a-zA-Z''-]{1,24})\s+(?:here|speaking)\b"
@@ -63,6 +79,15 @@ def label(record: dict, names: dict[str, str]) -> str:
     return str(record.get("speaker", "them"))
 
 
+def _introduced(text: str) -> str | None:
+    """The name in "I'm Alice" / "my name is Alice" / an opening "This is Alice"."""
+    for pattern in (_INTRODUCED, _OPENING):
+        m = pattern.search(text)
+        if m and m.group(1) not in _NOT_NAMES:
+            return m.group(1)
+    return None
+
+
 def _called(text: str) -> str | None:
     """The name in an "Alice here" / "Alice speaking" mention, or None.
 
@@ -73,7 +98,7 @@ def _called(text: str) -> str | None:
     """
     for m in _CALLED.finditer(text):
         before = text[: m.start()].rstrip()
-        if before and not before.endswith(_SENTENCE_END):
+        if before and not before.endswith(_SENTENCE_END) and m.group(1) not in _NOT_NAMES:
             return m.group(1)
     return None
 
@@ -90,8 +115,7 @@ def learn_from(session_dir: Path, records: list[dict]) -> dict[str, str]:
         text = str(row.get("text") or "")
         if not who or who in names or not text:
             continue
-        m = _INTRODUCED.search(text)
-        name = m.group(1) if m else _called(text)
+        name = _introduced(text) or _called(text)
         if name:
             names[who] = name
     save_names(session_dir, names)

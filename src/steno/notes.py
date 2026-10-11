@@ -171,6 +171,10 @@ def sync_todos(session_dir: Path, summary_body: str) -> list[Todo]:
             fresh.done_at = prior.done_at
             fresh.uid = prior.uid
             fresh.src = prior.src
+            # A tick that has not reached asst yet must stay marked, or the
+            # next pull sees the task open there and undoes it.
+            fresh.dirty = prior.dirty
+            fresh.list_name = prior.list_name
             seen.add(id(prior))
         merged.append(fresh)
     merged.extend(

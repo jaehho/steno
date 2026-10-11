@@ -181,6 +181,14 @@ class TestPull(unittest.TestCase):
         """A dead asst must not look like 'every task was deleted'."""
         self.assertIsNone(self._fetch([], failed=True))
 
+    def test_half_an_answer_is_none(self):
+        """Open without completed makes every finished task look deleted."""
+        def _run(args):
+            return json.dumps([]) if args[0] == "ls" else None
+
+        with mock.patch.object(asstlink, "_run", side_effect=_run):
+            self.assertIsNone(asstlink.fetch_session(self.session))
+
 
 class TestMove(unittest.TestCase):
     def test_moves_only_filed_uids(self):

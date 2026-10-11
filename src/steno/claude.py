@@ -356,10 +356,17 @@ def _grep(root: Path, pattern: str, path: str) -> str:
     base = _resolve(root, path)
     hits: list[str] = []
 
+    top = root.resolve()
+
     def scan(f: Path) -> None:
         if len(hits) >= MAX_TOOL_HITS:
             return
         try:
+            # `read_file` refuses anything that resolves outside the root; a
+            # symlink the walk happens upon must meet the same rule, or a
+            # `.env -> ../secrets` in a project is read and sent.
+            if not f.resolve().is_relative_to(top):
+                return
             if f.stat().st_size > (1 << 20):
                 return
             lines = f.read_text(errors="replace").splitlines()
@@ -367,7 +374,7 @@ def _grep(root: Path, pattern: str, path: str) -> str:
             return
         for n, line in enumerate(lines, 1):
             if rx.search(line):
-                hits.append(f"{f.relative_to(root.resolve())}:{n}: {line.strip()}")
+                hits.append(f"{f.resolve().relative_to(top)}:{n}: {line.strip()}")
                 if len(hits) >= MAX_TOOL_HITS:
                     return
 

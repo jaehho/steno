@@ -99,3 +99,38 @@ class TestCalledBoundary(unittest.TestCase):
             "So here again. Well, Alice here will take that one."
         )
         self.assertEqual(names.get("speaker_0"), "Alice")
+
+
+class TestFalseIntroductions(unittest.TestCase):
+    """Things that sound like an introduction and are not."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def _learn(self, text):
+        row = {"speaker": "them", "who": "speaker_0", "text": text}
+        return learn_from(self.dir, [row])
+
+    def test_a_weekday_is_not_a_name(self):
+        self.assertEqual(self._learn("I think it's Monday already"), {})
+
+    def test_it_is_a_thing_is_not_a_name(self):
+        self.assertEqual(self._learn("honestly it's Zoom again"), {})
+
+    def test_mid_sentence_this_is_is_not_a_name(self):
+        self.assertEqual(self._learn("so this is Python code"), {})
+
+    def test_im_with_a_capital_i_is_a_name(self):
+        self.assertEqual(self._learn("Hi, I'm Alice").get("speaker_0"), "Alice")
+
+    def test_typographic_apostrophe(self):
+        self.assertEqual(self._learn("Hi, I\u2019m Alice").get("speaker_0"), "Alice")
+
+    def test_my_name_is(self):
+        self.assertEqual(self._learn("My name is Priya.").get("speaker_0"), "Priya")
+
+    def test_an_opening_this_is(self):
+        self.assertEqual(self._learn("This is Bob from Acme").get("speaker_0"), "Bob")
+
+    def test_a_feeling_is_not_a_name(self):
+        self.assertEqual(self._learn("I'm Sorry about that"), {})

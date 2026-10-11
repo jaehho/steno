@@ -240,6 +240,18 @@ class TestToolLoop(Keyed):
         tools = [m for m in seen[1]["messages"] if m["role"] == "tool"]
         self.assertTrue(tools[0]["content"].startswith("error:"))
 
+    def test_grep_does_not_follow_a_symlink_out_of_the_root(self):
+        """The README promises it can read nothing outside the directory."""
+        outside = Path(tempfile.mkdtemp())
+        (outside / "secret.env").write_text("API_TOKEN=hunter2\n")
+        root = Path(tempfile.mkdtemp())
+        (root / "notes.md").write_text("API_TOKEN is documented here\n")
+        (root / ".env").symlink_to(outside / "secret.env")
+        result = claude._run_tool(root, "grep", {"pattern": "API_TOKEN"})
+        self.assertIn("notes.md", result)
+        self.assertNotIn("hunter2", result)
+        self.assertNotIn(".env", result)
+
     def test_over_budget_forces_a_final_answer(self):
         projects = Path(tempfile.mkdtemp())
         seen = []

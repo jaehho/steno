@@ -84,6 +84,20 @@ class TestTodoState(unittest.TestCase):
         again = sync_todos(self.dir, SUMMARY)
         self.assertTrue(again[0].done)
 
+    def test_unsent_tick_survives_resummarize(self):
+        """A tick made while asst was down must not be undone by the pull."""
+        sync_todos(self.dir, SUMMARY)
+        todos = load_todos(self.dir)
+        todos[0].done = True
+        todos[0].dirty = True
+        todos[0].uid = "AB12"
+        todos[0].list_name = "thesis"
+        save_todos(self.dir, todos)
+        with mock.patch.object(asstlink, "available", lambda: False):
+            again = sync_todos(self.dir, SUMMARY)
+        self.assertTrue(again[0].dirty)
+        self.assertEqual(again[0].list_name, "thesis")
+
     def test_completed_item_kept_when_summary_drops_it(self):
         """Deleting the record of finished work is the one unrecoverable thing."""
         sync_todos(self.dir, SUMMARY)
