@@ -83,6 +83,20 @@ def status_card(
     return "Listening", "Records when an app uses the mic", "Record"
 
 
+def summary_missing(lines: int, working: str = "") -> tuple[str, bool]:
+    """(what the summary slot says, whether to offer "Summarize now").
+
+    A meeting with no summary is a failed meeting, not a quiet one, so the
+    page says which of three things is true: it is being written, there was
+    nothing to write it from, or it can be written now.
+    """
+    if working:
+        return working, False
+    if lines <= 0:
+        return "Nothing was transcribed in this meeting, so there is no summary.", False
+    return "No summary yet.", True
+
+
 def summary_body(md: str, has_todos: bool) -> str:
     """The summary as the page shows it: without what the page shows elsewhere.
 

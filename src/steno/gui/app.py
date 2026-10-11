@@ -12,6 +12,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 import os
+import time
 from pathlib import Path
 
 import gi
@@ -25,6 +26,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 from .. import autostart, icon_dir, migrate_legacy
 from ..control import APP_ID
 from ..events import (
+    EngineError,
     Event,
     Finalizing,
     MeetingEnded,
@@ -42,6 +44,15 @@ from .tray import Tray
 RECORDING_NOTIFICATION = "recording"
 REPUBLISH_S = 20
 TRAY_ENV = "STENO_TRAY"
+# Failures that mean a meeting did not turn into notes (or could not start).
+# With the window closed, which is the usual state, a toast is never seen.
+ERROR_NOTICES = {
+    "summary": "No summary was written",
+    "transcribe": "Your side was not transcribed",
+    "capture": "Could not start recording",
+    "engine": "Steno hit an error",
+}
+ERROR_NOTICE_EVERY_S = 60
 
 
 class App(Adw.Application):
@@ -65,6 +76,7 @@ class App(Adw.Application):
         self._window = None
         self._first_activation = True
         self._said_still_listening = False
+        self._error_noticed: dict[str, float] = {}
         self.tray: Tray | None = None
 
     # ------------------------------------------------------------------ startup
@@ -215,6 +227,17 @@ class App(Adw.Application):
     def pause(self, minutes: int | None) -> None:
         set_pause(minutes * 60 if minutes else None)
         until = paused_until()
+        engine = self.engine
+        if engine is not None and engine.current is not None:
+            # A pause only keeps the *next* meeting from starting by itself.
+            # Painting "Paused" over a recording that is still running would
+            # hide the one thing that must always be visible.
+            if until and self._window is not None:
+                self._window._toast(
+                    "Still recording. It won't start by itself again "
+                    f"for {minutes} min after this one ends"
+                )
+            return
         if until:
             self._publish("paused", since=until)
         else:
@@ -247,14 +270,21 @@ class App(Adw.Application):
             self.withdraw_notification(RECORDING_NOTIFICATION)
 
         elif isinstance(event, Finalizing):
-            self._publish("finalizing", event.step)
+            # The last meeting finishing is not news while a new one records.
+            engine = self.engine
+            if engine is None or engine.current is None:
+                self._publish("finalizing", event.step)
 
         elif isinstance(event, SummaryReady):
             # Derived here, not in the engine, and not in the window: the window
             # is usually closed, and todos that only appear when someone happens
             # to be watching are not todos.
             sync_todos(event.session_dir, event.body)
-            self._notify_summary(event.session_dir, event.title)
+            if not event.requested:
+                self._notify_summary(event.session_dir, event.title)
+
+        elif isinstance(event, EngineError):
+            self._notify_error(event)
 
         if self._window is not None:
             self._window.on_event(event)
@@ -301,6 +331,27 @@ class App(Adw.Application):
             "app.open-session", GLib.Variant("s", str(session_dir))
         )
         self.send_notification(f"summary-{session_dir.name}", note)
+
+    def _notify_error(self, event: EngineError) -> None:
+        """A failure the person has to hear about, when nobody is looking.
+
+        With the window up its toast already says it. Otherwise a summary that
+        never came is a file quietly left on disk, which is the failure this
+        tool exists to prevent.
+        """
+        title = ERROR_NOTICES.get(event.where)
+        window = self._window
+        if title is None or (window is not None and window.get_visible()):
+            return
+        now = time.monotonic()
+        last = self._error_noticed.get(event.where)
+        if last is not None and now - last < ERROR_NOTICE_EVERY_S:
+            return
+        self._error_noticed[event.where] = now
+        note = Gio.Notification.new(title)
+        note.set_body(event.message)
+        note.set_default_action("app.show")
+        self.send_notification(f"error-{event.where}", note)
 
     def note_still_listening(self) -> None:
         """Once per run, explain that closing the window didn't stop anything."""

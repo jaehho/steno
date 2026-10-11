@@ -80,9 +80,11 @@ class NotesBox(Gtk.Overlay):
         self.set_child(scroll)
 
         # TextView has no placeholder, so float one and hide it on first keystroke.
-        self.hint = Gtk.Label(label=placeholder)
+        self.hint = Gtk.Label(label=placeholder, xalign=0.0)
+        self.hint.set_wrap(True)
         self.hint.add_css_class("empty-hint")
-        self.hint.set_halign(Gtk.Align.START)
+        self.hint.set_halign(Gtk.Align.FILL)
+        self.hint.set_margin_end(14)
         self.hint.set_valign(Gtk.Align.START)
         self.hint.set_margin_start(14)
         self.hint.set_margin_top(9)
@@ -129,10 +131,18 @@ class AskBox(Gtk.Box):
     pane reserving space is the opposite of glanceable.
     """
 
+    IDLE_PLACEHOLDER = "Ask about this meeting  (Ctrl+G)"
+    BUSY_PLACEHOLDER = "Still answering the last question…"
+
     def __init__(self, on_ask: Callable[[str], None]) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._on_ask = on_ask
         self._buf = ""
+        # One question at a time, because the engine answers one at a time.
+        # `_ignore` is set when the box is cleared (another meeting was opened)
+        # under an answer still in flight: it is for the old page, not this one.
+        self._busy = False
+        self._ignore = False
 
         self.question = hint_label()
         self.question.set_wrap(True)
@@ -153,15 +163,18 @@ class AskBox(Gtk.Box):
 
         self.entry = Gtk.Entry()
         self.entry.add_css_class("ask")
-        self.entry.set_placeholder_text("Ask about this meeting  (Ctrl+G)")
+        self.entry.set_placeholder_text(self.IDLE_PLACEHOLDER)
         self.entry.set_icon_from_icon_name(Gtk.EntryIconPosition.PRIMARY, "system-search-symbolic")
         self.entry.connect("activate", lambda _e: self._submit())
         self.append(self.entry)
 
     def _submit(self) -> None:
         question = self.entry.get_text().strip()
-        if not question:
+        if not question or self._busy:
             return
+        self._busy = True
+        self._ignore = False
+        self.entry.set_placeholder_text(self.BUSY_PLACEHOLDER)
         self.entry.set_text("")
         self.question.set_text(question)
         self.question.set_visible(True)
@@ -171,13 +184,24 @@ class AskBox(Gtk.Box):
         self._buf = ""
         self._on_ask(question)
 
+    def _finish(self) -> None:
+        self._busy = False
+        self._ignore = False
+        self.entry.set_placeholder_text(self.IDLE_PLACEHOLDER)
+
     def delta(self, text: str) -> None:
+        if self._ignore:
+            return
         if not self._buf:
             self.answer.remove_css_class("advice-thinking")
         self._buf += text
         self.answer.set_text(self._buf)
 
     def done(self, text: str) -> None:
+        was_ignored = self._ignore
+        self._finish()
+        if was_ignored:
+            return
         self.answer.remove_css_class("advice-thinking")
         if text:
             self._buf = text
@@ -187,6 +211,7 @@ class AskBox(Gtk.Box):
             self.question.set_visible(False)
 
     def clear(self) -> None:
+        self._ignore = self._busy
         self._buf = ""
         self.answer.set_text("")
         self.answer_scroll.set_visible(False)

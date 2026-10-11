@@ -96,7 +96,9 @@ class Session:
         try:
             lines = (self.dir / "transcript.txt").read_text().splitlines()
         except OSError:
-            lines = []
+            # A meeting that was quit before it was finished has only the
+            # far side's jsonl; it must still be findable.
+            lines = [str(r.get("text", "")) for r in load_records(self.dir)]
         for i, line in enumerate(lines):
             if hit(line):
                 return {"where": "transcript", "line": i}
@@ -182,6 +184,9 @@ class Sidebar(Gtk.Box):
         self.append(scroll)
 
         self.footer = hint_label()
+        # Four facts do not fit a 260px column on one line; wrap, don't clip.
+        self.footer.set_wrap(True)
+        self.footer.set_margin_end(16)
         self.footer.set_margin_start(16)
         self.footer.set_margin_top(8)
         self.footer.set_margin_bottom(10)
@@ -249,7 +254,19 @@ class Sidebar(Gtk.Box):
     def refresh(self, select: Path | str | None = None) -> None:
         """Re-read the sessions directory, keeping the selection where it can."""
         keep = select if select is not None else self._selected_key()
-        self.sessions = [Session(p) for p in iter_sessions(self.root)]
+        # A meeting that is still there keeps its Session object: the meeting
+        # page holds one, and a fresh copy would leave it editing an orphan
+        # whose to-do ticks and project never reach the list.
+        known = {s.dir: s for s in self.sessions}
+        fresh = []
+        for path in iter_sessions(self.root):
+            session = Session(path)
+            old = known.get(session.dir)
+            if old is not None:
+                old.__dict__.update(session.__dict__)
+                session = old
+            fresh.append(session)
+        self.sessions = fresh
         self._repopulate(keep)
 
     def refresh_if_stale(self) -> bool:
@@ -305,10 +322,12 @@ class Sidebar(Gtk.Box):
         row = self.list.get_row_at_index(index) if index >= 0 else None
         if row is not None:
             self.list.select_row(row)
-        else:
+        elif not self.items and not self.query:
             self.selected = None
-            if not self.items:
-                self._on_select(None)
+            self._on_select(None)
+        # Otherwise the meeting on the page is merely filtered out of the
+        # list. Forgetting it would blank the page header, and clearing the
+        # search would then jump to the newest meeting instead of back here.
 
     def _update_footer(self) -> None:
         total = len(self.sessions)

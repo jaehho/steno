@@ -77,16 +77,22 @@ def slot(name: str) -> Adw.LayoutSlot:
 
 
 class MeetingPage(Gtk.Box):
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - one callback per gesture the page hands up
         self,
         on_ask: Callable[[Path, str], None],
         on_realign: Callable[..., None] | None,
         on_deleted: Callable[[Path], None],
         on_session_changed: Callable[[Session], None],
         on_toast: Callable[[str], None],
+        on_summarize: Callable[[Path], None] | None = None,
+        is_recording: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._on_ask = on_ask
+        self._on_summarize = on_summarize
+        self._is_recording = is_recording or (lambda: False)
+        # session dir -> what is being done to it ("Writing the summary…").
+        self._working: dict[Path, str] = {}
         self._on_realign = on_realign
         self._on_deleted = on_deleted
         self._on_session_changed = on_session_changed
@@ -198,7 +204,11 @@ class MeetingPage(Gtk.Box):
     def _build_slots(self) -> list[Gtk.Widget]:
         self.summary_label = wrapping_label()
         self.summary_label.add_css_class("summary")
-        summary = section("Summary", self.summary_label)
+        self.summarize_button = Gtk.Button(label="Summarize now")
+        self.summarize_button.set_halign(Gtk.Align.START)
+        self.summarize_button.set_visible(False)
+        self.summarize_button.connect("clicked", lambda _b: self._summarize())
+        summary = section("Summary", self.summary_label, self.summarize_button)
 
         self.todo_count = Gtk.Label(label="")
         self.todo_count.add_css_class("count")
@@ -287,14 +297,16 @@ class MeetingPage(Gtk.Box):
         GLib.idle_add(self._scroll_to_row, row)
 
     def _scroll_to_row(self, row: Gtk.ListBoxRow) -> bool:
-        self.transcript_list.select_row(row)
-        mark = self.transcript_list.get_adjustment()
-        if mark is None:
-            mark = self.transcript_list.get_parent().get_vadjustment()
-        if mark is not None:
-            y = row.get_allocation().y
-            mark.set_value(max(0, y - 48))
-        row.grab_focus()
+        """Bring a transcript line to just under the top of whichever scroller
+        holds it (the wide and the stacked layouts have their own)."""
+        scroller = row.get_ancestor(Gtk.ScrolledWindow)
+        if scroller is not None:
+            content = scroller.get_child()
+            if isinstance(content, Gtk.Viewport):
+                content = content.get_child()
+            found, _x, y = row.translate_coordinates(content, 0, 0)
+            if found:
+                scroller.get_vadjustment().set_value(max(0.0, y - 48))
         return GLib.SOURCE_REMOVE
 
     def load(self, s: Session) -> None:
@@ -303,19 +315,62 @@ class MeetingPage(Gtk.Box):
         self.current = s
 
         todos = ensure_todos(s.dir)
-        if s.summary_path.is_file():
-            body = words.summary_body(s.summary_path.read_text(), has_todos=bool(todos))
-            self.summary_label.set_markup(words.markup(body))
-        else:
-            self.summary_label.set_markup(
-                "<i>No summary yet.</i> It is written when a meeting ends; for an older "
-                f"meeting, run <tt>steno summarize {words.escape(s.dir.name)}</tt>."
-            )
-        self._load_todos(s, todos)
         self.notes.bind(s.dir)
         self.ask.clear()
         self._load_transcript(s)
+        self._show_summary(s, todos)
         self._arm_pull(s)
+
+    def _show_summary(self, s: Session, todos: list[Todo]) -> None:
+        """The summary slot and the to-do list, which depend on the same file.
+
+        With no summary the slot says why and, when it can be fixed from here,
+        offers to: a failed summary must not be a note to go and use a terminal.
+        """
+        if s.summary_path.is_file():
+            body = words.summary_body(s.summary_path.read_text(), has_todos=bool(todos))
+            self.summary_label.set_markup(words.markup(body))
+            self.summarize_button.set_visible(False)
+        else:
+            text, offer = words.summary_missing(
+                len(self._records), self._working.get(s.dir, "")
+            )
+            self.summary_label.set_markup(f"<i>{words.escape(text)}</i>")
+            self.summarize_button.set_visible(offer and self._on_summarize is not None)
+        self._load_todos(s, todos)
+
+    def show_summary(self, s: Session) -> None:
+        """A summary arrived for the open meeting.
+
+        Not `load`: that rebinds the notes (cursor to the top of what you are
+        typing), clears an answer in flight, and rebuilds the transcript under
+        your scroll position.
+        """
+        self.current = s
+        self._working.pop(s.dir, None)
+        self._show_summary(s, ensure_todos(s.dir))
+
+    def mark_working(self, session_dir: Path, text: str) -> None:
+        """Say what is being done to a meeting, or (empty text) that it is done."""
+        if text:
+            self._working[session_dir] = text
+        else:
+            self._working.pop(session_dir, None)
+        current = self.current
+        if current is not None and current.dir == session_dir:
+            self._show_summary(current, ensure_todos(session_dir))
+
+    def clear_working(self) -> None:
+        """Whatever was being written failed: stop saying it is in progress."""
+        for session_dir in list(self._working):
+            self.mark_working(session_dir, "")
+
+    def _summarize(self) -> None:
+        s = self.current
+        if s is None or self._on_summarize is None:
+            return
+        self.mark_working(s.dir, "Writing the summary…")
+        self._on_summarize(s.dir)
 
     def stop_pull(self) -> None:
         """Leave the meeting page: stop asking asst about this one."""
@@ -395,7 +450,10 @@ class MeetingPage(Gtk.Box):
         theirs = [t for t in todos if t.owner == "them"]
         self.todo_count.set_text(words.todo_count(sum(not t.done for t in yours)))
         if not todos:
-            self.todo_box.append(hint_label("Nothing to do out of this one."))
+            self.todo_box.append(hint_label(
+                "Nothing to do out of this one." if s.summary_path.is_file()
+                else "To-dos come with the summary."
+            ))
             return
         # Two groups, not one list with a tiny owner tag. Your work is the
         # to-do; what they owe is a reminder, so it sits under its own head.
@@ -503,10 +561,18 @@ class MeetingPage(Gtk.Box):
         if not self.player.tracks:
             self._play_at(0.0)
             return
+        if self._is_recording():
+            self.stop_playback()
+            return
         self.player.toggle()
 
     def _play_at(self, seconds: float) -> None:
         if self.current is None:
+            return
+        if self._is_recording():
+            # The far side is recorded from the default sink's monitor, so
+            # whatever plays here would be transcribed as the other person.
+            self._toast("Playback is off while recording; it would be recorded as them")
             return
         tracks = session_tracks(self.current.dir)
         if not tracks:

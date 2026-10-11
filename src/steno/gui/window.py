@@ -30,6 +30,7 @@ from ..events import (
     AdviceDone,
     EngineError,
     Event,
+    Finalizing,
     Heard,
     MeetingEnded,
     MeetingStarted,
@@ -96,6 +97,8 @@ class Window(Adw.ApplicationWindow):
             on_deleted=self.sidebar.forget,
             on_session_changed=self._on_session_changed,
             on_toast=self._toast,
+            on_summarize=self._summarize,
+            is_recording=self._is_recording,
         )
         self.insert_action_group("meeting", self.meeting.actions)
 
@@ -184,7 +187,9 @@ class Window(Adw.ApplicationWindow):
 
         self.stop_button = Gtk.Button(label="Stop")
         self.stop_button.add_css_class("destructive-action")
-        self.stop_button.connect("clicked", lambda _b: self.app.toggle_record())
+        # Stop, never toggle: a click that lands just after the meeting ended
+        # must not start a new recording.
+        self.stop_button.connect("clicked", lambda _b: self.app.stop_record())
         header.pack_end(self.stop_button)
 
         empty = Adw.StatusPage()
@@ -229,11 +234,20 @@ class Window(Adw.ApplicationWindow):
         add("ask", self._focus_ask, ["<Control>g"])
         add("find", self._focus_search, ["<Control>f"])
         add("toggle-record", self.app.toggle_record, ["<Control>r"])
-        add("play", self.meeting.toggle_play, ["<Control>space"])
+        add("play", self._toggle_play, ["<Control>space"])
         add("zoom-in", lambda: self._zoom(1), ["<Control>plus", "<Control>equal"])
         add("zoom-out", lambda: self._zoom(-1), ["<Control>minus"])
         # Close is not quit: it hides the window and the listener keeps going.
         add("close", self.close, ["<Control>w"])
+
+    def _is_recording(self) -> bool:
+        engine = self.app.engine
+        return engine is not None and engine.current is not None
+
+    def _toggle_play(self) -> None:
+        """Ctrl+Space plays a past meeting, and only while one is on the page."""
+        if self.stack.get_visible_child_name() == "meeting":
+            self.meeting.toggle_play()
 
     def _adopt_running_meeting(self) -> None:
         """Catch up if a meeting was already going when this window opened.
@@ -299,8 +313,10 @@ class Window(Adw.ApplicationWindow):
         self.page_subtitle.set_visible(bool(subtitle))
         self.content_page.set_title(title or "Meeting")
         self.meeting_menu.set_visible(isinstance(item, Session))
-        # With the sidebar showing, Stop is on its status card; without it, here.
-        self.stop_button.set_visible(item == LIVE and collapsed)
+        # With the sidebar showing, Stop is on its status card; without it, on
+        # whichever page you are on, so a recording is stoppable from a past
+        # meeting you wandered into too.
+        self.stop_button.set_visible(collapsed and self.app.status == "recording")
 
     # ------------------------------------------------------------ engine events
 
@@ -309,42 +325,53 @@ class Window(Adw.ApplicationWindow):
         if isinstance(event, MeetingStarted):
             self.live.clear()
             self._begin_live(event.session_dir, event.app, event.started_at)
-
         elif isinstance(event, Heard):
             if event.final:
                 self.live.add_line(event.speaker, event.text)
             else:
                 self.live.set_interim(event.text)
-
         elif isinstance(event, MeetingEnded):
             self.live.flush_notes()
             was_watching = self.sidebar.selected == LIVE
             self.sidebar.live_dir = None
             self.sidebar.refresh(select=event.session_dir if was_watching else None)
-
-        elif isinstance(event, SummaryReady):
-            self.sidebar.refresh()
-            selected = self.sidebar.selected
-            if isinstance(selected, Session) and selected.dir == event.session_dir:
-                self.meeting.load(selected)
-                self._update_header()
-            self._toast(f"Summary ready: {event.title}", open_session=event.session_dir)
-
         elif isinstance(event, AdviceDelta):
             if self._asker is not None:
                 self._asker.delta(event.text)
-
         elif isinstance(event, AdviceDone):
             if self._asker is not None:
                 self._asker.done(event.text)
             self._asker = None
+        else:
+            self._on_finishing_event(event)
 
+    def _on_finishing_event(self, event: Event) -> None:
+        """What happens to a meeting after it ends: its notes, or why not."""
+        if isinstance(event, SummaryReady):
+            self.sidebar.refresh()
+            selected = self.sidebar.selected
+            if isinstance(selected, Session) and selected.dir == event.session_dir:
+                self.meeting.show_summary(selected)
+                self._update_header()
+            else:
+                self.meeting.mark_working(event.session_dir, "")
+            self._toast(f"Summary ready: {event.title}", open_session=event.session_dir)
+        elif isinstance(event, Finalizing):
+            if event.step.startswith(("writing", "transcrib")):
+                self.meeting.mark_working(
+                    event.session_dir, event.step[0].upper() + event.step[1:] + "…"
+                )
         elif isinstance(event, EngineError):
+            if event.where in ("summary", "transcribe"):
+                self.meeting.clear_working()
             self._toast(f"{event.where}: {event.message}")
 
     def _begin_live(self, session_dir: Path, app: str, started_at: float) -> None:
         self._live_started = started_at
         self._live_app = app
+        # Nothing may play while recording: it would be heard by the far-side
+        # capture and transcribed as them.
+        self.meeting.stop_playback()
         self.live.bind_session(session_dir)
         self.sidebar.set_live(session_dir, app)
         self.split.set_show_content(True)
@@ -355,6 +382,7 @@ class Window(Adw.ApplicationWindow):
             status, detail, time.time(), self.app.since, paused_until()
         )
         self.sidebar.set_status(status, title, subtitle, button)
+        self._update_header()
 
     def _tick(self) -> bool:
         """Let the status card count a recording up and a pause down."""
@@ -384,8 +412,19 @@ class Window(Adw.ApplicationWindow):
     def _on_status_button(self, label: str) -> None:
         if label == "Resume":
             self.app.pause(None)
+        elif label == "Stop":
+            self.app.stop_record()
         else:
             self.app.toggle_record()
+
+    def _summarize(self, session_dir: Path) -> None:
+        """Write a past meeting's summary on the engine's loop, report on GTK's."""
+        engine, bridge = self.app.engine, self.app.bridge
+        if engine is None or bridge is None or bridge.submit(
+            engine.summarize_now(session_dir)
+        ) is None:
+            self.meeting.mark_working(session_dir, "")
+            self._toast("Steno isn't running, so it can't write the summary")
 
     def _ask_live(self, question: str) -> None:
         self._submit_question(self.live.ask, question, None)
