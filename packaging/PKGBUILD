@@ -36,7 +36,7 @@ depends=(
   'gst-plugins-good'
 )
 optdepends=(
-  'claude-code: summaries and questions (or its native install on PATH)'
+  'claude-code: `steno brief --new` drafts your brief with it'
   'libnotify: desktop notifications when a summary is ready'
   'python-numpy: `steno clean-echo`, for meetings recorded on speakers'
 )

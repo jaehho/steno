@@ -58,12 +58,15 @@ Then set it up once:
 steno init         # writes ~/.config/steno/.env
 ```
 
-Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions run through
-headless Claude Code (`claude -p`) on its own login, so `claude` must be on
-PATH and logged in; no Anthropic key. Optionally
-write `~/.config/steno/brief.md` — a short, curated page about who you are and
-what you work on, used to resolve names and jargon that speech recognition
-mangles. `steno brief --new` drafts one with Claude Code.
+Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions are one
+OpenAI-style chat-completions request to a model host, MiMo by default, with
+its key in `~/.config/mimo.env` (`MIMO_API_KEY`). `STENO_PROVIDER=openrouter`
+reads `~/.config/openrouter.env` instead; `STENO_MODEL`, `STENO_BASE_URL` and
+`STENO_API_KEY` override the model, endpoint and key (the template `steno init`
+writes lists them). Optionally write `~/.config/steno/brief.md` — a short,
+curated page about who you are and what you work on, used to resolve names and
+jargon that speech recognition mangles. `steno brief --new` drafts one with
+Claude Code.
 
 ## Use
 
@@ -134,12 +137,14 @@ the point. Your own microphone is **recorded but never streamed** — it is
 transcribed in one pass when the meeting ends, which is cheaper and more
 accurate than streaming it.
 
-Audio leaves the machine only to Deepgram, and transcript text only to Anthropic
-(through `claude -p`) for the summary and for questions you ask. When a meeting
-is about one of the projects in `~/projects` (`STENO_PROJECTS_DIR`), the
-summary may read that directory, read-only, to get names and files right; so
-whatever it reads is sent too. It can read nothing outside that directory. Nothing is uploaded or shared on the
-tool's own initiative.
+Audio leaves the machine only to Deepgram, and transcript text only to the
+model host you configured (MiMo by default, or OpenRouter; see above) for the
+summary and for questions you ask. Emails, phone numbers and the like are
+scrubbed from the transcript on the way out. When a meeting is about one of the
+projects in `~/projects` (`STENO_PROJECTS_DIR`), the summary may read that
+directory, read-only, to get names and files right; so whatever it reads is
+sent too. It can read nothing outside that directory. Nothing is uploaded or
+shared on the tool's own initiative.
 
 It records other people automatically. That is a deliberate choice, and getting
 their consent is yours to handle — a notification with a Stop button appears
