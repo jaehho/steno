@@ -43,8 +43,16 @@ def minutes(mins: float) -> str:
     return f"{mins:.0f} min" if mins >= 1 else ""
 
 
-def row_meta(start: datetime, now: datetime, mins: float, project: str | None) -> list[str]:
-    return [p for p in (when(start, now), minutes(mins), project or "") if p]
+def row_meta(
+    start: datetime, now: datetime, mins: float, project: str | None,
+    summarized: bool = True,
+) -> list[str]:
+    """What the list row says under the title. A meeting with no summary says
+    so: an italic "Untitled" alone reads as a name, not as something missing."""
+    parts = [when(start, now), minutes(mins), project or ""]
+    if not summarized:
+        parts.append("no summary")
+    return [p for p in parts if p]
 
 
 def page_subtitle(start: datetime, mins: float, project: str | None) -> str:

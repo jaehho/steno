@@ -475,7 +475,9 @@ class Sidebar(Gtk.Box):
         box.append(title)
 
         line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        parts = words.row_meta(s.start, now, s.minutes, s.project)
+        parts = words.row_meta(
+            s.start, now, s.minutes, s.project, summarized=s.summary_path.is_file()
+        )
         if self.query:
             hit = s.locate(self.query)
             if hit and hit["where"] in ("summary", "notes", "transcript"):

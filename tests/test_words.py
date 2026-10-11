@@ -47,6 +47,12 @@ class TestListing(unittest.TestCase):
         )
         self.assertEqual(words.row_meta(datetime(2026, 9, 10, 14, 2), NOW, 0.2, None), ["Thu 14:02"])
 
+    def test_a_meeting_without_a_summary_says_so(self):
+        self.assertEqual(
+            words.row_meta(datetime(2026, 9, 10, 14, 2), NOW, 42.4, None, summarized=False),
+            ["Thu 14:02", "42 min", "no summary"],
+        )
+
     def test_todo_count(self):
         self.assertEqual(words.todo_count(0), "")
         self.assertEqual(words.todo_count(3), "3 to do")
