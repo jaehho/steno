@@ -12,6 +12,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -278,16 +279,33 @@ class App(Adw.Application):
         elif isinstance(event, SummaryReady):
             # Derived here, not in the engine, and not in the window: the window
             # is usually closed, and todos that only appear when someone happens
-            # to be watching are not todos.
-            sync_todos(event.session_dir, event.body)
-            if not event.requested:
-                self._notify_summary(event.session_dir, event.title)
+            # to be watching are not todos. Filing them is a handful of `asst`
+            # subprocesses, so it happens off this thread, and the window and
+            # the notification hear about the summary once the to-dos exist.
+            self._finish_summary(event)
+            return
 
         elif isinstance(event, EngineError):
             self._notify_error(event)
 
         if self._window is not None:
             self._window.on_event(event)
+
+    def _finish_summary(self, event: SummaryReady) -> None:
+        def work() -> None:
+            try:
+                sync_todos(event.session_dir, event.body)
+            finally:
+                GLib.idle_add(arrived)
+
+        def arrived() -> bool:
+            if not event.requested:
+                self._notify_summary(event.session_dir, event.title)
+            if self._window is not None:
+                self._window.on_event(event)
+            return GLib.SOURCE_REMOVE
+
+        threading.Thread(target=work, name="steno-todos", daemon=True).start()
 
     def _republish(self) -> bool:
         """Re-assert what we are doing, and notice a pause that has lapsed."""

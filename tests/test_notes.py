@@ -20,6 +20,7 @@ from steno.notes import (
     save_notes,
     save_todos,
     set_done,
+    set_done_local,
     sync_todos,
 )
 
@@ -221,6 +222,35 @@ class TestPullTodos(unittest.TestCase):
         self.assertTrue(out[0].done)
         self.assertEqual(out[0].uid, "0F27")
         self.assertEqual(out[0].list_name, "thesis")
+
+    def test_a_tick_made_during_a_slow_pull_is_not_lost(self):
+        """The pull reads, waits on asst, then writes. A tick in between must
+        survive the write; it used to be replaced by the older list."""
+        key = asstlink.source_key(self.dir, "send")
+        save_todos(self.dir, [Todo(text="Send", owner="you", uid="0F27", src=key)])
+        remote = {key: {"id": "0F27", "completed": False, "list": "Inbox"}}
+
+        def slow_fetch(_dir):
+            set_done_local(self.dir, "send", True)  # the user ticks meanwhile
+            return remote
+
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "set_done", return_value=False), \
+             mock.patch.object(asstlink, "fetch_session", side_effect=slow_fetch):
+            out = pull_todos(self.dir)
+        self.assertTrue(out[0].done)
+        self.assertTrue(load_todos(self.dir)[0].done)
+        self.assertTrue(load_todos(self.dir)[0].dirty)
+
+    def test_listing_a_meeting_does_not_file_to_asst(self):
+        """ensure_todos runs for every row when the list is built."""
+        (self.dir / "summary.md").write_text(SUMMARY)
+        (self.dir / "meta.json").write_text("{}")
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "add_todo") as add:
+            todos = ensure_todos(self.dir)
+        self.assertEqual(len(todos), 3)
+        add.assert_not_called()
 
     def test_missing_remote_drops_the_row_that_reached_asst(self):
         """Delete on the phone means delete here. Keeping it re-files it later."""

@@ -24,11 +24,12 @@ from .. import asstlink
 from ..export import default_filename, meeting_markdown
 from ..notes import (
     Todo,
+    deliver_done,
     ensure_todos,
     forget_asst,
     move_with_asst,
     pull_todos,
-    set_done,
+    set_done_local,
 )
 from ..playback import (
     audio_duration,
@@ -499,15 +500,20 @@ class MeetingPage(Gtk.Box):
             row.append(where)
 
         def toggled(button):
-            set_done(s.dir, todo.key, button.get_active())
+            done = button.get_active()
+            # The tick itself is a local file write. Telling asst is a
+            # subprocess that can take seconds when its daemon is struggling,
+            # so it never runs on the thread that draws the window.
+            now = set_done_local(s.dir, todo.key, done)
+            threading.Thread(
+                target=deliver_done, args=(s.dir, todo.key, done),
+                name="steno-asst", daemon=True,
+            ).start()
             label.remove_css_class("todo-done")
-            if button.get_active():
+            if done:
                 label.add_css_class("todo-done")
             self.todo_count.set_text(
-                words.todo_count(
-                    sum(not t.done and t.owner != "them"
-                        for t in ensure_todos(s.dir))
-                )
+                words.todo_count(sum(not t.done and t.owner != "them" for t in now))
             )
             self._on_session_changed(s)
 

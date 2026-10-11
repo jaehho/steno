@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -141,10 +143,30 @@ def load_todos(session_dir: Path) -> list[Todo]:
 
 
 def save_todos(session_dir: Path, todos: list[Todo]) -> None:
-    todos_path(session_dir).parent.mkdir(parents=True, exist_ok=True)
-    todos_path(session_dir).write_text(
-        json.dumps([asdict(t) for t in todos], indent=2) + "\n"
-    )
+    """Replace todos.json whole. Atomic, so a reader never sees half of it."""
+    path = todos_path(session_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps([asdict(t) for t in todos], indent=2) + "\n")
+    tmp.replace(path)
+
+
+# The window ticks boxes, a pull thread adopts what the phone says, and a
+# summary lands, all against one file. Each of those reads, changes and writes
+# it back, and a slow `asst` call sits between reading and writing in every
+# one. So: slow calls are made with nothing held, and the write is a patch to
+# the file as it is *then* (`_edit`), never the list as it was when the call
+# began. Otherwise a tick made during a pull is overwritten by the older list.
+_LOCK = threading.RLock()
+
+
+def _edit(session_dir: Path, patch: Callable[[list[Todo]], bool]) -> list[Todo]:
+    """Re-read todos.json, let `patch` change it, save when it says it did."""
+    with _LOCK:
+        todos = load_todos(session_dir)
+        if patch(todos):
+            save_todos(session_dir, todos)
+        return todos
 
 
 def _with_src(session_dir: Path, todo: Todo) -> None:
@@ -153,7 +175,7 @@ def _with_src(session_dir: Path, todo: Todo) -> None:
         todo.src = asstlink.source_key(session_dir, todo.key)
 
 
-def sync_todos(session_dir: Path, summary_body: str) -> list[Todo]:
+def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
     """Reconcile the summary's action items with what's already on disk.
 
     Checked-off state is preserved by source, then by text. Items the user has
@@ -162,45 +184,77 @@ def sync_todos(session_dir: Path, summary_body: str) -> list[Todo]:
     An open item already on the phone is kept too: the model must not orphan a
     task asst is holding. A rephrase becomes a second row (new source) rather
     than a silent rewrite of the phone task.
+
+    `file=False` only writes the local list: listing meetings must not push
+    anything into a task app.
     """
-    existing = load_todos(session_dir)
-    by_src = {t.src: t for t in existing if t.src}
-    by_key = {t.key: t for t in existing}
-    merged: list[Todo] = []
-    seen: set[int] = set()
-    for fresh in parse_action_items(summary_body):
-        _with_src(session_dir, fresh)
-        prior = by_src.get(fresh.src) or by_key.get(fresh.key)
-        if prior is not None and id(prior) not in seen:
-            fresh.done = prior.done
-            fresh.done_at = prior.done_at
-            fresh.uid = prior.uid
-            fresh.src = prior.src
-            # A tick that has not reached asst yet must stay marked, or the
-            # next pull sees the task open there and undoes it.
-            fresh.dirty = prior.dirty
-            fresh.list_name = prior.list_name
-            seen.add(id(prior))
-        merged.append(fresh)
-    merged.extend(
-        t for t in existing
-        if id(t) not in seen and (t.done or t.uid or t.owner == "you")
-    )
-    save_todos(session_dir, merged)
-    file_with_asst(session_dir, merged)
-    return merged
+    with _LOCK:
+        existing = load_todos(session_dir)
+        by_src = {t.src: t for t in existing if t.src}
+        by_key = {t.key: t for t in existing}
+        merged: list[Todo] = []
+        seen: set[int] = set()
+        for fresh in parse_action_items(summary_body):
+            _with_src(session_dir, fresh)
+            prior = by_src.get(fresh.src) or by_key.get(fresh.key)
+            if prior is not None and id(prior) not in seen:
+                fresh.done = prior.done
+                fresh.done_at = prior.done_at
+                fresh.uid = prior.uid
+                fresh.src = prior.src
+                # A tick that has not reached asst yet must stay marked, or the
+                # next pull sees the task open there and undoes it.
+                fresh.dirty = prior.dirty
+                fresh.list_name = prior.list_name
+                seen.add(id(prior))
+            merged.append(fresh)
+        merged.extend(
+            t for t in existing
+            if id(t) not in seen and (t.done or t.uid or t.owner == "you")
+        )
+        save_todos(session_dir, merged)
+    return file_with_asst(session_dir, merged) if file else merged
+
+
+def set_done_local(session_dir: Path, key: str, done: bool) -> list[Todo]:
+    """Tick or untick in todos.json, fast. A row on the phone is marked dirty
+    until `deliver_done` has told asst; a pull in between keeps your tick."""
+    def patch(todos: list[Todo]) -> bool:
+        changed = False
+        for t in todos:
+            if t.key == key:
+                t.done = done
+                t.done_at = time.time() if done else None
+                if t.uid:
+                    t.dirty = True
+                changed = True
+        return changed
+
+    return _edit(session_dir, patch)
+
+
+def deliver_done(session_dir: Path, key: str, done: bool) -> None:
+    """Tell asst about a tick. Slow (a subprocess): not for the GTK thread."""
+    owed = [t.uid for t in load_todos(session_dir) if t.key == key and t.uid and t.dirty]
+    for uid in owed:
+        if not asstlink.set_done(uid, done):
+            continue
+
+        def landed(todos: list[Todo], uid: str = uid) -> bool:
+            changed = False
+            for t in todos:
+                if t.uid == uid and t.done == done and t.dirty:
+                    t.dirty = False
+                    changed = True
+            return changed
+
+        _edit(session_dir, landed)
 
 
 def set_done(session_dir: Path, key: str, done: bool) -> list[Todo]:
-    todos = load_todos(session_dir)
-    for t in todos:
-        if t.key == key:
-            t.done = done
-            t.done_at = time.time() if done else None
-            if t.uid:
-                t.dirty = not asstlink.set_done(t.uid, done)
-    save_todos(session_dir, todos)
-    return todos
+    set_done_local(session_dir, key, done)
+    deliver_done(session_dir, key, done)
+    return load_todos(session_dir)
 
 
 def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
@@ -218,7 +272,7 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
         return todos
     list_name = asstlink.target_list(session_dir)
     prefix = asstlink.source_prefix(session_dir)
-    changed = False
+    filed: dict[str, tuple[str, str]] = {}
     for t in pending:
         _with_src(session_dir, t)
         key = t.src[len(prefix):] if t.src.startswith(prefix) else t.key
@@ -226,9 +280,19 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
         if uid:
             t.uid = uid
             t.list_name = list_name or "Inbox"
-            changed = True
-    if changed:
-        save_todos(session_dir, todos)
+            filed[t.src] = (t.uid, t.list_name)
+    if filed:
+        def landed(current: list[Todo]) -> bool:
+            changed = False
+            for row in current:
+                _with_src(session_dir, row)
+                hit = filed.get(row.src)
+                if hit and not row.uid:
+                    row.uid, row.list_name = hit
+                    changed = True
+            return changed
+
+        _edit(session_dir, landed)
     return todos
 
 
@@ -243,13 +307,21 @@ def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     if not asstlink.available():
         return todos
     todos = file_with_asst(session_dir, todos)
-    changed = False
+    delivered: list[tuple[str, bool]] = []
     for t in todos:
         if t.dirty and t.uid and asstlink.set_done(t.uid, t.done):
             t.dirty = False
-            changed = True
-    if changed:
-        save_todos(session_dir, todos)
+            delivered.append((t.uid, t.done))
+    if delivered:
+        def landed(current: list[Todo]) -> bool:
+            changed = False
+            for row in current:
+                if row.dirty and (row.uid, row.done) in delivered:
+                    row.dirty = False
+                    changed = True
+            return changed
+
+        _edit(session_dir, landed)
     return todos
 
 
@@ -262,48 +334,52 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     is deleted here too — a row that has reached the phone and then vanished
     from it was removed on purpose. Rows that never filed (theirs, or yours
     not yet sent) are local and stay.
+
+    The comparison is made against todos.json as it is after the (slow)
+    fetch, so a tick made while this ran is a dirty row, not a lost one.
     """
-    todos = load_todos(session_dir) if todos is None else todos
     todos = flush_asst(session_dir, todos)
     if not asstlink.available():
         return todos
     remote = asstlink.fetch_session(session_dir)
     if remote is None:
         return todos
-    by_src = remote
     prefix = asstlink.source_prefix(session_dir)
     by_key = {
         k[len(prefix):] if k.startswith(prefix) else k.rsplit("/", 1)[-1]: v
         for k, v in remote.items()
     }
-    kept: list[Todo] = []
-    changed = False
-    for t in todos:
-        _with_src(session_dir, t)
-        hit = by_src.get(t.src) or by_key.get(t.key)
-        if hit is None:
-            if t.uid and not t.dirty:
+
+    def reconcile(current: list[Todo]) -> bool:
+        kept: list[Todo] = []
+        changed = False
+        for t in current:
+            _with_src(session_dir, t)
+            hit = remote.get(t.src) or by_key.get(t.key)
+            if hit is None:
+                if t.uid and not t.dirty:
+                    changed = True
+                    continue  # asst deleted it; drop the row with it
+                kept.append(t)
+                continue
+            if t.dirty:
+                # Our tick has not landed; a stale remote must not undo it.
+                kept.append(t)
+                continue
+            done = bool(hit["completed"])
+            uid = str(hit.get("id") or t.uid)
+            list_name = str(hit.get("list") or t.list_name)
+            if t.done != done or t.uid != uid or t.list_name != list_name:
+                t.done = done
+                t.done_at = time.time() if done else None
+                t.uid = uid
+                t.list_name = list_name
                 changed = True
-                continue  # asst deleted it; drop the row with it
             kept.append(t)
-            continue
-        if t.dirty:
-            # Our tick has not landed; a stale remote must not undo it.
-            kept.append(t)
-            continue
-        done = bool(hit["completed"])
-        uid = str(hit.get("id") or t.uid)
-        list_name = str(hit.get("list") or t.list_name)
-        if t.done != done or t.uid != uid or t.list_name != list_name:
-            t.done = done
-            t.done_at = time.time() if done else None
-            t.uid = uid
-            t.list_name = list_name
-            changed = True
-        kept.append(t)
-    if changed:
-        save_todos(session_dir, kept)
-    return kept
+        current[:] = kept
+        return changed
+
+    return _edit(session_dir, reconcile)
 
 
 def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) -> int:
@@ -356,7 +432,9 @@ def ensure_todos(session_dir: Path) -> list[Todo]:
     if not summary.is_file():
         return []
     try:
-        return sync_todos(session_dir, summary.read_text())
+        # Local only: this runs for every meeting when the list is built, and
+        # opening the window must not write to a task app.
+        return sync_todos(session_dir, summary.read_text(), file=False)
     except OSError:
         return []
 
