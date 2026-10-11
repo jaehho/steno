@@ -416,6 +416,8 @@ class Window(Adw.ApplicationWindow):
             if isinstance(selected, Session):
                 self.meeting.load(selected)
             self._update_header()
+        else:
+            self.meeting.pull_now()
 
     def show_session(self, session_dir: Path | None) -> None:
         """Open one meeting - where a summary notification lands."""

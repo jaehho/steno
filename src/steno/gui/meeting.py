@@ -408,14 +408,21 @@ class MeetingPage(Gtk.Box):
             self._on_asst_changed,
         )
 
-    def _on_asst_changed(self, *_args) -> None:
-        # A burst of signals (sync, a multi-edit) is one pull, already
-        # coalesced by `_pull_in_flight`.
+    def pull_now(self) -> None:
+        """The window was shown again: catch up with what the phone did."""
         if self.current is not None:
             self._start_pull(self.current)
 
+    def _on_asst_changed(self, *_args) -> None:
+        # A burst of signals (sync, a multi-edit) is one pull, already
+        # coalesced by `_pull_in_flight`.
+        if self.current is not None and self.get_mapped():
+            self._start_pull(self.current)
+
     def _on_pull_tick(self) -> bool:
-        if self.current is not None:
+        # The window is usually closed. A page nobody can see has no use for
+        # a subprocess every minute; opening it pulls again (`load`).
+        if self.current is not None and self.get_mapped():
             self._start_pull(self.current)
         return GLib.SOURCE_CONTINUE
 

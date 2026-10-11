@@ -336,7 +336,10 @@ class App(Adw.Application):
         the only signal the user gets at the moment it starts.
         """
         note = Gio.Notification.new("Recording")
-        note.set_body(f"{app} opened the microphone.")
+        # "manual" is the engine's label for a start you asked for.
+        note.set_body(
+            "Recording started." if app == "manual" else f"{app} opened the microphone."
+        )
         note.add_button("Stop", "app.stop-record")
         note.set_default_action("app.show")
         note.set_priority(Gio.NotificationPriority.NORMAL)
