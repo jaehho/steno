@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import datetime as _dt
 import json as _json
+import math
 import os
 import shutil
 import sys
@@ -32,7 +33,7 @@ from .detect import (
 )
 from .echo import cancel_file
 from .export import meeting_markdown
-from .notes import pull_todos, sync_todos
+from .notes import forget_asst, pull_todos, sync_todos
 from .playback import TRACKS, clean_path
 from .realign import format_plan, has_audio, plan, realign_session
 from .retention import audio_bytes, delete_session, human_bytes
@@ -228,10 +229,12 @@ def cmd_pause(args: argparse.Namespace) -> None:
         activate("unpause")
         print("pause cleared")
         return
-    seconds = _parse_duration(args.duration)
-    set_pause(seconds)
-    activate("pause", [int(seconds // 60)])
-    print(f"detection paused for {seconds / 60:.0f} min (`steno pause --off` to clear)")
+    # Whole minutes, rounded up: the running app's pause action takes minutes,
+    # and 0 of them means "resume".
+    minutes = max(1, math.ceil(_parse_duration(args.duration) / 60))
+    set_pause(minutes * 60)
+    activate("pause", [minutes])
+    print(f"detection paused for {minutes} min (`steno pause --off` to clear)")
 
 
 def _parse_duration(text: str) -> float:
@@ -278,11 +281,15 @@ def _replace_line(text: str, previous: str) -> None:
 
 def _summarize_one(
     session_dir: Path, model: str, brief: str | None, force: bool = True
-) -> bool:
-    """Summarize one session, reporting progress. Returns True if it wrote one."""
+) -> bool | None:
+    """Summarize one session, reporting progress.
+
+    True if it wrote one, False if it tried and failed, None if it was
+    already summarized and left alone.
+    """
     if not force and has_summary(session_dir):
         print(f"  {session_dir.name}: already summarized (--force to redo)")
-        return False
+        return None
     progress = _progress_line(f"  {session_dir.name}: summarizing with {model}...")
     try:
         summary = asyncio.run(summarize_session(session_dir, model, brief))
@@ -320,12 +327,14 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             print(str(e), file=sys.stderr)
             sys.exit(1)
 
-    written = sum(
+    results = [
         _summarize_one(t, model, brief, force=args.force or not args.all)
         for t in targets
-    )
+    ]
     if args.all:
-        print(f"{written}/{len(targets)} summarized")
+        print(f"{results.count(True)}/{len(targets)} summarized")
+    if False in results:
+        sys.exit(1)
 
 
 def cmd_realign(args: argparse.Namespace) -> None:
@@ -357,14 +366,18 @@ def cmd_realign(args: argparse.Namespace) -> None:
         print("nothing done")
         return
 
+    failed = 0
     for job in plans:
         progress = _progress_line(f"  {job.name}: transcribing {job.minutes:.0f} min...")
         try:
             lines = asyncio.run(realign_session(job.session_dir))
         except Exception as e:
             _replace_line(f"  {job.name}: failed - {e}", progress)
+            failed += 1
             continue
         _replace_line(f"  {job.name}: {lines} lines re-timed", progress)
+    if failed:
+        sys.exit(1)
 
 
 def _confirm(prompt: str) -> bool:
@@ -386,11 +399,22 @@ def cmd_delete(args: argparse.Namespace) -> None:
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
+    newest = iter_sessions(args.dir)
+    if (read_state().get("status") == "recording" and newest
+            and newest[0].resolve() == session_dir.resolve()):
+        # Bare `steno delete` means "the most recent", which is the meeting
+        # being recorded right now; the engine would keep writing into the trash.
+        print(f"{session_dir.name} is being recorded; stop it first", file=sys.stderr)
+        sys.exit(1)
     title = load_title(session_dir) or session_dir.name
     size = human_bytes(audio_bytes(session_dir))
     if not args.yes and not _confirm(f"delete '{title}' ({size})? [y/N] "):
         print("nothing done")
         return
+    # Same as the window's delete: tasks filed from this meeting go with it.
+    freed = forget_asst(session_dir)
+    if freed:
+        print(f"removed {freed} task{'s' if freed != 1 else ''} from asst")
     outcome, where = delete_session(session_dir, permanent=args.permanent)
     if outcome == "trashed":
         print(f"moved to trash: {where}")
@@ -643,6 +667,11 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
         help="Start listening without opening a window (for autostart)",
     )
     _add_detection_flags(p_gui)
+    # The same flag as the top level's, for `steno --brief x --any-app`, which
+    # reaches here as `gui --brief x --any-app`. SUPPRESS: only set when given,
+    # so it cannot overwrite a top-level value with None.
+    p_gui.add_argument("--brief", type=Path, default=argparse.SUPPRESS,
+                       help="Path to brief.md (default: the one in your config dir)")
     p_gui.set_defaults(func=cmd_gui)
 
     p_bar = sub.add_parser("bar", help="Status line for waybar (JSON per change)")
@@ -758,10 +787,13 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     for old, new in migrate_legacy():
         print(f"moved {old} -> {new}")
 
-    args = parser.parse_args()
-    if args.cmd is None:
-        # Bare `steno` opens the window; that is what this tool is.
-        args = parser.parse_args(["gui", *sys.argv[1:]])
+    argv = sys.argv[1:]
+    asked_for_help = {"-h", "--help", "--version"}.intersection(argv)
+    if not set(sub.choices).intersection(argv) and not asked_for_help:
+        # Bare `steno` opens the window; that is what this tool is, so the
+        # detection flags (`steno --allow zoom`) mean the window's.
+        argv = ["gui", *argv]
+    args = parser.parse_args(argv)
     args.func(args)
 
 
