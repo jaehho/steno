@@ -91,6 +91,7 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
     /* ---- words around the content: small, plain, sentence case ---- */
     .sec {{ font-weight: 600; font-size: 10pt; color: {colors['overlay2']}; }}
     .hint {{ font-size: 9pt; color: {colors['overlay1']}; }}
+    .owed-item {{ font-weight: normal; }}
     .mono {{ font-family: {DATA}; }}
     .count {{ font-size: 9pt; font-weight: 600; color: {colors['peach']}; }}
     .page-title {{ font-weight: 700; }}

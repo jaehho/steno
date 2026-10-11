@@ -146,3 +146,20 @@ class TestSearchLocate(unittest.TestCase):
     def test_all_words_must_match(self):
         self.assertTrue(self.session.matches("budget fine"))
         self.assertFalse(self.session.matches("budget quantum"))
+
+
+class TestSummaryMissing(unittest.TestCase):
+    def test_offers_to_write_it_when_there_is_a_transcript(self):
+        text, offer = words.summary_missing(12)
+        self.assertEqual(text, "No summary yet.")
+        self.assertTrue(offer)
+
+    def test_says_when_there_is_nothing_to_summarize(self):
+        text, offer = words.summary_missing(0)
+        self.assertIn("Nothing was transcribed", text)
+        self.assertFalse(offer)
+
+    def test_says_it_is_being_written_and_does_not_offer_twice(self):
+        text, offer = words.summary_missing(12, "Writing the summary…")
+        self.assertEqual(text, "Writing the summary…")
+        self.assertFalse(offer)

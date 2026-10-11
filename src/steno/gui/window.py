@@ -59,7 +59,7 @@ SHORTCUTS = (
     ("Ctrl+G", "Ask about this meeting"),
     ("Ctrl+R", "Start or stop recording"),
     ("Ctrl+Space", "Play or pause a past meeting"),
-    ("Ctrl+ + / -", "Live transcript size"),
+    ("Ctrl+ + / - / 0", "Live transcript size (0 resets)"),
     ("Ctrl+W", "Close the window (keeps listening)"),
     ("Ctrl+Q", "Quit (stops listening)"),
 )
@@ -192,13 +192,7 @@ class Window(Adw.ApplicationWindow):
         self.stop_button.connect("clicked", lambda _b: self.app.stop_record())
         header.pack_end(self.stop_button)
 
-        empty = Adw.StatusPage()
-        empty.set_icon_name("audio-input-microphone-symbolic")
-        empty.set_title("No meetings yet")
-        empty.set_description(
-            "Steno records by itself when an app uses the microphone. "
-            "Start a call, or press Record."
-        )
+        empty = self._build_empty_page()
 
         self.stack = Gtk.Stack()
         self.stack.add_css_class("page")
@@ -212,6 +206,26 @@ class Window(Adw.ApplicationWindow):
         view.set_content(self.stack)
         self.content_page = Adw.NavigationPage.new(view, "Meeting")
         return self.content_page
+
+    def _build_empty_page(self) -> Adw.StatusPage:
+        empty = Adw.StatusPage()
+        empty.set_icon_name("audio-input-microphone-symbolic")
+        empty.set_title("No meetings yet")
+        empty.set_description(
+            "Steno records by itself when an app uses the microphone. "
+            "Start a call, or press Record."
+        )
+
+        # The page that says "press Record" has to have the button, or on a
+        # narrow window (where the status card is a page away) it points at
+        # nothing.
+        record = Gtk.Button(label="Record")
+        record.add_css_class("pill")
+        record.add_css_class("suggested-action")
+        record.set_halign(Gtk.Align.CENTER)
+        record.connect("clicked", lambda _b: self.app.toggle_record())
+        empty.set_child(record)
+        return empty
 
     def _apply_css(self) -> None:
         self._css.load_from_string(stylesheet(palette(), self.live.transcript_pt))
@@ -237,6 +251,7 @@ class Window(Adw.ApplicationWindow):
         add("play", self._toggle_play, ["<Control>space"])
         add("zoom-in", lambda: self._zoom(1), ["<Control>plus", "<Control>equal"])
         add("zoom-out", lambda: self._zoom(-1), ["<Control>minus"])
+        add("zoom-reset", lambda: self._zoom(0), ["<Control>0"])
         # Close is not quit: it hides the window and the listener keeps going.
         add("close", self.close, ["<Control>w"])
 
@@ -329,7 +344,7 @@ class Window(Adw.ApplicationWindow):
             if event.final:
                 self.live.add_line(event.speaker, event.text)
             else:
-                self.live.set_interim(event.text)
+                self.live.set_interim(event.speaker, event.text)
         elif isinstance(event, MeetingEnded):
             self.live.flush_notes()
             was_watching = self.sidebar.selected == LIVE

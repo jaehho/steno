@@ -96,7 +96,9 @@ paused) and lists every meeting. A meeting in progress sits at the top under
 **Now** and opens by itself: the far side's transcript, your notes, and a box to
 ask Claude about what's being said. A past meeting is one page — its summary,
 to-dos, your notes, a question box, and the full transcript, where **clicking
-any line plays that moment back**. The ⋯ menu acts on the meeting you are
+any line plays that moment back**. A meeting that never got its summary says so
+and has a **Summarize now** button. The sidebar's "N to-dos open" lists what you
+still owe across every meeting; a row opens its meeting. The ⋯ menu acts on the meeting you are
 looking at: re-time it against its audio, drop the audio but keep the words,
 copy or save the meeting as markdown, or delete it. Deleting goes to your
 desktop trash, all of it together, recoverable from there.
@@ -106,7 +108,7 @@ list and the meeting as separate pages when the window is narrow — a tall wind
 parked beside the call works.
 
 `Ctrl+G` ask · `Ctrl+F` search · `Ctrl+R` record · `Ctrl+Space` play ·
-`Ctrl+` `+`/`-` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`
+`Ctrl+` `+`/`-`/`0` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`
 quit (stops listening) · `Ctrl+?` all of these
 
 ## The bar

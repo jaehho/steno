@@ -21,7 +21,7 @@ import contextlib
 from gi.repository import Gtk, Pango
 
 from ..cost import format_meter, prerecorded_cost, stream_cost
-from ..notes import open_count
+from ..notes import ensure_todos, open_count
 from ..summarize import (
     SUMMARY_FILENAME,
     duration_minutes,
@@ -183,6 +183,9 @@ class Sidebar(Gtk.Box):
         scroll.set_vexpand(True)
         self.append(scroll)
 
+        self._on_activate = on_activate
+        self.append(self._build_owed())
+
         self.footer = hint_label()
         # Four facts do not fit a 260px column on one line; wrap, don't clip.
         self.footer.set_wrap(True)
@@ -191,6 +194,75 @@ class Sidebar(Gtk.Box):
         self.footer.set_margin_top(8)
         self.footer.set_margin_bottom(10)
         self.append(self.footer)
+
+    # -------------------------------------------------------------------- owed
+
+    def _build_owed(self) -> Gtk.Widget:
+        """What you still owe, across meetings, one flat list.
+
+        Afterwards you come back cold wanting "what did I promise?", and the
+        answer should not need a terminal or a meeting-by-meeting hunt. It is
+        a list of sentences, not folders or tags: a row opens its meeting.
+        """
+        self.owed = Gtk.MenuButton()
+        self.owed.add_css_class("flat")
+        self.owed.set_halign(Gtk.Align.START)
+        self.owed.set_margin_start(8)
+        self.owed.set_margin_top(4)
+        self.owed.set_visible(False)
+
+        self._owed_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._owed_box.set_margin_top(8)
+        self._owed_box.set_margin_bottom(8)
+        self._owed_box.set_margin_start(8)
+        self._owed_box.set_margin_end(8)
+        # A popover otherwise takes the width of its narrowest line.
+        self._owed_box.set_size_request(340, -1)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_propagate_natural_height(True)
+        scroll.set_max_content_height(440)
+        scroll.set_min_content_width(340)
+        scroll.set_child(self._owed_box)
+        self._owed_popover = Gtk.Popover()
+        self._owed_popover.set_child(scroll)
+        self._owed_popover.connect("show", lambda *_a: self._fill_owed())
+        self.owed.set_popover(self._owed_popover)
+        return self.owed
+
+    def _fill_owed(self) -> None:
+        while (child := self._owed_box.get_first_child()) is not None:
+            self._owed_box.remove(child)
+        now = datetime.now()
+        for s in self.sessions:
+            mine = [t for t in ensure_todos(s.dir) if not t.done and t.owner != "them"]
+            if not mine:
+                continue
+            head = Gtk.Label(
+                label=" · ".join(p for p in (s.title or "Untitled", words.when(s.start, now)) if p),
+                xalign=0.0,
+            )
+            head.add_css_class("sec")
+            head.set_ellipsize(Pango.EllipsizeMode.END)
+            head.set_margin_top(0 if self._owed_box.get_first_child() is None else 10)
+            self._owed_box.append(head)
+            for todo in mine:
+                button = Gtk.Button()
+                button.add_css_class("flat")
+                button.add_css_class("owed-item")
+                text = Gtk.Label(label=todo.text, xalign=0.0)
+                text.set_wrap(True)
+                text.set_max_width_chars(40)
+                button.set_child(text)
+                button.connect("clicked", lambda _b, d=s.dir: self._open_owed(d))
+                self._owed_box.append(button)
+
+    def _open_owed(self, session_dir: Path) -> None:
+        self._owed_popover.popdown()
+        if self.search.get_text():
+            self.search.set_text("")
+        self.select(session_dir)
+        self._on_activate()
 
     # ------------------------------------------------------------------ status
 
@@ -335,11 +407,11 @@ class Sidebar(Gtk.Box):
         minutes = sum(s.minutes for s in self.sessions)
         dollars = sum(s.cost for s in self.sessions)
         parts = [f"{total} meeting{'' if total == 1 else 's'}"]
-        if open_todos:
-            parts.append(f"{open_todos} to-do{'' if open_todos == 1 else 's'} open")
         if minutes:
             parts.append(format_meter(minutes, dollars))
         self.footer.set_text(" · ".join(parts))
+        self.owed.set_visible(bool(open_todos))
+        self.owed.set_label(words.owed_label(open_todos))
 
     def update_session(self, session: Session) -> None:
         """The meeting page changed this session's project or to-dos in place."""

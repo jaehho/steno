@@ -18,6 +18,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, GLib, Gtk, Pango
 
+from . import prefs
 from .style import TRANSCRIPT_PT_DEFAULT, TRANSCRIPT_PT_MAX, TRANSCRIPT_PT_MIN
 from .widgets import AskBox, NotesBox, section
 
@@ -54,7 +55,7 @@ class LivePage(Gtk.Box):
     def __init__(self, on_ask: Callable[[str], None]) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.session_dir = None
-        self.transcript_pt = TRANSCRIPT_PT_DEFAULT
+        self.transcript_pt = prefs.transcript_pt()
 
         self.layouts = Adw.MultiLayoutView()
         self.layouts.set_vexpand(True)
@@ -146,20 +147,27 @@ class LivePage(Gtk.Box):
         self.empty_hint.set_valign(Gtk.Align.CENTER)
 
         # Interim text sits below the finals and is replaced, never appended.
-        self.interim = Gtk.Label(label="", xalign=0.0)
-        self.interim.set_wrap(True)
-        self.interim.add_css_class("transcript-live")
-        self.interim.add_css_class("interim")
-        self.interim.set_margin_start(24 + 52)
-        self.interim.set_margin_end(24)
-        self.interim.set_margin_bottom(14)
-        self.interim.set_visible(False)
+        # One per speaker: with the window open both sides are streamed, and a
+        # single shared line made each side's partial wipe the other's and
+        # showed your words under no name at all.
+        tail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        tail.add_css_class("transcript-live")
+        tail.set_margin_start(24)
+        tail.set_margin_end(24)
+        tail.set_margin_bottom(14)
+        self.interims: dict[str, TranscriptLine] = {}
+        for who in ("them", "you"):
+            line = TranscriptLine(who, "")
+            line.label.add_css_class("interim")
+            line.set_visible(False)
+            self.interims[who] = line
+            tail.append(line)
 
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         inner.set_valign(Gtk.Align.END)
         inner.append(self.empty_hint)
         inner.append(self.lines)
-        inner.append(self.interim)
+        inner.append(tail)
 
         self.scroller = Gtk.ScrolledWindow()
         self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -174,7 +182,23 @@ class LivePage(Gtk.Box):
         adj = self.scroller.get_vadjustment()
         adj.connect("changed", self._on_range_changed)
         adj.connect("value-changed", self._on_scrolled)
-        return self.scroller
+
+        # Scrolled away to re-read, the view stops following; without a cue it
+        # sits behind the conversation and looks stuck. Present only then, and
+        # still: it never takes focus and nothing moves until it is pressed.
+        self.latest = Gtk.Button(label="Jump to latest")
+        self.latest.add_css_class("pill")
+        self.latest.set_focus_on_click(False)
+        self.latest.set_halign(Gtk.Align.CENTER)
+        self.latest.set_valign(Gtk.Align.END)
+        self.latest.set_margin_bottom(12)
+        self.latest.set_visible(False)
+        self.latest.connect("clicked", lambda _b: self._scroll_to_end(force=True))
+
+        overlay = Gtk.Overlay()
+        overlay.set_child(self.scroller)
+        overlay.add_overlay(self.latest)
+        return overlay
 
     # ------------------------------------------------------------------- events
 
@@ -182,12 +206,16 @@ class LivePage(Gtk.Box):
         self.empty_hint.set_visible(False)
         self.lines.append(TranscriptLine(speaker, text))
         self._trim()
-        self.set_interim("")
+        self.set_interim(speaker, "")
         self._scroll_to_end()
 
-    def set_interim(self, text: str) -> None:
-        self.interim.set_text(text)
-        self.interim.set_visible(bool(text))
+    def set_interim(self, speaker: str, text: str) -> None:
+        """Provisional words for one speaker; a final from them replaces it."""
+        line = self.interims.get(speaker)
+        if line is None:
+            return
+        line.label.set_text(text)
+        line.set_visible(bool(text))
         if text:
             self.empty_hint.set_visible(False)
             self._scroll_to_end()
@@ -195,7 +223,8 @@ class LivePage(Gtk.Box):
     def clear(self) -> None:
         while (child := self.lines.get_first_child()) is not None:
             self.lines.remove(child)
-        self.set_interim("")
+        for who in self.interims:
+            self.set_interim(who, "")
         self.ask.clear()
         self.empty_hint.set_visible(True)
 
@@ -212,6 +241,7 @@ class LivePage(Gtk.Box):
     def _scroll_to_end(self, force: bool = False) -> None:
         if force:
             self._following = True
+            self.latest.set_visible(False)
         if self._following:
             adj = self.scroller.get_vadjustment()
             adj.set_value(adj.get_upper() - adj.get_page_size())
@@ -230,6 +260,7 @@ class LivePage(Gtk.Box):
 
     def _on_scrolled(self, adj) -> None:
         self._following = adj.get_value() + adj.get_page_size() >= adj.get_upper() - 120
+        self.latest.set_visible(not self._following)
 
     # -------------------------------------------------------------------- notes
 
@@ -244,7 +275,8 @@ class LivePage(Gtk.Box):
     # --------------------------------------------------------------- type scale
 
     def zoom(self, delta: int) -> int:
-        self.transcript_pt = max(
-            TRANSCRIPT_PT_MIN, min(TRANSCRIPT_PT_MAX, self.transcript_pt + delta)
-        )
+        """Change the size by `delta` points; 0 puts it back to the default."""
+        size = TRANSCRIPT_PT_DEFAULT if delta == 0 else self.transcript_pt + delta
+        self.transcript_pt = max(TRANSCRIPT_PT_MIN, min(TRANSCRIPT_PT_MAX, size))
+        prefs.save_transcript_pt(self.transcript_pt)
         return self.transcript_pt

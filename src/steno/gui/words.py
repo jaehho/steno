@@ -56,6 +56,11 @@ def todo_count(n: int) -> str:
     return f"{n} to do" if n else ""
 
 
+def owed_label(n: int) -> str:
+    """The sidebar's cross-meeting count: what you still owe, everywhere."""
+    return f"{n} to-do{'' if n == 1 else 's'} open"
+
+
 def clock(seconds: float) -> str:
     total = max(0, int(seconds))
     if total >= SECONDS_PER_HOUR:

@@ -624,10 +624,46 @@ class MeetingPage(Gtk.Box):
     def _highlight(self, index: int) -> None:
         if index == self._playing_index or not 0 <= index < len(self._rows):
             return
+        following = True
         if 0 <= self._playing_index < len(self._rows):
-            self._rows[self._playing_index].remove_css_class("line-playing")
+            old = self._rows[self._playing_index]
+            # Follow only a reader who is following: if they scrolled away,
+            # pulling the view back every few seconds would be a fight.
+            following = self._row_in_view(old) is not False
+            old.remove_css_class("line-playing")
         self._rows[index].add_css_class("line-playing")
         self._playing_index = index
+        if following:
+            self._bring_into_view(self._rows[index])
+
+    @staticmethod
+    def _row_frame(row: Gtk.ListBoxRow):
+        """(scroller, y within its content, row height), or None if unplaced."""
+        scroller = row.get_ancestor(Gtk.ScrolledWindow)
+        if scroller is None:
+            return None
+        content = scroller.get_child()
+        if isinstance(content, Gtk.Viewport):
+            content = content.get_child()
+        found, _x, y = row.translate_coordinates(content, 0, 0)
+        return (scroller, y, row.get_height()) if found else None
+
+    def _row_in_view(self, row: Gtk.ListBoxRow) -> bool | None:
+        frame = self._row_frame(row)
+        if frame is None:
+            return None
+        scroller, y, height = frame
+        adj = scroller.get_vadjustment()
+        return y >= adj.get_value() and y + height <= adj.get_value() + adj.get_page_size()
+
+    def _bring_into_view(self, row: Gtk.ListBoxRow) -> None:
+        """Scroll just enough that the playing line is on screen. No focus."""
+        if self._row_in_view(row) is not False:
+            return
+        frame = self._row_frame(row)
+        if frame is not None:
+            scroller, y, _height = frame
+            scroller.get_vadjustment().set_value(max(0.0, y - 80))
 
     def stop_playback(self) -> None:
         """Let go of the audio device — on window close, and between meetings."""
