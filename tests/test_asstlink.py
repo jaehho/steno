@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -218,6 +221,22 @@ class TestSuiteIsolation(unittest.TestCase):
     def test_asst_is_off_by_default(self):
         """tests/__init__ keeps the suite out of the user's real inbox."""
         self.assertFalse(asstlink.available())
+
+    def test_real_asst_cannot_reach_the_session_bus(self):
+        """Below the `available` patch: a real `asst` call must fail.
+
+        Gotcha #13 recurred when a run skipped tests/__init__; the bus
+        address it sets is what keeps a real binary out of the inbox.
+        """
+        if shutil.which("asst") is None:
+            self.skipTest("asst is not installed")
+        proc = subprocess.run(
+            ["asst", "--json", "lists"],
+            capture_output=True, text=True, timeout=15, check=False,
+            env=os.environ,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("session bus", proc.stderr)
 
     def test_sync_todos_never_shells_out(self):
 
