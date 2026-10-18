@@ -61,6 +61,10 @@ NUDGE_S = 10.0
 # check-off arrives within a second. The timer is only a fallback for when
 # that signal is missing (daemon restarted under us, no session bus).
 PULL_S = 60
+# A search jump asks every JUMP_POLL_MS whether the transcript has been laid
+# out, and drops the jump after JUMP_GIVE_UP_US (a window that never shows).
+JUMP_POLL_MS = 16
+JUMP_GIVE_UP_US = 2 * GLib.USEC_PER_SEC
 
 # What "listen to" means for each side. Both sides at once is the default,
 # because that is what the meeting sounded like; the solo settings are for the
@@ -335,24 +339,35 @@ class MeetingPage(Gtk.Box):
                 self._rows[i].add_css_class("line-hit")
         if first < 0:
             return
-        row = self._rows[first]
-        # One idle pass: the rows have only just been added to the list box,
-        # and scrolling before they are allocated does nothing.
-        GLib.idle_add(self._scroll_to_row, row)
+        # The rows were only just added, and the page may not be on screen
+        # yet. The frame clock lays them out when it next runs, which can
+        # come after any idle pass, and until then the scroller has no
+        # extent to move in: set_value clamps to nothing. So ask until it
+        # has one.
+        give_up = GLib.get_monotonic_time() + JUMP_GIVE_UP_US
+        GLib.timeout_add(
+            JUMP_POLL_MS, self._scroll_to_row, self._rows[first], give_up
+        )
 
-    def _scroll_to_row(self, row: Gtk.ListBoxRow) -> bool:
+    def _scroll_to_row(self, row: Gtk.ListBoxRow, give_up: int) -> bool:
         """Bring a transcript line to just under the top of whichever scroller
-        holds it (the wide and the stacked layouts have their own)."""
+        holds it (the wide and the stacked layouts have their own).
+
+        Runs until the line has a place; True means ask again.
+        """
         scroller = row.get_ancestor(Gtk.ScrolledWindow)
-        if scroller is not None:
-            content = scroller.get_child()
-            if isinstance(content, Gtk.Viewport):
-                content = content.get_child()
-            # (x, y), or None when they share no ancestor: pygobject's Gtk
-            # override drops the success flag the C call returns.
-            point = row.translate_coordinates(content, 0, 0)
-            if point is not None:
-                scroller.get_vadjustment().set_value(max(0.0, point[1] - 48))
+        if scroller is None:  # another meeting replaced the rows
+            return GLib.SOURCE_REMOVE
+        if row.get_height() == 0:  # not laid out yet
+            return GLib.get_monotonic_time() < give_up
+        content = scroller.get_child()
+        if isinstance(content, Gtk.Viewport):
+            content = content.get_child()
+        # (x, y), or None when they share no ancestor: pygobject's Gtk
+        # override drops the success flag the C call returns.
+        point = row.translate_coordinates(content, 0, 0)
+        if point is not None:
+            scroller.get_vadjustment().set_value(max(0.0, point[1] - 48))
         return GLib.SOURCE_REMOVE
 
     def load(self, s: Session) -> None:
@@ -917,7 +932,11 @@ class MeetingPage(Gtk.Box):
     def _go_to_place(self, index: int) -> None:
         self._place = index
         self.cite_bar.set_current(index)
-        self._scroll_to_row(self._rows[self._places[index].rows[0]])
+        row = self._rows[self._places[index].rows[0]]
+        # Now if the line has a place, else as a search jump asks.
+        give_up = GLib.get_monotonic_time() + JUMP_GIVE_UP_US
+        if self._scroll_to_row(row, give_up):
+            GLib.timeout_add(JUMP_POLL_MS, self._scroll_to_row, row, give_up)
 
     def _step_place(self, delta: int) -> None:
         if 0 <= self._place + delta < len(self._places):
