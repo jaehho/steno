@@ -105,7 +105,10 @@ paused) and lists every meeting. A meeting in progress sits at the top under
 ask Claude about what's being said. A past meeting is one page — its summary,
 to-dos, your notes, a question box, and the full transcript, where **clicking
 any line plays that moment back**. A meeting that never got its summary says so
-and has a **Summarize now** button. The sidebar's "N to-dos open" lists what you
+and has a **Summarize now** button. A meeting's to-dos sit in two groups: **For
+you**, which also holds any item nobody has claimed, and **Waiting on them**,
+what someone else promised, kept as a reminder. Only the first is counted, in
+the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
 still owe across every meeting; a row opens its meeting. The ⋯ menu acts on
 the meeting you are looking at: summarize it again, re-time it against its
 audio, drop the audio but keep the words, copy or save the meeting as

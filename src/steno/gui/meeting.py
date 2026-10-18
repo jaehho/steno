@@ -705,13 +705,14 @@ class MeetingPage(Gtk.Box):
             self._keep_todo_cite()
             return
         # Two groups, not one list with a tiny owner tag. Your work is the
-        # to-do; what they owe is a reminder, so it sits under its own head.
+        # to-do; what you wait on is a reminder, so it sits under its own
+        # head. An item nobody has claimed is yours until someone does.
         if yours:
-            self.todo_box.append(self._group_label("Yours"))
+            self.todo_box.append(self._group_label("For you"))
             for todo in yours:
                 self.todo_box.append(self._todo_row(s, todo))
         if theirs:
-            self.todo_box.append(self._group_label("They owe"))
+            self.todo_box.append(self._group_label("Waiting on them"))
             for todo in theirs:
                 self.todo_box.append(self._todo_row(s, todo))
         self._keep_todo_cite()

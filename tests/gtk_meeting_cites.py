@@ -60,7 +60,7 @@ Planning went fine.
 PLAIN_SUMMARY = "# Plain call\n\n## Decisions\n- Nothing is cited here\n"
 # The lines each item points at: line n is said at second 5 * n.
 FIGURES = [80]  # the to-do "Send the figures"
-QUOTE = [60]  # what they owe: "Revised quote next week"
+QUOTE = [60]  # waiting on them: "Revised quote next week"
 OPENING = [1]
 DEPOSIT = [120, 121, 122]
 SHIP = [20, 160]
@@ -845,7 +845,7 @@ class TestTodos(CitedMeeting):
         bar = self.page.cite_bar
         return bar.get_visible() and bar.title.get_text() == title
 
-    def test_what_they_owe_can_be_clicked_too(self):
+    def test_what_you_wait_on_can_be_clicked_too(self):
         click(self.target_of("Revised quote next week"))
         self.assertEqual(self.lit(), QUOTE)
 
