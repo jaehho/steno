@@ -203,7 +203,8 @@ the list's "N to-dos open", is not in that list, and is not in
 `steno todos`, which says how many meetings it left out. Archiving takes
 the meeting's open tasks out of asst (`asst rm`; for a list tied to a
 GitHub repo asst closes the issue as not planned) and marks those rows
-`dropped` in `todos.json`, keeping their words and their asst source. The
+`dropped` in `todos.json`, keeping their words and their asst source (a
+row keeps its task id only until asst has let the task go). The
 toast says what happened: "Archived “Sync”. Removed 3 open tasks from
 asst." `steno archive` prints the same. A to-do you had ticked is left
 alone, and so is its finished task. The asst calls run after the meeting
@@ -215,7 +216,10 @@ task asst still holds is found and not doubled; one it had removed comes
 back as a new task (a new issue, on a list tied to a repo). If asst cannot
 be reached or refuses a task, the archive still happens, the toast and
 `steno archive` (which exits 1) say how many tasks are still open there,
-and those rows stay open; `steno archive NAME` again retries them. A
+and those rows stay open; `steno archive NAME` again retries them. So
+does a removal cut short (the process killed, a Ctrl-C): a closed row that
+still names its task is what is left to take out, and **Delete** takes
+that task out too. Quitting the window waits for a removal in progress. A
 to-do that never reached asst is closed here alone, so a meeting needs no
 asst to be put away. Archiving does not rewrite the pages the meeting has
 in a project (below).

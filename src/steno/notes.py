@@ -91,10 +91,12 @@ class Todo:
     # A checkbox that did not reach asst (daemon down). Kept until it lands,
     # so a later pull cannot un-tick what the user just ticked.
     dirty: bool = False
-    # Closed by putting the meeting away: its asst task is gone (or it
-    # never had one) and the row waits for Unarchive. Not open, not
-    # counted, not pulled, not filed. Text, uid and src stay, so a
-    # re-summarize still finds the row and Unarchive can file it again.
+    # Closed by putting the meeting away: not open, not counted, not
+    # pulled, not filed, and it waits for Unarchive. Its text and src
+    # stay, so a re-summarize still finds the row and Unarchive can file
+    # it again. Its uid stays only until asst has been seen to drop the
+    # task (`drop_open_todos`): a dropped row that names a task is one
+    # whose removal is still to do.
     dropped: bool = False
     # Where in the meeting this was said, as seconds on the transcript's
     # timeline. Comes from the summary's markers, never from the text.
@@ -502,7 +504,7 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     from it was removed on purpose. Rows that never filed (theirs, or yours
     not yet sent) are local and stay: a pull files nothing. A dropped
     row (`drop_open_todos`) is not looked for: its task was removed on
-    purpose, by us.
+    purpose, by us. It only loses its uid once asst no longer holds it.
 
     The comparison is made against todos.json as it is after the (slow)
     fetch, so a tick made while this ran is a dirty row, not a lost one.
@@ -528,6 +530,12 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
         changed = False
         for t in current:
             if t.dropped:
+                # Removed on purpose, by us. A task asst no longer
+                # holds is a removal done, whoever finished it.
+                if t.uid and not (remote.get(t.src) or by_key.get(t.key)):
+                    t.uid = ""
+                    t.list_name = ""
+                    changed = True
                 kept.append(t)
                 continue
             _with_src(session_dir, t)
@@ -591,8 +599,8 @@ def forget_asst(session_dir: Path, todos: list[Todo] | None = None) -> int:
     phone tasks were deleted behind the user's back.
     """
     todos = load_todos(session_dir) if todos is None else todos
-    # A dropped row's task was removed when the meeting was put away.
-    uids = [t.uid for t in todos if t.uid and not t.dropped]
+    # A dropped row names a task only if its removal never finished.
+    uids = [t.uid for t in todos if t.uid]
     removed = asstlink.rm_todos(uids) if (uids and asstlink.available()) else 0
 
     def unfile(current: list[Todo]) -> bool:
@@ -642,26 +650,32 @@ def drop_open_todos(session_dir: Path) -> Dropped:
 
     The mark is written before the removal, so a pull that runs
     meanwhile finds a dropped row and not a task "deleted in asst",
-    which it would take out of todos.json. A task asst will not remove
-    (asstd down) keeps its row open: dropping it would leave an open
-    task in asst that nothing here would look at again. Calling this
-    again retries those.
+    which it would take out of todos.json. Each row gives up its uid as
+    its removal is confirmed, so a dropped row that still has one is
+    the list of tasks left to remove: a call cut short (killed, the
+    window quit) is finished by calling this again, which also removes
+    what an earlier call marked. A task asst will not remove (asstd
+    down) keeps its row open: dropping it would leave an open task in
+    asst that nothing here would look at again. Calling this again
+    retries those.
     """
     with _AWAY:
         pull_todos(session_dir)  # what was ticked in asst since
-        marked: list[Todo] = []
 
         def mark(current: list[Todo]) -> bool:
-            marked.extend(t for t in current if t.open)
-            for t in marked:
+            opened = [t for t in current if t.open]
+            for t in opened:
                 t.dropped = True
-            return bool(marked)
+            return bool(opened)
 
         _edit(session_dir, mark)
-        stuck = {
-            uid for uid in dict.fromkeys(t.uid for t in marked if t.uid)
-            if not asstlink.rm_todo(uid)
-        }
+        owed = [t for t in load_todos(session_dir) if t.dropped and t.uid]
+        stuck: set[str] = set()
+        for uid in dict.fromkeys(t.uid for t in owed):
+            if asstlink.rm_todo(uid):
+                _task_gone(session_dir, uid)
+            else:
+                stuck.add(uid)
         if stuck:
             def keep_open(current: list[Todo]) -> bool:
                 changed = False
@@ -673,9 +687,24 @@ def drop_open_todos(session_dir: Path) -> Dropped:
 
             _edit(session_dir, keep_open)
     return Dropped(
-        removed=sum(1 for t in marked if t.uid and t.uid not in stuck),
-        stuck=sum(1 for t in marked if t.uid in stuck),
+        removed=sum(1 for t in owed if t.uid not in stuck),
+        stuck=sum(1 for t in owed if t.uid in stuck),
     )
+
+
+def _task_gone(session_dir: Path, uid: str) -> None:
+    """The task `uid` is gone from asst: the rows that closed over it
+    stop naming it."""
+    def unfile(current: list[Todo]) -> bool:
+        changed = False
+        for t in current:
+            if t.dropped and t.uid == uid:
+                t.uid = ""
+                t.list_name = ""
+                changed = True
+        return changed
+
+    _edit(session_dir, unfile)
 
 
 def restore_dropped_todos(session_dir: Path) -> Restored:

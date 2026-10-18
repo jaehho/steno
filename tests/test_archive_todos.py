@@ -45,6 +45,11 @@ SUMMARY = """# Lab sync
 """
 
 
+class Killed(BaseException):
+    """The process going away: nothing in the code under test catches
+    it."""
+
+
 class AwayCase(unittest.TestCase):
     """A meeting of the lab project with two of your to-dos filed in
     asst and one of theirs kept here."""
@@ -91,10 +96,11 @@ class TestPuttingAway(AwayCase):
         for key, row in before.items():
             self.assertTrue(after[key].dropped, key)
             self.assertFalse(after[key].open, key)
-            # What a re-summarize and an Unarchive need.
+            # What a re-summarize and an Unarchive need. The uid is
+            # not: the task it named is gone.
             self.assertEqual(
                 (after[key].text, after[key].uid, after[key].src),
-                (row.text, row.uid, row.src),
+                (row.text, "", row.src),
             )
 
     def test_none_of_it_is_counted(self):
@@ -157,6 +163,64 @@ class TestPuttingAway(AwayCase):
             [(sends, "completed")],
         )
         self.assertNotIn(["rm", sends], self.asst.calls("rm"))
+
+    def cut_short(self) -> None:
+        """Put the meeting away and die (the window quits, a Ctrl-C)
+        after the first task is removed and before the second."""
+        removed: list[str] = []
+        real = asstlink.rm_todo
+
+        def die_on_the_second(uid: str) -> bool:
+            if removed:
+                raise Killed
+            removed.append(uid)
+            return real(uid)
+
+        set_archived(self.dir, True)
+        with (
+            mock.patch.object(asstlink, "rm_todo", die_on_the_second),
+            self.assertRaises(Killed),
+        ):
+            drop_open_todos(self.dir)
+
+    def test_a_removal_cut_short_names_the_tasks_still_to_remove(self):
+        self.cut_short()
+        rows = self.rows()
+        self.assertTrue(all(t.dropped for t in rows.values()))
+        self.assertEqual(
+            sorted(t.uid for t in rows.values() if t.uid),
+            [t["id"] for t in self.asst.tasks()],
+        )
+        self.assertEqual(len(self.asst.tasks()), 1)
+
+    def test_archiving_again_finishes_a_removal_that_was_cut_short(self):
+        self.cut_short()
+        self.assertEqual(drop_open_todos(self.dir), Dropped(removed=1, stuck=0))
+        self.assertEqual(self.asst.tasks(), [])
+        self.assertFalse(any(t.uid for t in load_todos(self.dir)))
+        self.assertEqual(drop_open_todos(self.dir), Dropped(0, 0))
+
+    def test_deleting_a_meeting_cut_short_takes_the_leftover_task_too(self):
+        self.cut_short()
+        self.assertEqual(forget_asst(self.dir), 1)
+        self.assertEqual(self.asst.tasks(), [])
+
+    def test_a_task_gone_from_asst_since_is_no_failure_the_second_time(self):
+        self.cut_short()
+        (left,) = self.asst.tasks()
+        self.asst.remove(left["id"])
+        removals = len(self.asst.calls("rm"))
+        self.assertEqual(drop_open_todos(self.dir), Dropped(0, 0))
+        self.assertEqual(len(self.asst.calls("rm")), removals)
+        self.assertFalse(any(t.uid for t in load_todos(self.dir)))
+
+    def test_a_pull_with_asst_down_keeps_the_uid_it_cannot_check(self):
+        self.cut_short()
+        self.asst.down = True
+        pull_todos(self.dir)
+        self.assertEqual(
+            sum(1 for t in load_todos(self.dir) if t.uid), 1
+        )
 
     def test_a_task_deleted_in_asst_meanwhile_is_not_a_failure(self):
         gone = self.rows()["Send"].uid

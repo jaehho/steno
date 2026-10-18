@@ -123,6 +123,9 @@ class MeetingPage(Gtk.Box):
         self._realigning = False
         self._pull_timer = 0
         self._pull_in_flight = False
+        # Threads taking tasks out of asst or putting them back. The app
+        # waits for them when it quits.
+        self.asst_workers: list[threading.Thread] = []
         self._asst_watch: int | None = None
         self._asst_bus = None
         self.current: Session | None = None
@@ -1227,10 +1230,16 @@ class MeetingPage(Gtk.Box):
         self._update_actions()
         # Closing its to-dos takes asst calls, which can be slow: the
         # page has moved on, and the toast comes when they are done.
-        threading.Thread(
-            target=self._close_todos, args=(s,),
-            name="steno-asst", daemon=True,
-        ).start()
+        self._in_asst_thread(self._close_todos, s)
+
+    def _in_asst_thread(self, work, s: Session) -> None:
+        worker = threading.Thread(
+            target=work, args=(s,), name="steno-asst", daemon=True
+        )
+        self.asst_workers = [
+            w for w in self.asst_workers if w.is_alive()
+        ] + [worker]
+        worker.start()
 
     def _close_todos(self, s: Session) -> None:
         dropped = drop_open_todos(s.dir)
@@ -1260,10 +1269,7 @@ class MeetingPage(Gtk.Box):
         set_archived(s.dir, False)
         self._on_session_changed(s)
         self._update_actions()
-        threading.Thread(
-            target=self._reopen_todos, args=(s,),
-            name="steno-asst", daemon=True,
-        ).start()
+        self._in_asst_thread(self._reopen_todos, s)
 
     def _reopen_todos(self, s: Session) -> None:
         restored = restore_dropped_todos(s.dir)

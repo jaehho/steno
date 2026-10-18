@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gtk
 
 from steno import notes
+from steno.gui.app import App
 from steno.gui.menu import menu_actions
 from steno.gui.sidebar import ARCHIVE, LIVE, Session, Sidebar, row_menu
 from steno.gui.window import Window
@@ -463,6 +465,11 @@ class TestInTheWindow(unittest.TestCase):
         self.page._toast = lambda text, **kw: self.toasts.append((text, kw))
 
     def tearDown(self):
+        # A removal from asst still running would write into a folder
+        # that is gone.
+        for worker in self.page.asst_workers:
+            worker.join(10)
+        settle()
         self.sidebar._drop_menu()
         self.window.destroy()
         settle()
@@ -631,6 +638,24 @@ class TestInTheWindow(unittest.TestCase):
         self.assertEqual(asst.tasks(), [])
         rows = load_todos(self.folder("Alpha"))
         self.assertTrue(all(t.dropped for t in rows))
+
+    def test_quitting_waits_for_asst_to_finish_removing_the_tasks(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        real = notes.drop_open_todos
+
+        def slow(session_dir):
+            time.sleep(0.5)
+            return real(session_dir)
+
+        app = App(root=self.root)
+        app._window = self.window
+        with mock.patch("steno.gui.meeting.drop_open_todos", slow):
+            self.run_action("archive")
+            self.assertEqual(len(asst.tasks()), 1)
+            with mock.patch("steno.gui.app.clear_state"):
+                app.do_shutdown()
+            self.assertEqual(asst.tasks(), [])
 
     def test_the_page_does_not_wait_for_asst(self):
         asst = self.fake_asst()

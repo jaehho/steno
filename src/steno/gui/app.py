@@ -134,8 +134,13 @@ class App(Adw.Application):
         # To-dos being derived from a summary that landed while quitting.
         for worker in self._todo_workers:
             worker.join(timeout=20)
-        # What was typed last, and the pages that were waiting for a pause.
         if self._window is not None:
+            # Tasks being taken out of asst for a meeting put away just
+            # now: cut short, they would stay open there.
+            for worker in self._window.meeting.asst_workers:
+                worker.join(timeout=20)
+            # What was typed last, and the pages that were waiting for a
+            # pause.
             self._window.meeting.flush_notes()
         self.rewriter.shutdown()
         if self.tray is not None:
