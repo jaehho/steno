@@ -321,9 +321,11 @@ class TestValidate(unittest.TestCase):
         got = validate(raw, self.OFFSETS)
         self.assertEqual(got, raw[:6])
 
-    def test_forty_seconds_is_the_widest_range(self):
-        self.assertEqual(validate([(0, 8)], self.OFFSETS), [(0, 8)])
-        self.assertEqual(validate([(0, 9)], self.OFFSETS), [(0, 0), (9, 9)])
+    def test_ninety_seconds_is_the_widest_range(self):
+        self.assertEqual(validate([(0, 18)], self.OFFSETS), [(0, 18)])
+        self.assertEqual(
+            validate([(0, 19)], self.OFFSETS), [(0, 0), (19, 19)]
+        )
 
     def test_a_wide_range_costs_two_of_the_six(self):
         raw = [(0, 20)] + [(i, i) for i in range(25, 40, 2)]
@@ -384,9 +386,13 @@ class TestFromModel(unittest.TestCase):
         out = from_model("- a [L7, L1]\n", self.OFFSETS)
         self.assertEqual(out, "- a <!--cite 4,71-->\n")
 
-    def test_a_wide_range_is_split_to_its_ends(self):
+    def test_a_passage_of_a_minute_stays_whole(self):
         out = from_model("- a [L3-4]\n", self.OFFSETS)
-        self.assertEqual(out, "- a <!--cite 15,62-->\n")
+        self.assertEqual(out, "- a <!--cite 15-62-->\n")
+
+    def test_a_sprawl_is_split_to_its_ends(self):
+        out = from_model("- a [L0-2]\n", [0, 4, 100])
+        self.assertEqual(out, "- a <!--cite 0,100-->\n")
 
     def test_out_of_order_offsets_still_give_a_low_to_high_cite(self):
         out = from_model("- a [L0-1]\n", [30, 10])

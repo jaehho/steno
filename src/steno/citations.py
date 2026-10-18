@@ -36,7 +36,11 @@ Cite = tuple[int, int]
 Run = tuple[int, int]
 
 MAX_CITES_PER_ITEM = 6
-MAX_CITE_SECONDS = 40
+# A run of lines is a passage: speech is cut into short fragments, and on
+# three real meetings 10% of the runs a model cited were wider than 40 s
+# (8-21 lines, up to 72 s) and were exactly the passage to show. 90 s keeps
+# those; a run past it is a sprawl, not a quote.
+MAX_CITE_SECONDS = 90
 # Seven digits, the most the marker grammar takes (115 days).
 MAX_SECOND = 9_999_999
 
