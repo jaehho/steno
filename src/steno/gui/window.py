@@ -141,8 +141,10 @@ class Window(Adw.ApplicationWindow):
         rest = Gio.Menu()
         rest.append("Start at login", "app.autostart")
         rest.append("Keyboard shortcuts", "win.shortcuts")
-        rest.append("Quit, stop listening", "app.quit")
         menu.append_section(None, rest)
+        danger = Gio.Menu()
+        danger.append("Quit, stop listening...", "win.quit")
+        menu.append_section(None, danger)
         button = Gtk.MenuButton()
         button.set_icon_name("open-menu-symbolic")
         button.set_tooltip_text("Main menu")
@@ -246,6 +248,9 @@ class Window(Adw.ApplicationWindow):
         add("zoom-reset", lambda: self._zoom(0), ["<Control>0"])
         # Close is not quit: it hides the window and the listener keeps going.
         add("close", self.close, ["<Control>w"])
+        # Quit sits next to it and costs the next meeting, so it asks. The
+        # app's own `quit` (`steno quit`, the tray) is deliberate and doesn't.
+        add("quit", self.confirm_quit, ["<Control>q"])
 
     def _is_recording(self) -> bool:
         engine = self.app.engine
@@ -536,26 +541,41 @@ class Window(Adw.ApplicationWindow):
         return True
 
     def confirm_quit(self) -> None:
-        """Asked for by the app when quitting mid-meeting."""
+        """Ask before quitting: Ctrl+Q, the menu, or the app mid-meeting.
+
+        Idle, a quit is easily meant as a close and the next meeting then goes
+        unrecorded without a sign; mid-meeting it also ends the recording.
+        """
         self.present()
-        dialog = Adw.AlertDialog(
-            heading="A meeting is still recording",
-            body=(
+        recording = self._is_recording()
+        if recording:
+            heading = "A meeting is still recording"
+            body = (
                 "Quitting will end the recording, transcribe your side, and write "
                 "the summary. That takes a few seconds.\n\n"
                 "To put the window away without stopping anything, close it "
                 "instead - Steno keeps listening."
-            ),
-        )
-        dialog.add_response("cancel", "Keep recording")
-        dialog.add_response("quit", "Stop and quit")
+            )
+            keep, stop = "Keep recording", "Stop and quit"
+        else:
+            heading = "Stop listening?"
+            body = (
+                "Steno won't notice your next meeting.\n\n"
+                "To put the window away without stopping anything, close it "
+                "instead - Steno keeps listening."
+            )
+            keep, stop = "Keep listening", "Stop listening"
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        dialog.add_response("cancel", keep)
+        dialog.add_response("quit", stop)
         dialog.set_response_appearance("quit", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
 
         def answered(_d, response: str) -> None:
             if response != "quit":
                 return
-            self.set_state("finalizing", "Wrapping up")
+            if recording:
+                self.set_state("finalizing", "Wrapping up")
             self.app.quit()
 
         dialog.connect("response", answered)

@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from . import __version__, config_dir, data_dir, migrate_legacy, model_default
 from .brief import BRIEF_FILENAME, brief_age_days, estimate_tokens, load_brief
 from .claude import check_ready
-from .control import activate, show
+from .control import activate, show, toggle_record
 from .detect import (
     DEFAULT_ALLOW,
     END_GRACE_S,
@@ -143,10 +143,14 @@ def cmd_show(_args: argparse.Namespace) -> None:
 
 
 def cmd_toggle(_args: argparse.Namespace) -> None:
-    """Start or stop recording in the running app."""
+    """Start or stop recording, starting the listener if it is down."""
 
-    if not activate("toggle-record"):
-        print("steno is not running", file=sys.stderr)
+    if not toggle_record():
+        _alert(
+            "Steno is not recording",
+            "Could not start or reach the listener. "
+            "`steno gui` in a terminal says why.",
+        )
         sys.exit(1)
 
 
@@ -593,19 +597,24 @@ def _brief_new(brief_path: Path) -> None:
     os.execvp(binary, [binary, "--model", "opus", prompt])
 
 
-def _cannot_start(message: str) -> None:
-    """Say why the app will not start, where the person will see it.
+def _alert(title: str, message: str) -> None:
+    """Say it where the person will see it.
 
-    From rofi, autostart or a bar click there is no terminal, so stderr alone
-    is a silent no-op and the listener simply never exists.
+    From rofi, autostart, a bar click or a keybind there is no terminal, so
+    stderr alone is a silent no-op and the thing they asked for never happens.
     """
     print(message, file=sys.stderr)
     if not sys.stderr.isatty() and shutil.which("notify-send"):
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(
-                ["notify-send", "-a", "Steno", "Steno cannot start", message],
+                ["notify-send", "-a", "Steno", title, message],
                 timeout=5, check=False,
             )
+
+
+def _cannot_start(message: str) -> None:
+    """Say why the app will not start, and stop."""
+    _alert("Steno cannot start", message)
     sys.exit(1)
 
 

@@ -139,6 +139,44 @@ class TestPreflight(unittest.TestCase):
         self.assertEqual(self.run_preflight(tty=True), [])
 
 
+class TestToggle(unittest.TestCase):
+    """A record key that did nothing has to say so, with no terminal too."""
+
+    def toggle(self, reached: bool, tty: bool):
+        calls = []
+
+        class Err(io.StringIO):
+            def isatty(self):
+                return tty
+
+        def record(argv, **_kw):
+            calls.append(argv)
+
+        code = None
+        with mock.patch.object(cli, "toggle_record", return_value=reached), \
+             mock.patch.object(cli.shutil, "which", return_value="/usr/bin/notify-send"), \
+             mock.patch.object(cli.subprocess, "run", side_effect=record), \
+             redirect_stderr(Err()):
+            try:
+                cli.cmd_toggle(argparse.Namespace())
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, calls
+
+    def test_no_listener_and_no_terminal_notifies(self):
+        code, calls = self.toggle(reached=False, tty=False)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "notify-send")
+        self.assertIn("Could not start", calls[0][-1])
+
+    def test_no_listener_on_a_terminal_only_prints(self):
+        self.assertEqual(self.toggle(reached=False, tty=True), (1, []))
+
+    def test_a_toggle_that_landed_says_nothing(self):
+        self.assertEqual(self.toggle(reached=True, tty=False), (None, []))
+
+
 class TestPause(unittest.TestCase):
     def pause(self, duration: str):
         with mock.patch.object(cli, "set_pause") as set_pause, \

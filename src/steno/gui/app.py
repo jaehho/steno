@@ -155,8 +155,6 @@ class App(Adw.Application):
         login.connect("change-state", self._on_autostart)
         self.add_action(login)
 
-        self.set_accels_for_action("app.quit", ["<Control>q"])
-
     def _on_autostart(self, action: Gio.SimpleAction, value: GLib.Variant) -> None:
         """Start at login, as a per-user entry the user asked for."""
         want = value.get_boolean()
@@ -253,7 +251,11 @@ class App(Adw.Application):
         window.show_session(Path(name) if name else None)
 
     def request_quit(self) -> None:
-        """Quit, but never silently discard a meeting that is still recording."""
+        """Quit, but never silently discard a meeting that is still recording.
+
+        This is the deliberate quit (`steno quit`, the tray); Ctrl+Q and the
+        menu go through the window's `win.quit`, which asks even when idle.
+        """
         engine = self.engine
         if engine is not None and engine.current is not None and self._window is not None:
             self._window.confirm_quit()
