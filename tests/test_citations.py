@@ -18,6 +18,7 @@ from steno.citations import (
     to_refs,
     validate,
 )
+from steno.notes import parse_action_items
 from steno.playback import format_offset
 
 # The shapes real summaries come in: plain and bold-led bullets, a
@@ -453,6 +454,47 @@ class TestFromModel(unittest.TestCase):
                 out = from_model(f"- a {tag}\n", self.OFFSETS)
                 self.assertEqual(out, "- a <!--cite 4-9-->\n")
 
+    def test_a_tag_spelt_any_other_way_still_leaves_the_text(self):
+        """The transcript shows a line as `[L1 00:04]`, and a model copies
+        that, or words the tag its own way. A tag left in the text becomes
+        the wording of a to-do, and its key."""
+        for tag, cites in (
+            ("[L1 00:04]", "4"),
+            ("[L1, 00:04]", "4"),
+            ("[L1 00:04, L2 00:09]", "4-9"),
+            ("[Lines 1-2]", "4-9"),
+            ("[line 1]", "4"),
+            ("[L 1]", "4"),
+            ("(L1)", "4"),
+            ("(lines 1-2)", "4-9"),
+            ("[L1-2, ]", "4-9"),
+            ("[L1-2,]", "4-9"),
+            ("[L1; L2.]", "4-9"),
+            ("[L1 and L2]", "4-9"),
+            ("[**L1**]", "4"),
+            ("`[L1]`", "4"),
+            ("[1]", "4"),
+            ("[1-2]", "4-9"),
+            ("[L1] [L99]", "4"),
+        ):
+            with self.subTest(tag=tag):
+                out = from_model(f"- Send it {tag}\n", self.OFFSETS)
+                self.assertEqual(out, f"- Send it <!--cite {cites}-->\n")
+
+    def test_a_tag_with_no_line_in_it_is_gone_and_cites_nothing(self):
+        for tag in ("[L99999999999]", "[L" + "9" * 5000 + "]", "[L99]"):
+            with self.subTest(tag=tag[:20]):
+                out = from_model(f"- Send it {tag}\n", self.OFFSETS)
+                self.assertEqual(out, "- Send it\n")
+
+    def test_a_stray_tag_never_reaches_a_to_do(self):
+        md = "## Action items\n**You**\n- Send the figures [L1 00:04]\n"
+        plain = "## Action items\n**You**\n- Send the figures\n"
+        todo, = parse_action_items(from_model(md, self.OFFSETS))
+        other, = parse_action_items(plain)
+        self.assertEqual((todo.text, todo.key), (other.text, other.key))
+        self.assertEqual(todo.cites, [(4, 4)])
+
     def test_tags_in_the_middle_are_found_too(self):
         out = from_model("- a [L1] and b [L3].\n", self.OFFSETS)
         self.assertEqual(out, "- a and b. <!--cite 4,15-->\n")
@@ -462,6 +504,12 @@ class TestFromModel(unittest.TestCase):
             "- the [L2 cache is slow]",
             "- see [L2](https://example.com)",
             "- a [x] box and [done]",
+            "- fix the (L2) cache before Monday",
+            "- the [12] steps of the plan",
+            "- moved to [12:30] on Friday",
+            "- ask Bob (he knows [1] of them)",
+            "- see [lines of code](https://example.com)",
+            "- [L1 and the rest](notes)",
         ):
             with self.subTest(line=line):
                 self.assertEqual(from_model(line + "\n", self.OFFSETS),

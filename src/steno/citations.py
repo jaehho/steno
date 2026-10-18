@@ -62,17 +62,31 @@ _MARKER_RE = re.compile(
 # owner headers and `##` headings are not.
 BULLET_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.+?)\s*$")
 
-# The model's tag: `[L12-15, L40]`. Tolerant of an en dash, `L12-L15`,
-# a space or semicolon between runs, and `[L12, 13]`; strict that the
-# whole bracket is line ids, so `[L2 cache is slow]` and the link text
-# in `[L2](url)` are left alone.
-_ID = r"\d{1,9}"
-_DASH = r"\s?[-\N{EN DASH}\N{EM DASH}]\s?L?"
-_RUN = f"{_ID}(?:{_DASH}{_ID})?"
-_TAG_RE = re.compile(
-    rf"[ \t]?\[\s*L{_RUN}(?:[\s,;]+L?{_RUN})*\s*\](?!\()", re.IGNORECASE
+# The model's tag is `[L12-15, L40]`. Copying the transcript's own
+# `[L12 02:11]`, or writing `(lines 12-15)`, is no reason for it to
+# reach summary.md, where it would become the wording of a to-do. So a
+# group in brackets, or at the end of the line in parentheses, is a tag
+# when nothing in it is but line ids: `L12`, `12`, `L12-15` with any
+# dash, the words "line(s)" and "and", gutter stamps, emphasis and
+# separators. A word of any other kind (`[L2 cache is slow]`) makes it
+# text, and so does a link target after it (`[L2](url)`). Bare numbers,
+# which any footnote could be, count only at the end of the line.
+_GROUP_RE = re.compile(
+    r"[ \t]?(?P<tick>`?)"
+    r"(?:\[(?P<square>[^\[\]()`\n]*)\]|\((?P<round>[^\[\]()`\n]*)\))"
+    r"(?P=tick)(?!\()"
 )
-_TAG_RUN_RE = re.compile(f"({_ID})(?:{_DASH}({_ID}))?")
+_STAMP_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
+_LINE_WORD_RE = re.compile(r"\blines?\b", re.IGNORECASE)
+_NOISE_RE = re.compile(r"[*_,;&\s]+|\band\b|\.(?=\s*$)", re.IGNORECASE)
+_REF_RE = re.compile(
+    r"(L?)\s?(\d+)(?:\s?[-\N{EN DASH}\N{EM DASH}]\s?L?\s?(\d+))?",
+    re.IGNORECASE,
+)
+# What may follow a tag that is the last thing on its line.
+_LINE_END_RE = re.compile(r"[\s.*_`]*\Z")
+# Longer than this is no line of any transcript, and not for int().
+_MAX_ID_DIGITS = 9
 
 
 @dataclass
@@ -245,21 +259,61 @@ def _in_seconds(runs: Iterable[Run], offsets: Sequence[int]) -> list[Cite]:
     return sorted(cites)
 
 
+def _tag_runs(inside: str, parens: bool, rest: str) -> list[Run] | None:
+    """The runs a bracketed group names, or None when it is no tag.
+
+    `rest` is the line after the group, to tell a number that ends it
+    from one in the middle of a sentence.
+    """
+    plain = _NOISE_RE.sub(
+        " ", _LINE_WORD_RE.sub("L", _STAMP_RE.sub(" ", inside))
+    )
+    refs = list(_REF_RE.finditer(plain))
+    if not refs or _REF_RE.sub("", plain).strip():
+        return None
+    # `[12]` and `(L12)` could be anything but a tag; at the end of a
+    # line they are not.
+    lettered = any(m[1] for m in refs)
+    if parens and not lettered:
+        return None
+    if (parens or not lettered) and not _LINE_END_RE.match(rest):
+        return None
+    runs = []
+    for m in refs:
+        first, last = m[2], m[3] or m[2]
+        if max(len(first), len(last)) <= _MAX_ID_DIGITS:
+            runs.append((int(first), int(last)))
+    return runs
+
+
+def _untag(text: str) -> tuple[str, list[Run] | None]:
+    """A line without its tags, and the runs they named: None when it
+    had none."""
+    found: list[Run] | None = None
+
+    def take(m: re.Match[str]) -> str:
+        nonlocal found
+        inside = m["square"] if m["square"] is not None else m["round"]
+        runs = _tag_runs(inside, m["round"] is not None, text[m.end():])
+        if runs is None:
+            return m[0]
+        found = (found or []) + runs
+        return ""
+
+    return _GROUP_RE.sub(take, text).rstrip(), found
+
+
 def _take_tags(md: str) -> tuple[str, dict[int, list[Run]]]:
     """`md` without the model's tags, and the runs each line carried."""
     kept = []
     tagged: dict[int, list[Run]] = {}
     for line_no, (text, end) in enumerate(_lines(md)):
-        found = [m[0] for m in _TAG_RE.finditer(text)]
-        if found:
-            tagged[line_no] = [
-                (int(a), int(b or a))
-                for tag in found
-                for a, b in _TAG_RUN_RE.findall(tag)
-            ]
-            kept.append(_TAG_RE.sub("", text).rstrip() + end)
-        else:
+        bare, runs = _untag(text)
+        if runs is None:
             kept.append(text + end)
+        else:
+            tagged[line_no] = runs
+            kept.append(bare + end)
     return "".join(kept), tagged
 
 
