@@ -22,6 +22,7 @@ from steno.summarize import (
     iter_sessions,
     load_records,
     load_title,
+    looks_cut_off,
     needs_citations,
     parse_summary,
     resolve_session,
@@ -288,6 +289,26 @@ CITED_REPLY = """\
 - Whether the discount is retroactive [L4]
 """
 
+# What a flash model once sent for a real meeting: the string ended in
+# the middle of the last bullet, and the JSON around it was whole.
+CUT_REPLY = """\
+# Vendor Pricing Call
+
+## TL;DR
+- They want the usage figures by Friday. [L2-3]
+
+## Open questions
+- Whether the discount is retroactive [L4]
+
+## Action items
+**You**
+- Send the usage figures by Friday [L2-3]
+
+**Them**
+- Revise the quote [L4]
+- Start on what
+"""
+
 
 class FakeModel:
     """A stand-in for claude.run_structured: replies in order, the last one
@@ -304,6 +325,49 @@ class FakeModel:
         if isinstance(reply, str):
             reply = {"summary": reply, "project": None}
         return reply
+
+
+def _ending(last: str) -> str:
+    """A reply whose last line is `last`."""
+    return f"# T\n\n- ok. <!--cite 3-->\n{last}\n"
+
+
+class TestLooksCutOff(unittest.TestCase):
+    def test_a_bullet_that_stops_in_the_middle_does(self):
+        for last in (
+            "- Start on what",
+            "- Start on what the,",
+            "- Send it to Alice and",
+            "- Start on what [L12",
+            "- Start on (see",
+            "- Owner:",
+        ):
+            with self.subTest(last=last):
+                self.assertTrue(looks_cut_off(_ending(last)))
+
+    def test_a_heading_or_an_owner_with_nothing_under_it_does(self):
+        for last in ("## Open questions", "**You**", "**Them**:"):
+            with self.subTest(last=last):
+                self.assertTrue(looks_cut_off(_ending(last)))
+
+    def test_a_finished_last_line_does_not(self):
+        for last in (
+            "- Send it. <!--cite 3-->",
+            "- Send it <!--cite 3-->",
+            "- Nothing else was settled.",
+            "- Cap is 10k!",
+            "- Is it retroactive?",
+            "- Budget is 500",
+            "- Fee is 5%",
+            "- Said it (twice).",
+            "Names were mangled and should be checked.",
+        ):
+            with self.subTest(last=last):
+                self.assertFalse(looks_cut_off(_ending(last)))
+
+    def test_only_the_last_line_counts(self):
+        text = "# T\n\n- one\n- two. <!--cite 3-->\n\n"
+        self.assertFalse(looks_cut_off(text))
 
 
 class TestSummarizeSession(unittest.TestCase):
@@ -412,6 +476,31 @@ class TestSummarizeSession(unittest.TestCase):
     def test_a_cited_reply_is_not_asked_twice(self):
         self.run_with(CITED_REPLY)
         self.assertEqual(len(self.fake.calls), 1)
+
+    def test_a_reply_that_stops_mid_bullet_is_asked_again_once(self):
+        """Its dangling bullet would be a to-do, and was in a real run."""
+        summary = self.run_with(CUT_REPLY, CITED_REPLY)
+        self.assertEqual(len(self.fake.calls), 2)
+        self.assertNotIn("Start on what", self.written())
+        self.assertEqual(summary.title, "Vendor Pricing Call")
+
+    def test_two_cut_off_replies_are_not_followed_by_a_third(self):
+        summary = self.run_with(CUT_REPLY)
+        self.assertEqual(len(self.fake.calls), 2)
+        self.assertIn("- Start on what", self.written())
+        self.assertEqual(summary.title, "Vendor Pricing Call")
+
+    def test_the_better_of_two_flawed_replies_is_kept(self):
+        """Uncited and ending properly, then uncited and cut off."""
+        self.run_with("# T\n\n## TL;DR\n- plain.\n",
+                      "# T\n\n## TL;DR\n- plain\n")
+        self.assertEqual(len(self.fake.calls), 2)
+        self.assertEqual(self.written(), "# T\n\n## TL;DR\n- plain.\n")
+
+    def test_a_cut_off_reply_that_is_cited_still_beats_an_uncited_one(self):
+        self.run_with("# T\n\n## TL;DR\n- plain.\n", CUT_REPLY)
+        self.assertIn("Start on what", self.written())
+        self.assertIn("<!--cite", self.written())
 
     def test_nothing_to_cite_is_not_asked_again(self):
         """A summary with no bullets cannot have citations."""

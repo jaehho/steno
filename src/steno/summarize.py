@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -20,6 +21,9 @@ MIN_RECORDS_FOR_DURATION = 2  # first and last timestamps
 # Asks per summary: a flash model sometimes returns only a title, and
 # sometimes forgets the citation tags; both are worth one more try.
 ATTEMPTS = 3
+# Replies with one of those flaws are asked for again once, not twice: a
+# summary that is plain, or ends short, still beats none.
+FLAWED_ATTEMPTS = 2
 
 SUMMARY_FILENAME = "summary.md"
 META_FILENAME = "meta.json"
@@ -264,6 +268,46 @@ def has_body(text: str) -> bool:
     return any(line.strip() for line in lines)
 
 
+# A last line that names a section or an owner and has nothing under it.
+_HEADER_RE = re.compile(r"#+\s.*|\*\*[^*]+\*\*:?")
+# What ends a line that was finished, rather than stopped: a letter, or
+# a comma, colon or dash, is a word the model never got to the end of.
+_UNFINISHED = ",;:-\u2013\u2014"
+
+
+def looks_cut_off(text: str) -> bool:
+    """True when a reply seems to stop where the model did, not where
+    the summary ended.
+
+    On a real meeting the model closed its string at "- Start on what".
+    That is valid JSON with a body and citations, so nothing else catches
+    it, and a bullet like that, under Action items, becomes a to-do. The
+    signs are in the last line alone: a heading or an owner with nothing
+    under it; a bracket opened and not closed; or no tag and no full stop,
+    since the prompt has every bullet that something supports end in one.
+    A reply that cites nothing at all is the other flaw, counted apart.
+    """
+    last = next((x for x in reversed(text.splitlines()) if x.strip()), "")
+    plain = citations.strip(last).strip()
+    if not plain:
+        return False
+    if _HEADER_RE.fullmatch(plain):
+        return True
+    for opening, closing in ("[]", "()"):
+        if plain.count(opening) > plain.count(closing):
+            return True
+    if citations.parse(last):
+        return False
+    return plain[-1].isalpha() or plain[-1] in _UNFINISHED
+
+
+def _flaws(summary: Summary) -> int:
+    """How much is wrong with a reply that has a body, 0 if nothing."""
+    coverage = summary.coverage
+    uncited = coverage.items > 0 and coverage.cited == 0
+    return int(uncited) + int(looks_cut_off(summary.body))
+
+
 def duration_minutes(records: list[dict]) -> float:
     if len(records) < MIN_RECORDS_FOR_DURATION:
         return 0.0
@@ -306,9 +350,9 @@ async def summarize_session(
 
     transcript = format_for_model(records, names=names, offsets=offsets)
     # A heading-only reply is a known flake, not a short meeting: ask again.
-    # So is a reply with no usable citation, but only once: a summary nobody
-    # can click through still beats no summary.
-    uncited: Summary | None = None
+    # So is a reply with no usable citation or one that stops short, but
+    # only once: the better of two flawed replies beats no summary.
+    flawed: list[tuple[int, Summary]] = []
     for _ in range(ATTEMPTS):
         out = await claude.run_structured(
             transcript,
@@ -327,15 +371,15 @@ async def summarize_session(
         summary.coverage = citations.coverage(summary.body)
         project = out.get("project")
         summary.project = project if project in known else None
-        if (
-            summary.coverage.cited
-            or not summary.coverage.items
-            or uncited is not None
-        ):
+        if not (flaws := _flaws(summary)):
             return _store(session_dir, summary, records, model)
-        uncited = summary
-    if uncited is not None:
-        return _store(session_dir, uncited, records, model)
+        flawed.append((flaws, summary))
+        if len(flawed) == FLAWED_ATTEMPTS:
+            break
+    if flawed:
+        # The least flawed; of equals, the later.
+        _, best = min(reversed(flawed), key=lambda pair: pair[0])
+        return _store(session_dir, best, records, model)
     msg = f"the model returned only a title, after {ATTEMPTS} attempts"
     raise claude.ClaudeError(msg)
 
