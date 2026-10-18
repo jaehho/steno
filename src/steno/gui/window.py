@@ -303,6 +303,7 @@ class Window(Adw.ApplicationWindow):
             if item == LIVE:
                 self.stack.set_visible_child_name("live")
             else:
+                self.meeting.close_meeting()
                 title, description = words.nothing_open(
                     self.sidebar.archived_count()
                 )

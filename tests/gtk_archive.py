@@ -612,6 +612,20 @@ class TestInTheWindow(unittest.TestCase):
         self.assertIn("5 archived", self.window.empty.get_description())
         self.assertFalse(self.window.meeting_menu.get_visible())
 
+    def test_the_last_one_put_away_takes_its_audio_with_it(self):
+        """Its player buttons are on the page that has just gone."""
+        for title in ("Echo", "Charlie"):
+            self.open(title)
+            self.run_action("archive")
+        self.open("Bravo")
+        stopped: list[int] = []
+        player = SimpleNamespace(stop=lambda: stopped.append(1))
+        with mock.patch.object(self.page, "player", player):
+            self.run_action("archive")
+        self.assertEqual(self.window.stack.get_visible_child_name(), "empty")
+        self.assertTrue(stopped)
+        self.assertIsNone(self.page.current)
+
     def test_a_list_with_nothing_put_away_still_says_no_meetings_yet(self):
         for title in ("Delta", "Alpha"):
             self.open(title)

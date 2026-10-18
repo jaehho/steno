@@ -580,6 +580,13 @@ class MeetingPage(Gtk.Box):
             GLib.source_remove(self._pull_timer)
             self._pull_timer = 0
 
+    def close_meeting(self) -> None:
+        """No meeting is open any more. The page is out of sight, and its
+        player buttons out of reach, so the audio must not go on; and a
+        meeting nobody sees is not asked about."""
+        self.stop_playback()
+        self.current = None
+
     def _arm_pull(self, s: Session) -> None:
         self.stop_pull()
         self._watch_asst()
