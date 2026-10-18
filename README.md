@@ -90,6 +90,9 @@ steno realign [NAME]       re-time an old session against its audio (costs a pas
 steno delete [NAME]        move a meeting to the trash
 steno archive NAME...      put meetings away: kept whole, left out of every --all
 steno unarchive NAME...    bring them back
+steno publish [NAME]       copy a meeting into its project's notes/meetings
+steno publish --all        ... every meeting filed under a project (--dry-run first)
+steno unpublish NAME...    take a meeting's pages out of its project again
 steno todos                what you owe, across every meeting
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
@@ -179,6 +182,47 @@ include it, and `STENO_KEEP_AUDIO_DAYS` treats it like any other.
 `steno status` counts the archived ones, and `steno unarchive NAME...`
 brings them back.
 
+A meeting that is about one of your projects is kept in it too. With the
+meeting's project set (the summary picks one from `~/projects`, or
+`STENO_PROJECTS_DIR`; **Set project...** in the ⋯ menu changes it), Steno
+writes `notes/meetings/` inside that project:
+
+```
+notes/meetings/README.md                                     index, newest first
+notes/meetings/2026-10-06-1612-rcnn-toolbox.md               summary, to-dos, your notes
+notes/meetings/2026-10-06-1612-rcnn-toolbox.transcript.md    what was said, [mm:ss] You: ...
+notes/meetings/.gitignore                                    `*`, made with the folder
+```
+
+so that whoever opens the project, you or an agent, finds the meetings it
+had. Each page opens with a front matter block (title, date, project, the
+session it came from) and a line saying Steno generated it. The pages are
+written when the summary lands, when you set the project (the old project's
+copy goes), and a minute after your last tick, edit to the notes or
+re-timing, so that typing does not rewrite files every few seconds; opening
+another meeting or quitting writes what is waiting at once. `steno summarize`
+and `steno realign` do the same from a terminal. A meeting you delete is taken
+out of its project first; one you archive stays there. **Show in project
+notes** in the ⋯ menu opens the folder, for a meeting that has pages in one.
+
+It keeps to its own folder. A file there that Steno did not write (it
+lacks the generated-by line) is never overwritten or removed, only named, and
+a project name that is not a plain directory under the projects directory, or
+a `notes/` that is a link leading out of the project, is refused. A page is
+written only when its bytes would change, so a synced folder is not churned.
+The `.gitignore` is there because transcripts are other people's speech and
+project repositories get pushed; delete it and Steno will not write it again,
+and the meetings become committable. `STENO_PROJECT_NOTES=0` in your `.env`
+turns all of it off. Nothing here uses the network or a model.
+
+Meetings from before this are not copied until you ask. `steno publish --all
+--dry-run` lists every file it would create or take away, without writing
+any; read it, then `steno publish --all`. `--project P` limits that to one
+project, `NAME` to one meeting, and `--force` publishes by hand with the
+switch off. `--all` leaves the archived meetings out, as the other commands
+that go through everything do. `steno unpublish NAME` takes a meeting's pages
+back out (also with `--dry-run`), and none of this needs the app running.
+
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window
 parked beside the call works.
@@ -222,7 +266,9 @@ scrubbed from the transcript on the way out. When a meeting is about one of the
 projects in `~/projects` (`STENO_PROJECTS_DIR`), the summary may read that
 directory, read-only, to get names and files right; so whatever it reads is
 sent too. It can read nothing outside that directory. Nothing is uploaded or
-shared on the tool's own initiative.
+shared on the tool's own initiative. The copies in a project's `notes/meetings`
+are local files that carry the transcript with them: a repository ignores them
+(the `.gitignore` there), a folder you sync, an Obsidian vault say, does not.
 
 It records other people automatically. That is a deliberate choice, and getting
 their consent is yours to handle — a notification with a Stop button appears
@@ -259,15 +305,16 @@ reconnect.
 
 - **engine** — `detect.py` (who's holding the mic), `audio.py`, `transcribe.py`
   (Deepgram, streaming and batch), `summarize.py`, `citations.py` (the
-  markers above), `notes.py`, `retention.py`, `playback.py`, `session.py`
-  (the lifecycle that drives them). No GUI
-  dependency, so `make test` runs headless.
+  markers above), `notes.py`, `projectnotes.py` (a meeting's pages in its
+  project), `retention.py`, `playback.py`, `session.py` (the lifecycle that
+  drives them). No GUI dependency, so `make test` runs headless.
 - **`gui/`** — GTK4. `app.py` is the long-running listener and owns the engine;
   `window.py` is a view it can live without. `bridge.py` is the only place the
   engine's asyncio loop and GTK's main loop meet; everything crossing back goes
   through `GLib.idle_add`. `sidebar.py`, `meeting.py` and `live.py` are the three
   surfaces; `summary.py` is the summary's rows and the bar of places; `words.py`
-  is what they say, testable headlessly. `player.py` is GStreamer, for playback.
+  is what they say, testable headlessly; `republish.py` waits for a pause
+  before it rewrites a meeting's project pages. `player.py` is GStreamer, for playback.
 - **`events.py`** — what the engine says. The engine never touches a widget.
 - **`state.py` / `control.py`** — what the bar reads, and how a click reaches
   the running app (its own D-Bus actions; no socket, no pidfile).

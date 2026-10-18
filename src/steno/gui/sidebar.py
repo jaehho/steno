@@ -20,7 +20,7 @@ import contextlib
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
-from .. import citations
+from .. import citations, projectnotes
 from ..cost import format_meter, prerecorded_cost, stream_cost
 from ..notes import ensure_todos, open_count
 from ..summarize import (
@@ -57,6 +57,7 @@ class Session:
         self.title = load_title(path)
         self.project = load_project(path)
         self.archived = is_archived(path)
+        self.published = projectnotes.read_record(path) is not None
         try:
             self.start = datetime.strptime(path.name, "%Y%m%d-%H%M%S")
         except ValueError:
@@ -162,7 +163,7 @@ def row_menu(item: Item | None) -> Gio.Menu | None:
     """
     if not isinstance(item, Session):
         return None
-    return meeting_menu_model(archived=item.archived)
+    return meeting_menu_model(archived=item.archived, published=item.published)
 
 
 class Sidebar(Gtk.Box):
@@ -498,10 +499,11 @@ class Sidebar(Gtk.Box):
         )) or None)
 
     def update_session(self, session: Session) -> None:
-        """The meeting page changed this session's project, to-dos or
-        archive flag in place."""
+        """The meeting page changed this session's project, to-dos,
+        archive flag or project notes in place."""
         was_archived = session.archived
         session.archived = is_archived(session.dir)
+        session.published = projectnotes.read_record(session.dir) is not None
         session.project = load_project(session.dir)
         session.open_todos = open_count(session.dir)
         session._haystack = None  # search includes project

@@ -11,6 +11,7 @@ is why the CLI imports it inside the `gui` subcommand and nowhere else.
 from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
+import logging
 import os
 import threading
 import time
@@ -24,7 +25,7 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
-from .. import autostart, icon_dir, migrate_legacy
+from .. import autostart, icon_dir, migrate_legacy, projectnotes
 from ..control import APP_ID
 from ..events import (
     EngineError,
@@ -39,8 +40,12 @@ from ..notes import sync_todos
 from ..retention import prune_audio
 from ..session import paused_until, set_pause
 from ..state import clear_state, write_state
+from . import words
 from .bridge import EngineBridge
+from .republish import Republisher
 from .tray import Tray
+
+log = logging.getLogger(__name__)
 
 RECORDING_NOTIFICATION = "recording"
 REPUBLISH_S = 20
@@ -79,6 +84,9 @@ class App(Adw.Application):
         self._said_still_listening = False
         self._error_noticed: dict[str, float] = {}
         self._todo_workers: list[threading.Thread] = []
+        # Keeps the meetings' pages in their projects current as they are
+        # edited in the window; lives as long as the app, not the window.
+        self.republisher = Republisher(on_problem=self._notes_problem)
         self.tray: Tray | None = None
 
     # ------------------------------------------------------------------ startup
@@ -126,6 +134,10 @@ class App(Adw.Application):
         # To-dos being derived from a summary that landed while quitting.
         for worker in self._todo_workers:
             worker.join(timeout=20)
+        # What was typed last, and the pages that were waiting for a pause.
+        if self._window is not None:
+            self._window.meeting.flush_notes()
+        self.republisher.shutdown()
         if self.tray is not None:
             self.tray.stop()
         clear_state()
@@ -302,18 +314,39 @@ class App(Adw.Application):
             try:
                 sync_todos(event.session_dir, event.body)
             finally:
-                GLib.idle_add(arrived)
+                # The to-dos are in todos.json by now, and the page lists
+                # them.
+                GLib.idle_add(arrived, self._publish_landed(event.session_dir))
 
-        def arrived() -> bool:
+        def arrived(problem: str) -> bool:
             if not event.requested:
                 self._notify_summary(event.session_dir, event.title)
             if self._window is not None:
                 self._window.on_event(event)
+            self._notes_problem(problem)
             return GLib.SOURCE_REMOVE
 
         worker = threading.Thread(target=work, name="steno-todos", daemon=True)
         self._todo_workers = [w for w in self._todo_workers if w.is_alive()] + [worker]
         worker.start()
+
+    def _publish_landed(self, session_dir: Path) -> str:
+        """Put a summary that has just landed into its project, if it has
+        one. What to tell the person, if anything. Never raises: the
+        notification and the window must hear of the summary whatever
+        happened to the copy."""
+        try:
+            result = projectnotes.try_publish(session_dir)
+        except Exception:
+            log.exception("project notes: %s", session_dir.name)
+            return "Project notes: not written, see the log"
+        return words.project_notes_problem(result)
+
+    def _notes_problem(self, text: str) -> None:
+        """Project notes left a page alone or could not write one: said in
+        the window if it is up, and in the log either way."""
+        if text and self._window is not None:
+            self._window._toast(text)
 
     def _republish(self) -> bool:
         """Re-assert what we are doing, and notice a pause that has lapsed."""

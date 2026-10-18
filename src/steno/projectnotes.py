@@ -109,12 +109,14 @@ class Result:
     anything could be written there. `note` says why nothing was, and
     is "" when the work went ahead. `changes` lists each path looked at:
     `same` for a file that already has the right bytes, `skip` (with a
-    note) for one that is not steno's to touch.
+    note) for one that is not steno's to touch. `error` is a write that
+    failed, which only `try_publish` and `try_unpublish` put here.
     """
 
     project: str | None
     changes: list[Change] = field(default_factory=list)
     note: str = ""
+    error: str = ""
 
     @property
     def altered(self) -> list[Change]:
@@ -797,6 +799,52 @@ def unpublish(
         if not dry_run:
             _store_record(session_dir, None)
         return result
+
+
+def try_publish(
+    session_dir: Path,
+    root: Path | None = None,
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+) -> Result:
+    """`publish` for a caller with nowhere to raise to, a worker thread
+    or a terminal line: a write that fails is logged and comes back as
+    `Result.error`. Calling again finishes the job."""
+    try:
+        return publish(session_dir, root, dry_run=dry_run, force=force)
+    except OSError as err:
+        log.warning("project notes: %s: %s", session_dir.name, err)
+        return Result(_project_of(session_dir), error=str(err))
+
+
+def try_unpublish(
+    session_dir: Path, root: Path | None = None, *, dry_run: bool = False
+) -> Result:
+    """`unpublish`, with a failing removal in `Result.error`."""
+    try:
+        return unpublish(session_dir, root, dry_run=dry_run)
+    except OSError as err:
+        log.warning("project notes: %s: %s", session_dir.name, err)
+        return Result(_project_of(session_dir), error=str(err))
+
+
+def published_folder(
+    session_dir: Path, root: Path | None = None
+) -> Path | None:
+    """The folder a meeting's pages are in, None when it has none there:
+    never published, or the project or the pages have gone since."""
+    record = read_record(session_dir)
+    if record is None:
+        return None
+    root = root if root is not None else projects_root()
+    try:
+        folder = meetings_dir(project_dir(root, record.project))
+    except ValueError:
+        return None
+    if any((folder / name).is_file() for name in record.files):
+        return folder
+    return None
 
 
 def rebuild_index(

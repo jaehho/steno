@@ -9,13 +9,19 @@ import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from .. import citations
 from ..playback import format_offset
 
+if TYPE_CHECKING:
+    from ..projectnotes import Result
+
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
 MIN_WRAP_PARTS = 3  # token + two spans before wrapping kicks in
+# Files a toast names before it says "…".
+NAMED_AT_MOST = 2
 
 # Headings in the summary that the page already shows some other way: the title
 # is the page title, the TL;DR needs no label on top of the summary itself, and
@@ -112,6 +118,26 @@ def archived_toast(title: str, open_todos: int) -> str:
             "stay open"
         )
     return said
+
+
+def project_notes_problem(result: Result) -> str:
+    """What to tell the person when a meeting's project notes were not
+    written all the way, "" when there is nothing to tell.
+
+    A page that is not steno's to replace is left as it is and named;
+    a write that failed says why. A meeting with no project, or notes
+    switched off, is not a problem and says nothing.
+    """
+    if result.error:
+        return f"Project notes: {result.error}"
+    left = result.skipped
+    if not left:
+        return ""
+    shown = left[:NAMED_AT_MOST]
+    names = ", ".join(c.path.name for c in shown)
+    if len(left) > len(shown):
+        names += ", …"
+    return f"Project notes: left {names} as it is ({left[0].note})"
 
 
 def nothing_open(archived: int) -> tuple[str, str]:

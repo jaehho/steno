@@ -232,6 +232,7 @@ class StubApp(Adw.Application):
         self.since = 0.0
         self.engine = None
         self.bridge = None
+        self.republisher = None
 
     def toggle_record(self) -> None:
         raise RecordingStartedError

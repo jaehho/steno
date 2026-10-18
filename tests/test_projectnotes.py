@@ -805,6 +805,62 @@ class TestDryRun(Base):
         )
 
 
+class TestWhereCallersCannotRaise(Base):
+    """A worker thread and a terminal line have no one to raise to."""
+
+    def test_a_failed_write_comes_back_as_an_error_not_an_exception(self):
+        d = self.session()
+        full = OSError(errno.ENOSPC, "No space left on device")
+        with (
+            mock.patch.object(Path, "replace", side_effect=full),
+            self.assertLogs("steno.projectnotes", "WARNING"),
+        ):
+            result = projectnotes.try_publish(d, self.projects)
+        self.assertIn("No space left", result.error)
+        self.assertEqual(result.project, "demo")
+        self.assertNotIn("published", meta_of(d))
+
+    def test_a_failed_removal_too(self):
+        d = self.session()
+        self.publish(d)
+        denied = OSError(errno.EACCES, "Permission denied")
+        with (
+            mock.patch.object(Path, "unlink", side_effect=denied),
+            self.assertLogs("steno.projectnotes", "WARNING"),
+        ):
+            result = projectnotes.try_unpublish(d, self.projects)
+        self.assertIn("Permission denied", result.error)
+        self.assertIn("published", meta_of(d))
+
+    def test_when_nothing_fails_it_is_publish(self):
+        d = self.session()
+        result = projectnotes.try_publish(d, self.projects)
+        self.assertEqual(result.error, "")
+        self.assertEqual(self.names(), [
+            ".gitignore", SUMMARY_NAME, TRANSCRIPT_NAME, "README.md"])
+
+
+class TestPublishedFolder(Base):
+    def test_it_is_where_the_pages_are_once_there_are_some(self):
+        d = self.session()
+        self.assertIsNone(projectnotes.published_folder(d, self.projects))
+        self.publish(d)
+        self.assertEqual(
+            projectnotes.published_folder(d, self.projects),
+            self.meetings().resolve(),
+        )
+        self.unpublish(d)
+        self.assertIsNone(projectnotes.published_folder(d, self.projects))
+
+    def test_a_record_whose_pages_are_gone_is_not_published(self):
+        d = self.session()
+        self.publish(d)
+        shutil.rmtree(self.projects / "demo" / "notes")
+        self.assertIsNone(projectnotes.published_folder(d, self.projects))
+        shutil.rmtree(self.projects / "demo")
+        self.assertIsNone(projectnotes.published_folder(d, self.projects))
+
+
 class TestPageText(unittest.TestCase):
     def test_front_matter_values_are_valid_yaml_scalars(self):
         text = projectnotes.frontmatter({
