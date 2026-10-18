@@ -304,6 +304,123 @@ class TestTodoState(unittest.TestCase):
         self.assertTrue(ensure_todos(self.dir)[0].done)
 
 
+def _action_items(*lines: str) -> str:
+    """A summary whose Action items are `lines` (owner headers included)."""
+    return "# T\n\n## Action items\n" + "\n".join(lines) + "\n"
+
+
+class TestResummarizeRewording(unittest.TestCase):
+    """A re-summarize words the same promise differently. The row the user
+    ticked, or that is already on the phone, must stay the one row."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.old = Todo(
+            text="Send the usage figures by Friday", owner="you", done=True,
+            done_at=5.0, uid="0F27", list_name="thesis",
+            src="steno:x/send the usage figures by friday",
+        )
+
+    def resync(self, *lines: str, old: list[Todo] | None = None):
+        save_todos(self.dir, old if old is not None else [self.old])
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "target_list", return_value=None), \
+             mock.patch.object(asstlink, "add_todo",
+                               return_value="BEEF") as add:
+            merged = sync_todos(self.dir, _action_items(*lines))
+        self.add = add
+        return merged
+
+    def test_a_reworded_ticked_item_is_still_one_row_and_still_ticked(self):
+        merged = self.resync(
+            "**You**",
+            "- Send usage figures to Alice by Friday <!--cite 21-24-->",
+        )
+        row, = merged
+        self.assertEqual(row.text, "Send usage figures to Alice by Friday")
+        self.assertEqual(row.cites, [(21, 24)])
+        self.assertEqual((row.done, row.done_at), (True, 5.0))
+        self.assertEqual((row.uid, row.src, row.list_name),
+                         ("0F27", self.old.src, "thesis"))
+        self.add.assert_not_called()
+        self.assertEqual(load_todos(self.dir), merged)
+
+    def test_a_reworded_open_item_keeps_its_phone_task(self):
+        self.old.done, self.old.done_at = False, None
+        merged = self.resync("**You**", "- Send usage figures to Alice by Friday")
+        row, = merged
+        self.assertEqual((row.done, row.uid), (False, "0F27"))
+        self.add.assert_not_called()
+
+    def test_a_tick_not_yet_delivered_survives_a_reword(self):
+        self.old.dirty = True
+        row, = self.resync("**You**", "- Send usage figures to Alice by Friday")
+        self.assertEqual((row.done, row.dirty), (True, True))
+
+    def test_a_different_promise_is_a_new_row(self):
+        merged = self.resync("**You**", "- Send the contract by Friday")
+        self.assertEqual(
+            [(t.text, t.done, t.uid) for t in merged],
+            [("Send the contract by Friday", False, "BEEF"),
+             ("Send the usage figures by Friday", True, "0F27")],
+        )
+        self.assertEqual(self.add.call_count, 1)
+
+    def test_a_different_name_or_day_is_a_different_promise(self):
+        for old, new in (
+            ("Send the report to Alice", "Send the report to Bob"),
+            ("Send the usage figures by Friday",
+             "Send the usage figures by Monday"),
+            ("Pay 40 euros for the room", "Pay 90 euros for the room"),
+        ):
+            with self.subTest(new=new):
+                self.old.text = old
+                merged = self.resync("**You**", f"- {new}")
+                self.assertEqual(
+                    sorted(t.text for t in merged), sorted([old, new])
+                )
+
+    def test_another_owners_item_is_not_taken_for_yours(self):
+        self.old.owner, self.old.text = "them", "Revised quote next week"
+        merged = self.resync("**You**", "- Send the revised quote next week")
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([t.done for t in merged if t.owner == "you"], [False])
+
+    def test_one_old_row_is_taken_by_one_new_item(self):
+        merged = self.resync(
+            "**You**",
+            "- Send usage figures to Alice by Friday",
+            "- Send the usage figures to Alice by Friday, please",
+        )
+        self.assertEqual(sorted(t.done for t in merged), [False, True])
+        self.assertEqual(len(merged), 2)
+
+    def test_an_exact_match_is_not_stolen_by_a_look_alike(self):
+        merged = self.resync(
+            "**You**",
+            "- Send usage figures to Alice by Friday",
+            "- Send the usage figures by Friday",
+        )
+        by_text = {t.text: t for t in merged}
+        self.assertTrue(by_text["Send the usage figures by Friday"].done)
+        self.assertEqual(
+            by_text["Send the usage figures by Friday"].uid, "0F27"
+        )
+        self.assertFalse(by_text["Send usage figures to Alice by Friday"].done)
+
+    def test_the_old_wording_is_still_found_by_its_frozen_source(self):
+        """The row keeps `src` across the reword, so asst's pull (which
+        looks tasks up by it) still finds the phone task."""
+        row, = self.resync("**You**", "- Send usage figures to Alice by Friday")
+        remote = {self.old.src: {"id": "0F27", "completed": True,
+                                 "list": "thesis"}}
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "fetch_session", return_value=remote):
+            pulled, = pull_todos(self.dir)
+        self.assertEqual((pulled.text, pulled.uid, pulled.done),
+                         (row.text, "0F27", True))
+
+
 class TestPullTodos(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())

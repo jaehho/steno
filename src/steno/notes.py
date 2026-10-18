@@ -16,8 +16,9 @@ import json
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from . import asstlink, citations
@@ -34,6 +35,20 @@ _OWNER_RE = re.compile(
 )
 _ACTION_HEADING_RE = re.compile(r"^\s*#+\s*action\s+items?\s*$", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s*#+\s+")
+
+# A re-summarize can word one promise differently. An item that matches no
+# row by source or text is still taken for an old row of the same owner
+# when the two read this alike (difflib's ratio on the normalized text)
+# and neither names a person, day or number the other lacks. Below it a
+# pair stays two promises: a duplicate row is a nuisance, but a new
+# promise that comes up already ticked is a lost one.
+SAME_ITEM_RATIO = 0.8
+_WORD_RE = re.compile(r"[\w'\u2019-]+")
+_CALENDAR = frozenset((
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+))
 
 
 @dataclass
@@ -183,15 +198,81 @@ def _with_src(session_dir: Path, todo: Todo) -> None:
         todo.src = asstlink.source_key(session_dir, todo.key)
 
 
+def _facts(text: str) -> set[str]:
+    """What tells two promises apart that otherwise read the same: numbers,
+    days and months, and names (a capitalized word that does not open the
+    line)."""
+    words = _WORD_RE.findall(text)
+    return {
+        w.lower() for i, w in enumerate(words)
+        if any(c.isdigit() for c in w)
+        or w.lower() in _CALENDAR
+        or (i > 0 and len(w) > 1 and w[0].isupper())
+    }
+
+
+def _likeness(a: Todo, b: Todo) -> float:
+    """How alike two action items read, 0.0 when they cannot be one."""
+    if a.owner != b.owner:
+        return 0.0
+    facts_a, facts_b = _facts(a.text), _facts(b.text)
+    if not (facts_a <= facts_b or facts_b <= facts_a):
+        return 0.0
+    return SequenceMatcher(None, a.key, b.key).ratio()
+
+
+def _reworded_pairs(
+    fresh: Sequence[Todo], prior: Sequence[Todo]
+) -> list[tuple[Todo, Todo]]:
+    """Pair each new item with the old row it rewords, best match first.
+
+    One old row goes to one new item at most: of two look-alikes, the
+    closer one inherits and the other is new.
+    """
+    scored = sorted(
+        (
+            (-_likeness(f, p), i, j)
+            for i, f in enumerate(fresh) for j, p in enumerate(prior)
+        )
+    )
+    pairs: list[tuple[Todo, Todo]] = []
+    used_fresh: set[int] = set()
+    used_prior: set[int] = set()
+    for negative, i, j in scored:
+        if -negative < SAME_ITEM_RATIO:
+            break
+        if i in used_fresh or j in used_prior:
+            continue
+        used_fresh.add(i)
+        used_prior.add(j)
+        pairs.append((fresh[i], prior[j]))
+    return pairs
+
+
+def _carry_state(fresh: Todo, prior: Todo) -> None:
+    """Hand the user's side of a row to the item that replaces it."""
+    fresh.done = prior.done
+    fresh.done_at = prior.done_at
+    fresh.uid = prior.uid
+    fresh.src = prior.src
+    # A tick that has not reached asst yet must stay marked, or the
+    # next pull sees the task open there and undoes it.
+    fresh.dirty = prior.dirty
+    fresh.list_name = prior.list_name
+
+
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
     """Reconcile the summary's action items with what's already on disk.
 
-    Checked-off state is preserved by source, then by text. Items the user has
-    completed are kept even if a re-summarize drops them — deleting the record
-    of finished work would be the one unrecoverable thing this file could do.
-    An open item already on the phone is kept too: the model must not orphan a
-    task asst is holding. A rephrase becomes a second row (new source) rather
-    than a silent rewrite of the phone task.
+    Checked-off state is preserved by source, then by text, then by likeness:
+    an item the summary now words differently (`SAME_ITEM_RATIO`) is the
+    same row, with the new wording and the old state, uid and source, so
+    the task asst holds is neither duplicated nor orphaned. Items the user
+    has completed are kept even if a re-summarize drops them — deleting the
+    record of finished work would be the one unrecoverable thing this file
+    could do. An open item already on the phone is kept too: the model must
+    not orphan a task asst is holding. An item that matches nothing becomes
+    a new row (new source).
 
     `file=False` only writes the local list: listing meetings must not push
     anything into a task app.
@@ -200,26 +281,30 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
         existing = load_todos(session_dir)
         by_src = {t.src: t for t in existing if t.src}
         by_key = {t.key: t for t in existing}
-        merged: list[Todo] = []
-        seen: set[int] = set()
-        for fresh in parse_action_items(summary_body):
+        fresh_items = parse_action_items(summary_body)
+        matched: list[tuple[Todo, Todo]] = []
+        loose: list[Todo] = []
+        taken: set[int] = set()
+        for fresh in fresh_items:
             _with_src(session_dir, fresh)
             prior = by_src.get(fresh.src) or by_key.get(fresh.key)
-            if prior is not None and id(prior) not in seen:
-                fresh.done = prior.done
-                fresh.done_at = prior.done_at
-                fresh.uid = prior.uid
-                fresh.src = prior.src
-                # A tick that has not reached asst yet must stay marked, or the
-                # next pull sees the task open there and undoes it.
-                fresh.dirty = prior.dirty
-                fresh.list_name = prior.list_name
-                seen.add(id(prior))
-            merged.append(fresh)
-        merged.extend(
-            t for t in existing
-            if id(t) not in seen and (t.done or t.uid or t.owner == "you")
+            if prior is not None and id(prior) not in taken:
+                matched.append((fresh, prior))
+                taken.add(id(prior))
+            else:
+                loose.append(fresh)
+        # Only after every exact match is settled, so a look-alike cannot
+        # take the row an item of the same wording is owed.
+        matched += _reworded_pairs(
+            loose, [t for t in existing if id(t) not in taken]
         )
+        for fresh, prior in matched:
+            _carry_state(fresh, prior)
+            taken.add(id(prior))
+        merged = fresh_items + [
+            t for t in existing
+            if id(t) not in taken and (t.done or t.uid or t.owner == "you")
+        ]
         save_todos(session_dir, merged)
     return file_with_asst(session_dir, merged) if file else merged
 
