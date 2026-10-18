@@ -29,6 +29,8 @@ OWNER_RE = re.compile(r"^\*\*[^*]+\*\*:?$")
 NUMBERED_RE = re.compile(r"\d+[.)]")
 # How much of a cited line the strip quotes before it says "…".
 QUOTE_CHARS = 90
+# The href of the "Summarize again" link in the note by the heading.
+SUMMARIZE_AGAIN = "summarize"
 
 
 def list_section(start: datetime, now: datetime) -> str:
@@ -120,6 +122,24 @@ def summary_missing(lines: int, working: str = "") -> tuple[str, bool]:
     if lines <= 0:
         return "Nothing was transcribed in this meeting, so there is no summary.", False
     return "No summary yet.", True
+
+
+def summary_note(seen: citations.Coverage, working: str = "") -> str:
+    """Pango markup for the quiet line beside the Summary heading.
+
+    What is being done to the summary, else (for one whose points cite
+    nothing) how to fix that. Empty when there is nothing to say: a
+    summary with nothing to cite is not nagged about.
+    """
+    if working:
+        return escape(working)
+    if seen.items and not seen.cited:
+        return (
+            f'No citations. <a href="{SUMMARIZE_AGAIN}" '
+            'title="Write this summary again">Summarize again</a> '
+            "to add them."
+        )
+    return ""
 
 
 @dataclass

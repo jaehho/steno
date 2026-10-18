@@ -15,6 +15,7 @@ def meeting_menu_model() -> Gio.Menu:
     menu.append("Copy this meeting", "meeting.copy")
     menu.append("Save this meeting...", "meeting.save")
     menu.append("Set project...", "meeting.project")
+    menu.append("Summarize again...", "meeting.summarize")
     menu.append("Re-time against the audio...", "meeting.realign")
     danger = Gio.Menu()
     danger.append("Delete the audio, keep the text...", "meeting.delete-audio")

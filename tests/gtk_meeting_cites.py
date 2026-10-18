@@ -1001,7 +1001,7 @@ class TestWithoutCitations(CitedMeeting):
         self.open_plain()
 
         self.assertTrue(self.page.summary_hint.get_visible())
-        self.assertEqual(self.page.summary_hint.get_label(), self.HINT)
+        self.assertEqual(self.page.summary_hint.get_text(), self.HINT)
         self.assertTrue(self.page.summary_hint.has_css_class("hint"))
         self.assertEqual(self.view.sources, [])
         self.assertEqual(self.toasts, [])

@@ -287,3 +287,36 @@ class TestSummaryMissing(unittest.TestCase):
         text, offer = words.summary_missing(12, "Writing the summary…")
         self.assertEqual(text, "Writing the summary…")
         self.assertFalse(offer)
+
+
+class TestSummaryNote(unittest.TestCase):
+    """The line beside the Summary heading."""
+
+    def test_a_summary_that_cites_nothing_offers_to_do_it_again(self):
+        self.assertEqual(
+            words.summary_note(citations.Coverage(items=3, cited=0)),
+            'No citations. <a href="summarize" '
+            'title="Write this summary again">Summarize again</a> '
+            "to add them.",
+        )
+        self.assertEqual(words.SUMMARIZE_AGAIN, "summarize")
+
+    def test_a_summary_with_a_citation_has_nothing_to_say(self):
+        self.assertEqual(words.summary_note(citations.Coverage(3, 1)), "")
+
+    def test_one_with_nothing_to_cite_is_not_nagged_about(self):
+        self.assertEqual(words.summary_note(citations.Coverage(0, 0)), "")
+
+    def test_while_it_is_written_over_it_says_so_and_offers_nothing(self):
+        note = words.summary_note(
+            citations.Coverage(items=3, cited=0), "Writing the summary…"
+        )
+        self.assertEqual(note, "Writing the summary…")
+        self.assertEqual(
+            words.summary_note(citations.Coverage(3, 3), "Writing the summary…"),
+            "Writing the summary…",
+        )
+
+    def test_what_is_said_is_escaped_for_markup(self):
+        self.assertEqual(words.summary_note(citations.Coverage(), "a < b"),
+                         "a &lt; b")

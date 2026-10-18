@@ -21,6 +21,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from .. import asstlink, citations
+from ..cost import SUMMARY_GUESS, format_usd, prerecorded_cost
 from ..export import default_filename, meeting_markdown
 from ..notes import (
     Todo,
@@ -44,6 +45,7 @@ from ..realign import plan
 from ..retention import audio_bytes, delete_audio, delete_session, human_bytes
 from ..summarize import (
     list_projects,
+    load_meta,
     load_records,
     projects_root,
     save_project,
@@ -106,6 +108,8 @@ class MeetingPage(Gtk.Box):
         self._asst_bus = None
         self.current: Session | None = None
         self._records: list[dict] = []
+        # How much of the summary on the page cites, for the note by its heading.
+        self._seen = citations.Coverage()
         self._offsets: list[float] = []
         # Each record's second on the gutter's clock, which is the clock a
         # cite is written in; `_offsets` is where its audio starts.
@@ -151,6 +155,7 @@ class MeetingPage(Gtk.Box):
             ("copy", self._copy_meeting),
             ("save", self._save_meeting),
             ("project", self._set_project),
+            ("summarize", self._confirm_summarize),
             ("realign", self._confirm_realign),
             ("delete-audio", self._confirm_delete_audio),
             ("delete", self._confirm_delete),
@@ -232,13 +237,15 @@ class MeetingPage(Gtk.Box):
         self.summary_label.add_css_class("summary")
         self.summary_view = SummaryView(self._toggle_cites)
         # Quiet, beside the heading: a summary from before citations has
-        # nothing wrong, and is not nagged about.
-        self.summary_hint = hint_label("No citations. Summarize again to add them.")
+        # nothing wrong, and is not nagged about. While one is being
+        # written over it says so instead, since the old text stays up.
+        self.summary_hint = hint_label()
         self.summary_hint.set_visible(False)
+        self.summary_hint.connect("activate-link", self._on_hint_link)
         self.summarize_button = Gtk.Button(label="Summarize now")
         self.summarize_button.set_halign(Gtk.Align.START)
         self.summarize_button.set_visible(False)
-        self.summarize_button.connect("clicked", lambda _b: self._summarize())
+        self.summarize_button.connect("clicked", lambda _b: self._summarize_now())
         summary = section(
             "Summary", self.summary_view, self.summary_label,
             self.summarize_button, beside=self.summary_hint,
@@ -368,8 +375,8 @@ class MeetingPage(Gtk.Box):
         if s.summary_path.is_file():
             md = s.summary_path.read_text()
             self.summary_view.show(words.summary_blocks(md, has_todos=bool(todos)))
-            seen = citations.coverage(md)
-            self.summary_hint.set_visible(bool(seen.items) and not seen.cited)
+            self._seen = citations.coverage(md)
+            self._show_note(s)
             self.summary_view.set_visible(True)
             self.summary_label.set_visible(False)
             self.summarize_button.set_visible(False)
@@ -379,11 +386,43 @@ class MeetingPage(Gtk.Box):
             )
             self.summary_view.clear()
             self.summary_view.set_visible(False)
-            self.summary_hint.set_visible(False)
+            self._seen = citations.Coverage()
+            self._show_note(s)
             self.summary_label.set_markup(f"<i>{words.escape(text)}</i>")
             self.summary_label.set_visible(True)
             self.summarize_button.set_visible(offer and self._on_summarize is not None)
         self._load_todos(s, todos)
+        self._update_actions()
+
+    def _show_note(self, s: Session) -> None:
+        """The line by the Summary heading, for the summary on the page.
+
+        A meeting with no summary says what is happening in the slot below
+        instead, so the heading has nothing to add.
+        """
+        has_summary = s.summary_path.is_file()
+        note = words.summary_note(
+            self._seen, self._working.get(s.dir, "") if has_summary else ""
+        )
+        self.summary_hint.set_markup(note)
+        self.summary_hint.set_visible(bool(note))
+
+    def _can_summarize(self) -> bool:
+        """Not while it is being written (a second ask would only be told
+        it is already running), and not with nothing to write it from."""
+        s = self.current
+        return (
+            s is not None
+            and self._on_summarize is not None
+            and bool(self._records)
+            and s.dir not in self._working
+        )
+
+    def _update_actions(self) -> None:
+        """Switch off what the open meeting cannot do right now."""
+        self.actions.lookup_action("summarize").set_enabled(
+            self._can_summarize()
+        )
 
     def show_summary(self, s: Session) -> None:
         """A summary arrived for the open meeting.
@@ -409,6 +448,7 @@ class MeetingPage(Gtk.Box):
             # New rows have none of the lines lit; light them again.
             active = self._active
             self._load_transcript(s)
+            self._update_actions()
             if active is not None:
                 self._show_cites(active, scroll=False)
 
@@ -419,7 +459,14 @@ class MeetingPage(Gtk.Box):
         else:
             self._working.pop(session_dir, None)
         current = self.current
-        if current is not None and current.dir == session_dir:
+        if current is None or current.dir != session_dir:
+            return
+        if current.summary_path.is_file():
+            # The summary being written over stays up, and whatever is lit in
+            # it: the note by its heading is all that changes.
+            self._show_note(current)
+            self._update_actions()
+        else:
             self._show_summary(current, ensure_todos(session_dir))
 
     def clear_working(self, session_dir: Path | None = None) -> None:
@@ -431,12 +478,57 @@ class MeetingPage(Gtk.Box):
         for pending in [session_dir] if session_dir is not None else list(self._working):
             self.mark_working(pending, "")
 
-    def _summarize(self) -> None:
-        s = self.current
-        if s is None or self._on_summarize is None:
+    def _summarize_now(self) -> None:
+        """The button of a meeting that has no summary."""
+        if self.current is not None:
+            self._summarize(self.current)
+
+    def _summarize(self, s: Session) -> None:
+        if self._on_summarize is None:
             return
         self.mark_working(s.dir, "Writing the summary…")
         self._on_summarize(s.dir)
+
+    def _on_hint_link(self, _label: Gtk.Label, href: str) -> bool:
+        if href != words.SUMMARIZE_AGAIN:
+            return False
+        # Through the action, so that it is as switched off as the menu is.
+        self.actions.activate_action("summarize", None)
+        return True
+
+    def _summary_cost(self, s: Session) -> float:
+        """What writing the summary will cost, in dollars: the model, and
+        your side's transcription too when the engine has to do that first
+        (a meeting quit before its mic was transcribed)."""
+        cost = SUMMARY_GUESS
+        if load_meta(s.dir).get("mic_pending") and (s.dir / "you.wav").is_file():
+            cost += prerecorded_cost(s.minutes)
+        return cost
+
+    def _confirm_summarize(self) -> None:
+        s = self.current
+        if s is None or not self._can_summarize():
+            return
+        again = s.summary_path.is_file()
+        body = (
+            "The model reads the transcript and writes the summary and the "
+            "to-do list"
+            + (" again" if again else "")
+            + ", with a citation on each point it can support. It costs about "
+            f"{format_usd(self._summary_cost(s))}."
+        )
+        if again:
+            body += (
+                "\n\nThe new summary replaces this one. Your notes, the "
+                "project and the to-dos you ticked are kept."
+            )
+        self._dialog(
+            "Summarize this meeting again?" if again else "Write the summary?",
+            body,
+            "Summarize",
+            lambda: self._summarize(s),
+            destructive=False,
+        )
 
     def stop_pull(self) -> None:
         """Leave the meeting page: stop asking asst about this one."""
