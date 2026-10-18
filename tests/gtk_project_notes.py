@@ -13,6 +13,7 @@ started, so nothing listens to a microphone.
 from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
+import errno
 import json
 import os
 import sys
@@ -347,6 +348,44 @@ class TestInTheWindow(Base):
         self.open(self.bravo)
         self.delete()
         self.assertFalse(self.bravo.exists())
+        self.assertFalse(self.meetings().exists())
+
+    def test_a_copy_that_cannot_be_taken_out_keeps_the_meeting(self):
+        """Delete anyway and the transcript page stays in the project,
+        with the record of where it is gone with the meeting."""
+        projectnotes.publish(self.alpha)
+        self.open(self.alpha)
+        self.page.notes.view.get_buffer().set_text("typed just now\n")
+        denied = PermissionError(errno.EACCES, "Permission denied")
+        for delete in (self.page._delete, self.page._delete_permanently):
+            with self.subTest(delete=delete.__name__):
+                with mock.patch.object(
+                    projectnotes, "unpublish", side_effect=denied
+                ), mock.patch.object(meeting, "forget_asst") as forget, \
+                        mock.patch.object(meeting, "delete_session") as gone, \
+                        self.assertLogs("steno.projectnotes", "WARNING"):
+                    delete(self.page.current)
+                    settle()
+                forget.assert_not_called()  # its tasks stay filed too
+                gone.assert_not_called()
+                dialog = self.window.get_visible_dialog()
+                self.assertEqual(
+                    dialog.get_heading(),
+                    "Could not take it out of the project's notes",
+                )
+                self.assertIn("Permission denied", dialog.get_body())
+                self.assertIn("was not deleted", dialog.get_body())
+                dialog.force_close()
+                settle()
+        # Still the open meeting, with its notes box and its copy kept up.
+        self.assertEqual(self.page.current.dir, self.alpha)
+        self.assertEqual(self.page.notes.session_dir, self.alpha)
+        self.assertIn(self.alpha, self.rp._debounce)
+        self.assertTrue((self.meetings() / ALPHA_PAGE).is_file())
+        # Once the folder can be written, the same delete goes through.
+        self.page._delete(self.page.current)
+        self.settle()
+        self.assertFalse(self.alpha.exists())
         self.assertFalse(self.meetings().exists())
 
     # --------------------------------------------------------------- problem

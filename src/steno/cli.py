@@ -519,19 +519,23 @@ def cmd_delete(args: argparse.Namespace) -> None:
     if not args.yes and not _confirm(f"delete '{title}' ({size})? [y/N] "):
         print("nothing done")
         return
+    # Its copy in a project goes first: unpublishing needs the meta.json
+    # that says where it went, which goes with the meeting, and a copy
+    # that cannot be taken out must not be left behind with nothing to
+    # say it is there. A transcript page is other people's speech.
+    gone = _publishing(projectnotes.try_unpublish, session_dir)
+    if gone.error:
+        print(f"could not take it out of {gone.project}'s notes: {gone.error}\n"
+              f"{session_dir.name} was not deleted; make that folder "
+              "writable and run it again", file=sys.stderr)
+        sys.exit(1)
+    if told := _to_report(gone.changes, set()):
+        print(f"taken out of {gone.project}'s notes:")
+        _print_changes(told, projects_root())
     # Same as the window's delete: tasks filed from this meeting go with it.
     freed = forget_asst(session_dir)
     if freed:
         print(f"removed {freed} task{'s' if freed != 1 else ''} from asst")
-    # And so is its copy in a project: unpublishing needs the meta.json
-    # that says where it went, which goes with the meeting.
-    gone = _publishing(projectnotes.try_unpublish, session_dir)
-    if told := _to_report(gone.changes, set()):
-        print(f"taken out of {gone.project}'s notes:")
-        _print_changes(told, projects_root())
-    if gone.error:
-        print(f"could not take it out of {gone.project}'s notes: {gone.error}",
-              file=sys.stderr)
     outcome, where = delete_session(session_dir, permanent=args.permanent)
     if outcome == "failed" and gone.altered:
         _publishing(projectnotes.try_publish, session_dir)  # still here

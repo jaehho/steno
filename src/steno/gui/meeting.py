@@ -1236,29 +1236,55 @@ class MeetingPage(Gtk.Box):
             lambda: self._delete(s),
         )
 
-    def _take_out_of_project(self, s: Session) -> bool:
+    def _take_out_of_project(self, s: Session) -> projectnotes.Result | None:
         """Remove the meeting's pages from its project before the meeting
         goes: the record of where they are goes with it. Says so in a
-        toast if some stayed. True if any were taken out."""
+        toast if some stayed.
+
+        None when they could not be removed (a folder that cannot be
+        written): the meeting is then not deleted, since the summary and
+        the transcript would stay in the project with nothing left to
+        say they are there. The dialog tells the person.
+        """
         if self._republisher is not None:
             self._republisher.forget(s.dir)
             # A rewrite that has begun finishes first, or it could put the
             # pages back after they were taken out.
             self._republisher.wait(QUIT_WAIT_S)
         gone = projectnotes.try_unpublish(s.dir)
+        if gone.error:
+            if self._republisher is not None:
+                self._republisher.changed(s.dir)  # the copy stays current
+            self._copy_stays(s, gone)
+            return None
         if problem := words.project_notes_problem(gone):
             self._toast(problem)
-        return bool(gone.altered)
+        return gone
+
+    def _copy_stays(self, s: Session, gone: projectnotes.Result) -> None:
+        dialog = Adw.AlertDialog(
+            heading="Could not take it out of the project's notes",
+            body=f"{gone.error}\n\n“{s.title or s.dir.name}” was not deleted: "
+            f"its summary and transcript would stay in {gone.project}/notes/"
+            "meetings with nothing here to remove them. Make that folder "
+            "writable and delete it again.",
+        )
+        dialog.add_response("close", "Close")
+        dialog.present(self)
 
     def _delete(self, s: Session) -> None:
+        # Before anything is let go: a meeting that stays keeps its notes
+        # box, its audio and its tasks.
+        gone = self._take_out_of_project(s)
+        if gone is None:
+            return
         self.stop_pull()
         self.stop_playback()
         self.notes.bind(None)
         forget_asst(s.dir)
-        was_in_project = self._take_out_of_project(s)
         outcome, where = delete_session(s.dir)
         if outcome == "failed":
-            if was_in_project and self._republisher is not None:
+            if gone.altered and self._republisher is not None:
                 self._republisher.publish(s.dir)  # it is still here
             self._dialog(
                 "Could not move it to the trash",
@@ -1273,13 +1299,15 @@ class MeetingPage(Gtk.Box):
         self._toast(f"Moved to trash: {where.name if where else s.dir.name}")
 
     def _delete_permanently(self, s: Session) -> None:
+        gone = self._take_out_of_project(s)
+        if gone is None:
+            return
         forget_asst(s.dir)
-        was_in_project = self._take_out_of_project(s)
         outcome, _ = delete_session(s.dir, permanent=True)
         if outcome == "deleted":
             self.current = None
             self._on_deleted(s.dir)
-        elif was_in_project and self._republisher is not None:
+        elif gone.altered and self._republisher is not None:
             self._republisher.publish(s.dir)
 
     def _confirm_delete_audio(self) -> None:

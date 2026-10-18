@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import io
 import json
 import os
@@ -995,3 +996,26 @@ class TestDeleteTakesTheCopyWithIt(ProjectNotesCase):
         self.assertEqual(self.delete("trashed"), [])
         self.assertFalse(self.meetings().exists())
         self.assertNotIn("remove", self.out)
+
+    def test_a_copy_that_cannot_be_taken_out_keeps_the_meeting(self):
+        """The record of where the copy is lives in meta.json, which goes
+        with the meeting: delete anyway and the transcript page is left
+        in the project for good."""
+        self.publish(session=self.old.name)
+        before = (self.old / "meta.json").read_text()
+        denied = PermissionError(errno.EACCES, "Permission denied")
+        with mock.patch.object(cli, "forget_asst") as forget, \
+             mock.patch.object(cli, "delete_session") as delete, \
+             mock.patch.object(Path, "unlink", side_effect=denied):
+            self.run_cmd(cli.cmd_delete, session=self.old.name, yes=True,
+                         permanent=False)
+        self.assertEqual(self.code, 1)
+        forget.assert_not_called()  # its tasks stay filed too
+        delete.assert_not_called()
+        self.assertIn("Permission denied", self.err)
+        self.assertIn("was not deleted", self.err)
+        self.assertEqual((self.old / "meta.json").read_text(), before)
+        self.assertEqual(len(list(self.meetings().glob("*kickoff*"))), 2)
+        # Once the folder can be written, the same command finishes.
+        self.assertEqual(self.delete("trashed"), [])
+        self.assertEqual(list(self.meetings().glob("*kickoff*")), [])

@@ -228,8 +228,12 @@ every few seconds; opening another meeting, or quitting, writes what is
 waiting at once. A tick or an edit never publishes a meeting that was not
 there already. `steno summarize` and `steno realign` do the same from a
 terminal. A meeting you delete is taken out of its project first; one you
-archive stays there. **Show in project notes** in the ⋯ menu opens the folder,
-for a meeting that has pages in one.
+archive stays there. If the pages cannot be taken out (the folder is not
+writable, say), the meeting is not deleted, because the transcript would stay
+behind with nothing to say where it is: the window shows why, `steno delete`
+prints it and exits 1, and deleting again after the fix goes through.
+**Show in project notes** in the ⋯ menu opens the folder, for a meeting that
+has pages in one.
 
 **What it keeps to.**
 
