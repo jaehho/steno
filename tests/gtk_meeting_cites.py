@@ -596,6 +596,28 @@ class TestTheBar(CitedMeeting):
         self.assertEqual(self.lit(), SHIP)
         self.assertEqual(self.player.played, [])
 
+    def test_a_step_to_a_line_with_no_place_yet_asks_again_until_it_has(self):
+        """The page scrolls with the search jump's `_scroll_to_row`,
+        whose True means "not laid out yet: ask again"."""
+        click(self.item("Ship").mark)
+        self.scroll_top()
+        asked = []
+        real = self.page._scroll_to_row
+
+        def late(row, give_up):
+            asked.append(row)
+            if len(asked) < 3:
+                return True
+            return real(row, give_up)
+
+        self.page._scroll_to_row = late
+
+        self.bar.down.emit("clicked")
+
+        second = self.page._rows[SHIP[1]]
+        self.assertTrue(wait_for(lambda: on_screen(second)))
+        self.assertEqual(asked, [second] * 3)
+
     def test_a_long_list_scrolls_inside_the_bar_and_follows_the_steps(self):
         folder = self.page.current.dir
         (folder / "summary.md").write_text(
