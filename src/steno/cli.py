@@ -45,7 +45,15 @@ from .detect import (
 )
 from .echo import cancel_file
 from .export import meeting_markdown
-from .notes import forget_asst, pull_todos, sync_todos
+from .notes import (
+    Dropped,
+    Restored,
+    drop_open_todos,
+    forget_asst,
+    pull_todos,
+    restore_dropped_todos,
+    sync_todos,
+)
 from .playback import TRACKS, clean_path
 from .realign import format_plan, has_audio, plan, realign_session
 from .retention import audio_bytes, delete_session, human_bytes
@@ -575,17 +583,49 @@ def _archive_each(args: argparse.Namespace, archive: bool) -> None:
         changed = set_archived(session_dir, archive)
         print(f"{done if changed else 'already ' + done}: "
               f"{title}  ({session_dir.name})")
+        # Also when it already was: that retries what asst refused.
+        if archive:
+            failed |= _say_dropped(drop_open_todos(session_dir))
+        else:
+            failed |= _say_restored(restore_dropped_todos(session_dir))
     if failed:
         sys.exit(1)
 
 
+def _open_tasks(n: int) -> str:
+    return f"{n} open task{'s' if n != 1 else ''}"
+
+
+def _say_dropped(dropped: Dropped) -> bool:
+    """What archiving did to the meeting's to-dos. True if asst refused
+    some, which the exit status says."""
+    if dropped.removed:
+        print(f"  removed {_open_tasks(dropped.removed)} from asst")
+    if dropped.stuck:
+        print(f"  could not remove {_open_tasks(dropped.stuck)} from asst; "
+              "archive it again to retry", file=sys.stderr)
+    return bool(dropped.stuck)
+
+
+def _say_restored(restored: Restored) -> bool:
+    """What bringing the meeting back did to its to-dos. True if asst
+    refused some."""
+    if restored.filed:
+        print(f"  filed {_open_tasks(restored.filed)} in asst again")
+    if restored.failed:
+        print(f"  asst did not take {_open_tasks(restored.failed)}; "
+              "they are open here only", file=sys.stderr)
+    return bool(restored.failed)
+
+
 def cmd_archive(args: argparse.Namespace) -> None:
-    """Put meetings away: out of the list and out of every --all."""
+    """Put meetings away: out of the list and out of every --all, their
+    open to-dos closed (and the tasks removed from asst)."""
     _archive_each(args, archive=True)
 
 
 def cmd_unarchive(args: argparse.Namespace) -> None:
-    """Bring archived meetings back."""
+    """Bring archived meetings back, and their to-dos with them."""
     _archive_each(args, archive=False)
 
 
@@ -895,11 +935,11 @@ def cmd_clean_echo(args: argparse.Namespace) -> None:
 def cmd_todos(args: argparse.Namespace) -> None:
     """Everything still open, newest meeting first.
 
-    Archived meetings are listed too: putting a meeting away does not
-    keep a promise made in it.
+    A meeting put away is left out, and says so: its to-dos were closed
+    with it.
     """
     any_open = False
-    for session_dir in iter_sessions(args.dir):
+    for session_dir in _leave_out_archived(iter_sessions(args.dir)):
         todos = [t for t in pull_todos(session_dir) if not t.done or args.all]
         if not todos:
             continue
@@ -1212,7 +1252,8 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
 
     p_archive = sub.add_parser(
         "archive",
-        help="Put meetings away: out of the list and every --all, kept whole",
+        help="Put meetings away: out of the list and every --all, kept "
+             "whole, their open to-dos closed",
     )
     p_archive.add_argument("session", nargs="+",
                            help="Session names or paths")
@@ -1221,7 +1262,7 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     p_archive.set_defaults(func=cmd_archive)
 
     p_unarchive = sub.add_parser(
-        "unarchive", help="Bring archived meetings back"
+        "unarchive", help="Bring archived meetings back, to-dos reopened"
     )
     p_unarchive.add_argument("session", nargs="+",
                              help="Session names or paths")

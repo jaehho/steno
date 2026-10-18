@@ -156,6 +156,21 @@ def _project_of(session_dir: Path) -> str | None:
     return str(value) if value else None
 
 
+def archived(session_dir: Path) -> bool:
+    """Put away by the user. Its to-dos are closed: nothing is filed for
+    it and nothing counts.
+
+    Read as `summarize.is_archived` reads it, a real `true` and nothing
+    else. That module imports notes, which imports this one, so it
+    cannot be asked here.
+    """
+    try:
+        meta = json.loads((session_dir / "meta.json").read_text())
+        return meta.get("archived") is True
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return False
+
+
 def add_todo(
     session_dir: Path,
     text: str,

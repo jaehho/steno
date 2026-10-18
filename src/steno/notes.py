@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import NamedTuple
 
 from . import asstlink, citations
 
@@ -90,6 +91,11 @@ class Todo:
     # A checkbox that did not reach asst (daemon down). Kept until it lands,
     # so a later pull cannot un-tick what the user just ticked.
     dirty: bool = False
+    # Closed by putting the meeting away: its asst task is gone (or it
+    # never had one) and the row waits for Unarchive. Not open, not
+    # counted, not pulled, not filed. Text, uid and src stay, so a
+    # re-summarize still finds the row and Unarchive can file it again.
+    dropped: bool = False
     # Where in the meeting this was said, as seconds on the transcript's
     # timeline. Comes from the summary's markers, never from the text.
     cites: list[citations.Cite] = field(default_factory=list)
@@ -99,6 +105,11 @@ class Todo:
         """Wording, normalized — so a re-summarize that rephrases nothing keeps
         your checkmarks, and one that rewrites a line loses only that line."""
         return " ".join(self.text.lower().split())
+
+    @property
+    def open(self) -> bool:
+        """Still to do: not ticked, and not closed with the meeting."""
+        return not self.done and not self.dropped
 
 
 def notes_path(session_dir: Path) -> Path:
@@ -181,6 +192,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             src=str(row.get("src", "") or ""),
             list_name=str(row.get("list_name", "") or ""),
             dirty=bool(row.get("dirty", False)),
+            dropped=bool(row.get("dropped", False)),
             cites=citations.coerce(row.get("cites")),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
@@ -308,6 +320,7 @@ def _carry_state(fresh: Todo, prior: Todo) -> None:
     # A tick that has not reached asst yet must stay marked, or the
     # next pull sees the task open there and undoes it.
     fresh.dirty = prior.dirty
+    fresh.dropped = prior.dropped
     fresh.list_name = prior.list_name
 
 
@@ -406,11 +419,12 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
     Only `owner == "you"` goes across: what someone else promised is not a
     task on the user's phone. Idempotent via `--source`, so a re-summarize
     files nothing twice and keeps the uid it already had. Destination is the
-    meeting's project list when asst has one, else the inbox.
+    meeting's project list when asst has one, else the inbox. A meeting
+    that is put away files nothing: its to-dos are closed.
     """
-    if not asstlink.available():
+    if not asstlink.available() or asstlink.archived(session_dir):
         return todos
-    pending = [t for t in todos if t.owner == "you" and not t.uid and not t.done]
+    pending = [t for t in todos if t.owner == "you" and not t.uid and t.open]
     if not pending:
         return todos
     list_name = asstlink.target_list(session_dir)
@@ -459,7 +473,10 @@ def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
         return todos
     delivered: list[tuple[str, bool]] = []
     for t in todos:
-        if t.dirty and t.uid and asstlink.set_done(t.uid, t.done):
+        if (
+            t.dirty and t.uid and not t.dropped
+            and asstlink.set_done(t.uid, t.done)
+        ):
             t.dirty = False
             delivered.append((t.uid, t.done))
     if delivered:
@@ -483,7 +500,9 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     here. A row still dirty keeps its local tick. A task deleted in asst is
     deleted here too — a row that has reached the phone and then vanished
     from it was removed on purpose. Rows that never filed (theirs, or yours
-    not yet sent) are local and stay: a pull files nothing.
+    not yet sent) are local and stay: a pull files nothing. A dropped
+    row (`drop_open_todos`) is not looked for: its task was removed on
+    purpose, by us.
 
     The comparison is made against todos.json as it is after the (slow)
     fetch, so a tick made while this ran is a dirty row, not a lost one.
@@ -508,6 +527,9 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
         kept: list[Todo] = []
         changed = False
         for t in current:
+            if t.dropped:
+                kept.append(t)
+                continue
             _with_src(session_dir, t)
             hit = remote.get(t.src) or by_key.get(t.key)
             if hit is None:
@@ -540,7 +562,10 @@ def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) 
     """Follow a project change into asst. Returns how many tasks moved."""
     if not asstlink.available():
         return 0
-    uids = [t.uid for t in todos if t.owner == "you" and t.uid]
+    uids = [
+        t.uid for t in todos
+        if t.owner == "you" and t.uid and not t.dropped
+    ]
     if not uids:
         return 0
     moved = asstlink.move_todos(uids, list_name)
@@ -566,7 +591,8 @@ def forget_asst(session_dir: Path, todos: list[Todo] | None = None) -> int:
     phone tasks were deleted behind the user's back.
     """
     todos = load_todos(session_dir) if todos is None else todos
-    uids = [t.uid for t in todos if t.uid]
+    # A dropped row's task was removed when the meeting was put away.
+    uids = [t.uid for t in todos if t.uid and not t.dropped]
     removed = asstlink.rm_todos(uids) if (uids and asstlink.available()) else 0
 
     def unfile(current: list[Todo]) -> bool:
@@ -583,6 +609,106 @@ def forget_asst(session_dir: Path, todos: list[Todo] | None = None) -> int:
         t.uid = ""
         t.list_name = ""
     return removed
+
+
+class Dropped(NamedTuple):
+    """What putting a meeting away did to the to-dos it had open."""
+
+    removed: int  # asst tasks deleted
+    stuck: int  # asst tasks it would not delete: they stay open
+
+
+class Restored(NamedTuple):
+    """What bringing a meeting back did to the to-dos it had closed."""
+
+    filed: int  # yours, filed in asst again
+    failed: int  # yours, which asst did not take: open here only
+
+
+# Putting a meeting away and bringing it back each make slow asst calls
+# between their writes. Run at once, an Undo would file a task that the
+# removal then deleted, and leave a row naming a task that is gone.
+_AWAY = threading.Lock()
+
+
+def drop_open_todos(session_dir: Path) -> Dropped:
+    """Close a meeting's open to-dos, because it is being put away.
+
+    Each open row is marked `dropped`, and its asst task is removed
+    (asst closes the issue behind a GitHub-linked list as not planned).
+    A row that is done is left alone, and so is its task. A row that
+    never reached asst is dropped here alone, so a meeting with no asst
+    works.
+
+    The mark is written before the removal, so a pull that runs
+    meanwhile finds a dropped row and not a task "deleted in asst",
+    which it would take out of todos.json. A task asst will not remove
+    (asstd down) keeps its row open: dropping it would leave an open
+    task in asst that nothing here would look at again. Calling this
+    again retries those.
+    """
+    with _AWAY:
+        pull_todos(session_dir)  # what was ticked in asst since
+        marked: list[Todo] = []
+
+        def mark(current: list[Todo]) -> bool:
+            marked.extend(t for t in current if t.open)
+            for t in marked:
+                t.dropped = True
+            return bool(marked)
+
+        _edit(session_dir, mark)
+        stuck = {
+            uid for uid in dict.fromkeys(t.uid for t in marked if t.uid)
+            if not asstlink.rm_todo(uid)
+        }
+        if stuck:
+            def keep_open(current: list[Todo]) -> bool:
+                changed = False
+                for t in current:
+                    if t.dropped and t.uid in stuck:
+                        t.dropped = False
+                        changed = True
+                return changed
+
+            _edit(session_dir, keep_open)
+    return Dropped(
+        removed=sum(1 for t in marked if t.uid and t.uid not in stuck),
+        stuck=sum(1 for t in marked if t.uid in stuck),
+    )
+
+
+def restore_dropped_todos(session_dir: Path) -> Restored:
+    """Open again what putting the meeting away closed, and file yours
+    in asst once more.
+
+    Filing goes by the row's source, so a task asst still holds is
+    found and not duplicated. Call it once the archive flag is cleared:
+    a meeting that is put away files nothing.
+    """
+    with _AWAY:
+        woken: list[str] = []
+
+        def reopen(current: list[Todo]) -> bool:
+            for t in current:
+                if t.dropped:
+                    t.dropped = False
+                    # The task it named was removed.
+                    t.uid = ""
+                    t.list_name = ""
+                    t.dirty = False
+                    woken.append(t.key)
+            return bool(woken)
+
+        todos = _edit(session_dir, reopen)
+        if not woken:
+            return Restored(0, 0)
+        todos = file_with_asst(session_dir, todos)
+    mine = [t for t in todos if t.key in woken and t.owner == "you"]
+    filed = sum(1 for t in mine if t.uid)
+    # With no asst at all there is nothing it failed to take.
+    failed = len(mine) - filed if asstlink.available() else 0
+    return Restored(filed, failed)
 
 
 def ensure_todos(session_dir: Path) -> list[Todo]:
@@ -609,6 +735,12 @@ def open_count(session_dir: Path) -> int:
     """Open items that are yours.
 
     What someone else promised is not a to-do on this machine; counting it
-    made the sidebar badge shout about other people's work.
+    made the sidebar badge shout about other people's work. A meeting
+    put away has none: its to-dos were closed with it.
     """
-    return sum(1 for t in ensure_todos(session_dir) if not t.done and t.owner != "them")
+    if asstlink.archived(session_dir):
+        return 0
+    return sum(
+        1 for t in ensure_todos(session_dir)
+        if t.open and t.owner != "them"
+    )

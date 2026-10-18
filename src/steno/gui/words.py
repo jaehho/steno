@@ -97,27 +97,47 @@ def owed_label(n: int) -> str:
     return f"{n} to-do{'' if n == 1 else 's'} open"
 
 
-def owed_note(n_archived: int) -> str:
-    """Its tooltip: some of it is in meetings the list leaves out."""
-    if not n_archived:
-        return ""
-    return (
-        f"{n_archived} of them {'is' if n_archived == 1 else 'are'} in "
-        "archived meetings. Putting a meeting away does not keep a "
-        "promise made in it."
-    )
+def _open_tasks(n: int) -> str:
+    return f"{n} open task{'s' if n != 1 else ''}"
 
 
-def archived_toast(title: str, open_todos: int) -> str:
-    """What archiving says it did. The to-dos are the part that is not
-    obvious: the meeting leaves the list, its promises do not."""
+def archived_toast(title: str, removed: int, stuck: int = 0) -> str:
+    """What archiving says it did. Its open to-dos are closed with it,
+    which is the part that is not obvious; so is a task asst would not
+    give up, which stays open there."""
     said = f"Archived “{title}”"
-    if open_todos:
-        said += (
-            f" · {open_todos} to-do{'' if open_todos == 1 else 's'} "
-            "stay open"
+    if removed and stuck:
+        return (
+            f"{said}. Removed {_open_tasks(removed)} from asst; "
+            f"could not remove {stuck}."
+        )
+    if removed:
+        return f"{said}. Removed {_open_tasks(removed)} from asst."
+    if stuck:
+        return (
+            f"{said}. Could not remove {_open_tasks(stuck)} from asst; "
+            f"{'it stays' if stuck == 1 else 'they stay'} open there."
         )
     return said
+
+
+def unarchived_toast(title: str, filed: int, failed: int = 0) -> str:
+    """What bringing a meeting back says it did to its to-dos, "" when
+    there was nothing to say: no asst task came back with it."""
+    said = f"Unarchived “{title}”"
+    if filed and failed:
+        return (
+            f"{said}. Filed {_open_tasks(filed)} in asst again; "
+            f"asst did not take {failed}."
+        )
+    if filed:
+        return f"{said}. Filed {_open_tasks(filed)} in asst again."
+    if failed:
+        return (
+            f"{said}. asst did not take {_open_tasks(failed)}; "
+            f"{'it is' if failed == 1 else 'they are'} open here only."
+        )
+    return ""
 
 
 def project_notes_problem(result: Result) -> str:

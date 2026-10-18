@@ -16,7 +16,7 @@ from unittest import mock
 
 from steno import asstlink, cli, projectnotes
 from steno.cli import _parse_duration, _replace_line, _split_csv
-from steno.notes import Todo, save_todos
+from steno.notes import Todo, load_todos, save_todos, sync_todos
 from steno.realign import Plan
 from steno.summarize import (
     Summary,
@@ -25,6 +25,7 @@ from steno.summarize import (
     set_archived,
     update_meta,
 )
+from tests.fakeasst import FakeAsst
 
 
 class TestReplaceLine(unittest.TestCase):
@@ -620,6 +621,70 @@ class TestBulkCommandsSkipArchived(ArchiveCase):
         self.assertIn("1 archived meeting left out", out.getvalue())
 
 
+class TestArchiveClosesTodos(ArchiveCase):
+    """`steno archive` takes the meeting's open tasks out of asst, and
+    `steno unarchive` files them again. The asst here is
+    tests/fakeasst.py."""
+
+    def setUp(self):
+        super().setUp()
+        self.asst = FakeAsst().start()
+        self.addCleanup(self.asst.stop)
+        sync_todos(self.old, "## Action items\n**You**\n"
+                             "- Send the report\n- Draft the table\n")
+
+    def archive(self, unarchive=False):
+        args = argparse.Namespace(session=[self.old.name], dir=self.root)
+        self.run_cmd(cli.cmd_unarchive if unarchive else cli.cmd_archive, args)
+
+    def test_it_says_what_it_took_out_of_asst(self):
+        self.assertEqual(len(self.asst.tasks()), 2)
+        self.archive()
+        self.assertIn(f"archived: Kickoff  ({self.old.name})", self.out)
+        self.assertIn("  removed 2 open tasks from asst", self.out)
+        self.assertEqual(self.asst.tasks(), [])
+        self.assertTrue(all(t.dropped for t in load_todos(self.old)))
+        self.assertIsNone(self.code)
+
+    def test_a_refused_removal_still_archives_and_exits_1(self):
+        self.asst.down = True
+        self.archive()
+        self.assertTrue(is_archived(self.old))
+        self.assertNotIn("removed", self.out)
+        self.assertIn("could not remove 2 open tasks from asst", self.err)
+        self.assertEqual(self.code, 1)
+        self.assertFalse(any(t.dropped for t in load_todos(self.old)))
+
+        # Archiving it again, with asst back, is the retry.
+        self.asst.down = False
+        self.archive()
+        self.assertIn("already archived: Kickoff", self.out)
+        self.assertIn("  removed 2 open tasks from asst", self.out)
+        self.assertIsNone(self.code)
+        self.assertEqual(self.asst.tasks(), [])
+
+    def test_unarchive_files_them_again(self):
+        self.archive()
+        self.archive(unarchive=True)
+        self.assertIn(f"unarchived: Kickoff  ({self.old.name})", self.out)
+        self.assertIn("  filed 2 open tasks in asst again", self.out)
+        self.assertEqual(len(self.asst.tasks()), 2)
+        self.assertTrue(all(t.open for t in load_todos(self.old)))
+
+        self.archive(unarchive=True)
+        self.assertIn("already unarchived", self.out)
+        self.assertNotIn("filed", self.out)
+        self.assertEqual(len(self.asst.tasks()), 2)
+
+    def test_unarchive_says_what_asst_would_not_take(self):
+        self.archive()
+        self.asst.down = True
+        self.archive(unarchive=True)
+        self.assertFalse(is_archived(self.old))
+        self.assertIn("asst did not take 2 open tasks", self.err)
+        self.assertEqual(self.code, 1)
+
+
 class TestNamedCommandsStillReachIt(ArchiveCase):
     def test_export_by_name_writes_the_meeting(self):
         args = argparse.Namespace(
@@ -629,14 +694,29 @@ class TestNamedCommandsStillReachIt(ArchiveCase):
         self.assertIsNone(self.code)
         self.assertIn("# Standup", self.out)
 
-    def test_todos_still_lists_what_you_owe_from_it(self):
-        """Putting a meeting away does not keep a promise made in it."""
+    def test_todos_leaves_it_out_and_says_so(self):
+        """Its to-dos were closed when it was put away."""
         save_todos(self.away, [Todo(text="Send the report", owner="you")])
         with mock.patch.object(asstlink, "available", lambda: False):
             self.run_cmd(cli.cmd_todos, argparse.Namespace(
                 dir=self.root, all=False
             ))
-        self.assertIn("Standup", self.out)
+        self.assertNotIn("Standup", self.out)
+        self.assertNotIn("Send the report", self.out)
+        self.assertIn("1 archived meeting left out", self.out)
+
+    def test_todos_lists_it_again_once_it_is_back(self):
+        save_todos(self.away, [Todo(text="Send the report", owner="you")])
+        self.run_cmd(cli.cmd_archive, argparse.Namespace(
+            session=[self.away.name], dir=self.root
+        ))
+        self.run_cmd(cli.cmd_unarchive, argparse.Namespace(
+            session=[self.away.name], dir=self.root
+        ))
+        with mock.patch.object(asstlink, "available", lambda: False):
+            self.run_cmd(cli.cmd_todos, argparse.Namespace(
+                dir=self.root, all=False
+            ))
         self.assertIn("[ ] Send the report", self.out)
 
 

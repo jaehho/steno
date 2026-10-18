@@ -13,6 +13,7 @@ from __future__ import annotations
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,11 +26,13 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gtk
 
+from steno import notes
 from steno.gui.menu import menu_actions
 from steno.gui.sidebar import ARCHIVE, LIVE, Session, Sidebar, row_menu
 from steno.gui.window import Window
-from steno.notes import ensure_todos
+from steno.notes import ensure_todos, load_todos, sync_todos
 from steno.summarize import is_archived, load_meta, set_archived
+from tests.fakeasst import FakeAsst
 from tests.gtk_meeting_scroll import wait_for
 from tests.gtk_sidebar_menu import StubApp, right_click, settle
 
@@ -352,19 +355,33 @@ class TestTheList(unittest.TestCase):
         self.archive("Bravo")
         self.assertTrue(self.sidebar.refresh_if_stale())
 
-    def test_the_open_to_dos_of_a_meeting_put_away_are_still_counted(self):
+    def test_the_open_to_dos_of_a_meeting_put_away_are_not_counted(self):
         alpha = session_of(self.sidebar, "Alpha")
         self.assertEqual(len(ensure_todos(alpha.dir)), 1)
         self.sidebar.refresh()
-        self.assertEqual(alpha.open_todos, 1)
+        self.assertEqual(session_of(self.sidebar, "Alpha").open_todos, 0)
+        self.assertFalse(self.sidebar.owed.get_visible())
+        self.assertIsNone(self.sidebar.owed.get_tooltip_text())
+
+    def test_bringing_it_back_counts_them_again(self):
+        ensure_todos(session_of(self.sidebar, "Alpha").dir)
+        self.archive("Alpha", archived=False)
         self.assertEqual(self.sidebar.owed.get_label(), "1 to-do open")
         self.assertTrue(self.sidebar.owed.get_visible())
-        self.assertIn("1 of them is", self.sidebar.owed.get_tooltip_text())
 
-    def test_the_list_of_what_is_owed_opens_the_archive_for_its_meeting(self):
-        alpha = session_of(self.sidebar, "Alpha")
-        ensure_todos(alpha.dir)
+    def test_the_list_of_what_is_owed_leaves_the_archive_out(self):
+        ensure_todos(session_of(self.sidebar, "Alpha").dir)
         self.sidebar.refresh()
+        self.assertEqual(self.owed_heads(), [])
+
+        self.archive("Alpha", archived=False)
+        (head,) = self.owed_heads()
+        self.assertIn("Alpha", head)
+        self.assertNotIn("archived", head)
+        self.sidebar._open_owed(session_of(self.sidebar, "Alpha").dir)
+        self.assertEqual(self.sidebar.selected.title, "Alpha")
+
+    def owed_heads(self) -> list[str]:
         self.sidebar._fill_owed()
         heads = []
         child = self.sidebar._owed_box.get_first_child()
@@ -372,19 +389,7 @@ class TestTheList(unittest.TestCase):
             if isinstance(child, Gtk.Label):
                 heads.append(child.get_label())
             child = child.get_next_sibling()
-        self.assertEqual(len(heads), 1)
-        self.assertIn("Alpha", heads[0])
-        self.assertIn("archived", heads[0])
-
-        self.sidebar._open_owed(alpha.dir)
-        self.assertTrue(self.sidebar.show_archived)
-        self.assertEqual(self.sidebar.selected.title, "Alpha")
-
-    def test_the_tooltip_is_only_there_when_it_has_something_to_say(self):
-        self.assertIsNotNone(self.sidebar.owed.get_tooltip_text())
-        self.archive("Alpha", archived=False)
-        self.assertEqual(self.sidebar.owed.get_label(), "1 to-do open")
-        self.assertIsNone(self.sidebar.owed.get_tooltip_text())
+        return heads
 
     def test_the_footer_counts_every_meeting_it_has(self):
         self.assertEqual(
@@ -589,13 +594,129 @@ class TestInTheWindow(unittest.TestCase):
         self.assertEqual(opened.get_button_label(), "Open")
         self.assertIsNone(plain.get_button_label())
 
-    def test_the_toast_counts_the_promises_that_stay(self):
+    def fake_asst(self) -> FakeAsst:
+        asst = FakeAsst(lists=("thesis",)).start()
+        self.addCleanup(asst.stop)
+        return asst
+
+    def open_with_filed_to_dos(self, asst: FakeAsst) -> None:
+        """Alpha, brought back and its one promise filed in `asst`."""
         self.open("Alpha")
         self.run_action("unarchive")
+        sync_todos(self.folder("Alpha"), PROMISE)
+        self.assertEqual(len(asst.tasks()), 1)
+        self.page.load(self.page.current)
+        settle()
+
+    def todo_rows(self) -> list[Gtk.Widget]:
+        rows = []
+        child = self.page.todo_box.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Box):
+                rows.append(child)
+            child = child.get_next_sibling()
+        return rows
+
+    def test_the_toast_says_what_it_took_out_of_asst(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
         self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
         self.assertEqual(
-            self.toasts[-1][0], "Archived “Alpha” · 1 to-do stay open"
+            self.toasts[-1][0],
+            "Archived “Alpha”. Removed 1 open task from asst.",
         )
+        self.assertEqual(asst.tasks(), [])
+        rows = load_todos(self.folder("Alpha"))
+        self.assertTrue(all(t.dropped for t in rows))
+
+    def test_the_page_does_not_wait_for_asst(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        release = threading.Event()
+        real = notes.drop_open_todos
+
+        def slow(session_dir):
+            release.wait(5)
+            return real(session_dir)
+
+        with mock.patch("steno.gui.meeting.drop_open_todos", slow):
+            self.run_action("archive")
+            # Put away, and the list shows it, with asst still thinking.
+            self.assertTrue(is_archived(self.folder("Alpha")))
+            self.assertEqual(self.toasts, [])
+            release.set()
+            self.assertTrue(wait_for(lambda: self.toasts))
+        self.assertEqual(asst.tasks(), [])
+
+    def test_the_page_of_a_meeting_put_away_has_nothing_open_on_it(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        (row,) = self.todo_rows()
+        self.assertTrue(row.get_first_child().get_sensitive())
+        self.assertEqual(self.page.todo_count.get_text(), "1 to do")
+
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.sidebar.select(self.folder("Alpha"))
+        settle()
+        (row,) = self.todo_rows()
+        self.assertFalse(row.get_first_child().get_sensitive())
+        self.assertEqual(self.page.todo_count.get_text(), "")
+        self.assertFalse(self.sidebar.owed.get_visible())
+
+    def test_a_task_asst_kept_is_said_in_the_toast(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        asst.down = True
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.assertTrue(is_archived(self.folder("Alpha")))
+        self.assertEqual(
+            self.toasts[-1][0],
+            "Archived “Alpha”. Could not remove 1 open task from asst; "
+            "it stays open there.",
+        )
+        self.assertFalse(self.sidebar.owed.get_visible())
+
+    def test_undo_opens_the_to_dos_and_files_them_again(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        undo = self.toasts[-1][1]["undo"]
+        self.toasts.clear()
+
+        undo()
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.assertEqual(
+            self.toasts[-1][0],
+            "Unarchived “Alpha”. Filed 1 open task in asst again.",
+        )
+        self.assertFalse(is_archived(self.folder("Alpha")))
+        self.assertEqual(len(asst.tasks()), 1)
+        (todo,) = load_todos(self.folder("Alpha"))
+        self.assertTrue(todo.open)
+        self.assertEqual(todo.uid, asst.tasks()[0]["id"])
+        self.assertEqual(self.sidebar.owed.get_label(), "1 to-do open")
+
+    def test_unarchive_in_the_menu_does_the_same_and_twice_does_no_harm(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.toasts.clear()
+        self.open("Alpha")
+        self.run_action("unarchive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.assertIn("Filed 1 open task", self.toasts[-1][0])
+
+        self.toasts.clear()
+        self.page._bring_back(self.page.current)
+        settle()
+        wait_for(lambda: False, 0.3)
+        self.assertEqual(self.toasts, [])
+        self.assertEqual(len(asst.tasks()), 1)
 
     def test_unarchive_keeps_the_open_meeting_open(self):
         self.open("Delta")

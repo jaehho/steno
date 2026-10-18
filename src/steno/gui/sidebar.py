@@ -282,14 +282,19 @@ class Sidebar(Gtk.Box):
             self._owed_box.remove(child)
         now = datetime.now()
         for s in self.sessions:
-            mine = [t for t in ensure_todos(s.dir) if not t.done and t.owner != "them"]
+            # A meeting put away has no open to-dos: they were closed.
+            if s.archived:
+                continue
+            mine = [
+                t for t in ensure_todos(s.dir)
+                if t.open and t.owner != "them"
+            ]
             if not mine:
                 continue
             head = Gtk.Label(
                 label=" · ".join(p for p in (
                     s.title or "Untitled",
                     words.when(s.start, now),
-                    "archived" if s.archived else "",
                 ) if p),
                 xalign=0.0,
             )
@@ -493,10 +498,6 @@ class Sidebar(Gtk.Box):
         self.footer.set_text(" · ".join(parts))
         self.owed.set_visible(bool(open_todos))
         self.owed.set_label(words.owed_label(open_todos))
-        # An archived meeting's promises are still yours, and counted.
-        self.owed.set_tooltip_text(words.owed_note(sum(
-            s.open_todos for s in self.sessions if s.archived
-        )) or None)
 
     def update_session(self, session: Session) -> None:
         """The meeting page changed this session's project, to-dos,

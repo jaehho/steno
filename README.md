@@ -88,12 +88,13 @@ steno summarize --uncited  redo the summaries that have no citations (lists, pri
 steno export [NAME] [-o F] print or save a meeting as markdown
 steno realign [NAME]       re-time an old session against its audio (costs a pass)
 steno delete [NAME]        move a meeting to the trash
-steno archive NAME...      put meetings away: kept whole, left out of every --all
-steno unarchive NAME...    bring them back
+steno archive NAME...      put meetings away: kept whole, left out of every --all,
+                           their open to-dos closed
+steno unarchive NAME...    bring them back, to-dos reopened
 steno project-notes [NAME]  copy a meeting into its project's notes/meetings
 steno project-notes --all   ... every meeting filed under a project (--dry-run first)
 steno project-notes --remove NAME...  take a meeting's pages out again
-steno todos                what you owe, across every meeting
+steno todos                what you owe, across every meeting not put away
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context
@@ -157,8 +158,8 @@ again.
 
 A meeting that no longer matters can be put away instead of deleted.
 **Archive** in the ⋯ menu (or in the menu of its row in the list) sets
-`archived` in its `meta.json` and touches nothing else, so the audio, the
-words and the to-dos stay as they were. It asks nothing: the toast that
+`archived` in its `meta.json`, so the audio and the words stay as they
+were, and closes its open to-dos (below). It asks nothing: the toast that
 says so has an **Undo**. The meeting leaves the list and the search, and
 the page moves to the next meeting, or to an empty page that says how many
 are put away. While any meeting is, the last row of the list reads
@@ -176,14 +177,33 @@ follows when it is raised. Every command that goes through all meetings
 then leaves it out (`steno summarize --all` and `--uncited`,
 `steno realign --all`, `steno clean-echo --all`) and says how many it left;
 a command given the meeting's name (`export`, `summarize NAME`, `delete`)
-still reaches it. Its open to-dos stay open: they are counted in the
-list's "N to-dos open" (hover it for how many of those are in archived
-meetings), listed in it under the meeting's name, and listed by
-`steno todos`, because a promise made in a meeting does not lapse when the
-meeting is put away. The meeting count and the cost under the list still
+still reaches it. The meeting count and the cost under the list still
 include it, and `STENO_KEEP_AUDIO_DAYS` treats it like any other.
 `steno status` counts the archived ones, and `steno unarchive NAME...`
 brings them back.
+
+**Its open to-dos are closed.** A meeting put away is one you are done
+with, so what it still held open is not counted in the page's "N to do" or
+the list's "N to-dos open", is not in that list, and is not in
+`steno todos`, which says how many meetings it left out. Archiving takes
+the meeting's open tasks out of asst (`asst rm`; for a list tied to a
+GitHub repo asst closes the issue as not planned) and marks those rows
+`dropped` in `todos.json`, keeping their words and their asst source. The
+toast says what happened: "Archived “Sync”. Removed 3 open tasks from
+asst." `steno archive` prints the same. A to-do you had ticked is left
+alone, and so is its finished task. The asst calls run after the meeting
+has left the list, so a slow asst never holds the page. The page of a
+meeting put away still shows its to-dos, greyed, with a line saying they
+were closed. **Unarchive**, `steno unarchive` and the toast's Undo open
+them again and file yours in asst once more. That is by their source, so a
+task asst still holds is found and not doubled; one it had removed comes
+back as a new task (a new issue, on a list tied to a repo). If asst cannot
+be reached or refuses a task, the archive still happens, the toast and
+`steno archive` (which exits 1) say how many tasks are still open there,
+and those rows stay open; `steno archive NAME` again retries them. A
+to-do that never reached asst is closed here alone, so a meeting needs no
+asst to be put away. Archiving does not rewrite the pages the meeting has
+in a project (below).
 
 A meeting about one of your projects is also kept in that project, as
 pages of its own; see Project notes, below.
