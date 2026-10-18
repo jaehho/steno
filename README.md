@@ -128,6 +128,19 @@ usage figures by Friday") stays the same row, with its tick and its task in
 asst, when the two read alike; a differently named person, day or number makes
 it a new one.
 
+In the window a point that has citations ends in a small underlined number,
+the count of places it was said. Click it (or press `Enter` on it) and the
+lines it came from are marked in the transcript, the page scrolls to the first
+of them unless it is already in view, and a bar above the player lists the
+places: when, who, the first words, and `+2 more lines` for a stretch. The
+arrows in the bar step from one place to the next, and a row plays the
+recording from there. With the audio gone, or while a meeting is being
+recorded, it scrolls and says why it does not play. The words of a to-do that
+cites work the same way (its box still ticks). `Esc`, the bar's close button,
+or clicking the point again puts the marks out; so does opening another
+meeting. Points with no number are plain text you can select, and a summary
+with no citations says so beside its heading.
+
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window
 parked beside the call works.
@@ -215,8 +228,8 @@ reconnect.
   `window.py` is a view it can live without. `bridge.py` is the only place the
   engine's asyncio loop and GTK's main loop meet; everything crossing back goes
   through `GLib.idle_add`. `sidebar.py`, `meeting.py` and `live.py` are the three
-  surfaces; `words.py` is what they say, testable headlessly. `player.py` is
-  GStreamer, for playback.
+  surfaces; `summary.py` is the summary's rows and the bar of places; `words.py`
+  is what they say, testable headlessly. `player.py` is GStreamer, for playback.
 - **`events.py`** — what the engine says. The engine never touches a widget.
 - **`state.py` / `control.py`** — what the bar reads, and how a click reaches
   the running app (its own D-Bus actions; no socket, no pidfile).

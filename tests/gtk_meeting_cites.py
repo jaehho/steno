@@ -758,6 +758,57 @@ class TestTodos(CitedMeeting):
         self.assertAlmostEqual(cited[1], plain[1], delta=1.5)
 
 
+class TestWithoutCitations(CitedMeeting):
+    HINT = "No citations. Summarize again to add them."
+
+    def open_plain(self) -> None:
+        self.window.sidebar.list.select_row(
+            self.window.sidebar.list.get_row_at_index(1)
+        )
+        self.assertEqual(self.page.current.title, "Plain")
+
+    def test_a_summary_that_cites_nothing_says_so_quietly_and_nothing_nags(self):
+        self.open_plain()
+
+        self.assertTrue(self.page.summary_hint.get_visible())
+        self.assertEqual(self.page.summary_hint.get_label(), self.HINT)
+        self.assertTrue(self.page.summary_hint.has_css_class("hint"))
+        self.assertEqual(self.view.sources, [])
+        self.assertEqual(self.toasts, [])
+
+    def test_none_of_its_text_is_clickable_and_all_of_it_selectable(self):
+        self.open_plain()
+        for row in children(self.view):
+            self.assertFalse(row.has_css_class("cited-item"))
+            if row.has_css_class("summary-item"):
+                self.assertEqual(controllers(row, Gtk.GestureClick), [])
+                _glyph, text = children(row)
+                self.assertTrue(text.get_selectable(), text.get_label())
+            else:
+                self.assertTrue(row.get_selectable(), row.get_label())
+
+    def test_the_hint_goes_when_the_summary_has_citations(self):
+        self.assertFalse(self.page.summary_hint.get_visible())
+        self.open_plain()
+        self.assertTrue(self.page.summary_hint.get_visible())
+        self.window.sidebar.list.select_row(
+            self.window.sidebar.list.get_row_at_index(0)
+        )
+        self.assertFalse(self.page.summary_hint.get_visible())
+
+    def test_a_summary_with_nothing_to_cite_has_no_hint(self):
+        folder = self.page.current.dir
+        (folder / "summary.md").write_text("# T\n\nJust a sentence.\n")
+        self.page.reload()
+        self.assertFalse(self.page.summary_hint.get_visible())
+
+    def test_a_meeting_with_no_summary_has_no_hint(self):
+        (self.page.current.dir / "summary.md").unlink()
+        self.page.reload()
+        self.assertFalse(self.page.summary_hint.get_visible())
+        self.assertFalse(self.view.get_visible())
+
+
 class TestStaleState(CitedMeeting):
     def test_opening_another_meeting_clears_it(self):
         click(self.item("deposit").mark)

@@ -20,7 +20,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from .. import asstlink
+from .. import asstlink, citations
 from ..export import default_filename, meeting_markdown
 from ..notes import (
     Todo,
@@ -229,13 +229,17 @@ class MeetingPage(Gtk.Box):
         self.summary_label = wrapping_label()
         self.summary_label.add_css_class("summary")
         self.summary_view = SummaryView(self._toggle_cites)
+        # Quiet, beside the heading: a summary from before citations has
+        # nothing wrong, and is not nagged about.
+        self.summary_hint = hint_label("No citations. Summarize again to add them.")
+        self.summary_hint.set_visible(False)
         self.summarize_button = Gtk.Button(label="Summarize now")
         self.summarize_button.set_halign(Gtk.Align.START)
         self.summarize_button.set_visible(False)
         self.summarize_button.connect("clicked", lambda _b: self._summarize())
         summary = section(
             "Summary", self.summary_view, self.summary_label,
-            self.summarize_button,
+            self.summarize_button, beside=self.summary_hint,
         )
 
         self.todo_count = Gtk.Label(label="")
@@ -360,10 +364,10 @@ class MeetingPage(Gtk.Box):
         # Whatever was lit belongs to the summary being replaced.
         self._clear_cites()
         if s.summary_path.is_file():
-            blocks = words.summary_blocks(
-                s.summary_path.read_text(), has_todos=bool(todos)
-            )
-            self.summary_view.show(blocks)
+            md = s.summary_path.read_text()
+            self.summary_view.show(words.summary_blocks(md, has_todos=bool(todos)))
+            seen = citations.coverage(md)
+            self.summary_hint.set_visible(bool(seen.items) and not seen.cited)
             self.summary_view.set_visible(True)
             self.summary_label.set_visible(False)
             self.summarize_button.set_visible(False)
@@ -373,6 +377,7 @@ class MeetingPage(Gtk.Box):
             )
             self.summary_view.clear()
             self.summary_view.set_visible(False)
+            self.summary_hint.set_visible(False)
             self.summary_label.set_markup(f"<i>{words.escape(text)}</i>")
             self.summary_label.set_visible(True)
             self.summarize_button.set_visible(offer and self._on_summarize is not None)
