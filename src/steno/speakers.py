@@ -110,6 +110,7 @@ def learn_from(session_dir: Path, records: list[dict]) -> dict[str, str]:
     sentence that happens to start with a capital.
     """
     names = load_names(session_dir)
+    learned = False
     for row in records:
         who = str(row.get("who") or "")
         text = str(row.get("text") or "")
@@ -118,5 +119,9 @@ def learn_from(session_dir: Path, records: list[dict]) -> dict[str, str]:
         name = _introduced(text) or _called(text)
         if name:
             names[who] = name
-    save_names(session_dir, names)
+            learned = True
+    # A file with nothing new in it is left as the user, or an earlier
+    # summary, wrote it: summarizing again does not touch it.
+    if learned:
+        save_names(session_dir, names)
     return names

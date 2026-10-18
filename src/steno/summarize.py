@@ -303,7 +303,8 @@ def _store(
     session_dir: Path, summary: Summary, records: list[dict], model: str
 ) -> Summary:
     _write_atomic(session_dir / SUMMARY_FILENAME, summary.body + "\n")
-    write_meta(session_dir, summary, records, model)
+    # What the meeting is filed under, which is not always the guess.
+    summary.project = write_meta(session_dir, summary, records, model)
     return summary
 
 
@@ -316,8 +317,13 @@ def _write_atomic(path: Path, text: str) -> None:
 
 def write_meta(
     session_dir: Path, summary: Summary, records: list[dict], model: str
-) -> None:
-    """Persist the title and session stats so the archive can list them."""
+) -> str | None:
+    """Persist the title and session stats so the archive can list them.
+
+    The model's project is a guess for a meeting that has none. One already
+    set (in the dialog, or by an agent) is the user's choice and stays, so
+    summarizing again never moves a meeting. Returns the project recorded.
+    """
     meta_path = session_dir / META_FILENAME
     meta: dict = {}
     if meta_path.is_file():
@@ -326,11 +332,12 @@ def write_meta(
         except (OSError, json.JSONDecodeError):
             meta = {}
     minutes = duration_minutes(records)
+    project = meta.get("project") or summary.project
     meta.update({
         "title": summary.title,
         "summarized_at": time.time(),
         "summary_model": model,
-        "project": summary.project,
+        "project": project,
         "lines": len(records),
         "duration_min": round(minutes, 1),
         # How many summary items can be clicked through to the transcript.
@@ -339,6 +346,7 @@ def write_meta(
         "cost_usd": round(stream_cost(minutes) + prerecorded_cost(minutes), 4),
     })
     _write_atomic(meta_path, json.dumps(meta, indent=2) + "\n")
+    return project
 
 
 def load_title(session_dir: Path) -> str | None:
