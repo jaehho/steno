@@ -5,9 +5,13 @@ status card, how a summary is rendered — can be tested headlessly.
 """
 from __future__ import annotations
 
+import re
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .. import citations
+from ..playback import format_offset
 
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
@@ -19,6 +23,12 @@ MIN_WRAP_PARTS = 3  # token + two spans before wrapping kicks in
 TITLE_PREFIX = "# "
 UNLABELLED = {"tl;dr"}
 SHOWN_AS_TODOS = {"action items"}
+
+# `**You**` alone on a line: whose action items the bullets below are.
+OWNER_RE = re.compile(r"^\*\*[^*]+\*\*:?$")
+NUMBERED_RE = re.compile(r"\d+[.)]")
+# How much of a cited line the strip quotes before it says "…".
+QUOTE_CHARS = 90
 
 
 def list_section(start: datetime, now: datetime) -> str:
@@ -112,17 +122,33 @@ def summary_missing(lines: int, working: str = "") -> tuple[str, bool]:
     return "No summary yet.", True
 
 
-def summary_body(md: str, has_todos: bool) -> str:
-    """The summary as the page shows it: without what the page shows elsewhere.
+@dataclass
+class Block:
+    """One row of the summary as the page shows it.
+
+    `kind` is `heading`, `owner` (a `**You**` line), `item` (a bullet, the
+    only kind that can carry cites) or `text`. `markup` is Pango markup.
+    """
+
+    kind: str
+    markup: str
+    cites: list[citations.Cite] = field(default_factory=list)
+    bullet: str = "•"  # an item's glyph: a dot, or its number
+    indent: int = 0  # an item's leading spaces: a sub-bullet is indented
+
+
+def _page_lines(md: str, has_todos: bool) -> Iterator[tuple[int, str]]:
+    """(line number in `md`, the line without its marker) for each line
+    the page shows: without what the page shows some other way.
 
     Action items are only dropped when the to-do list really has them; a
-    summary whose items failed to parse keeps them, rather than losing them.
-    Citation markers are not text: they are stripped before anything is shown.
+    summary whose items failed to parse keeps them, rather than losing
+    them. Citation markers are not text: they are stripped before
+    anything is shown.
     """
-    out: list[str] = []
     skipping = False
-    for raw in citations.strip(md).splitlines():
-        line = raw.rstrip()
+    for number, raw in enumerate(md.splitlines()):
+        line = citations.strip(raw).rstrip()
         if line.startswith(TITLE_PREFIX):
             continue
         if line.startswith("## "):
@@ -130,36 +156,81 @@ def summary_body(md: str, has_todos: bool) -> str:
             skipping = has_todos and name in SHOWN_AS_TODOS
             if skipping or name in UNLABELLED:
                 continue
-        if skipping:
-            continue
-        out.append(line)
-    while out and not out[0].strip():
-        out.pop(0)
-    while out and not out[-1].strip():
-        out.pop()
-    return "\n".join(out)
+        if not skipping:
+            yield number, line
 
 
-def markup(md: str) -> str:
-    """Render the summary's small markdown subset as Pango markup.
-
-    Deliberately not a markdown engine: the summary is written by a prompt we
-    control, so headings, bullets and bold cover it, and anything unexpected
-    should show as its own literal text rather than disappear.
+def summary_blocks(md: str, has_todos: bool) -> list[Block]:
+    """The summary as rows: headings, owners, items (with the cites they
+    carry) and plain text. Deliberately not a markdown engine: the summary
+    is written by a prompt we control, so headings, bullets and bold cover
+    it, and anything unexpected shows as its own literal text rather than
+    disappearing. Blank lines are spacing, which the page does itself.
     """
-    out = []
-    for raw in md.splitlines():
-        line = raw.rstrip()
-        if line.startswith(("### ", "## ")):
-            out.append(f"<b>{escape(line.split(' ', 1)[1])}</b>")
-        elif line.startswith("# "):
-            out.append(f"<b>{escape(line[2:])}</b>")
-        elif line.lstrip().startswith(("- ", "* ")):
-            indent = " " * (len(line) - len(line.lstrip()))
-            out.append(f"{indent}•  {inline(line.lstrip()[2:])}")
-        else:
-            out.append(inline(line))
-    return "\n".join(out)
+    found = {item.line_no: item for item in citations.items(md)}
+    blocks = []
+    for number, line in _page_lines(md, has_todos):
+        stripped = line.lstrip()
+        if (item := found.get(number)) is not None:
+            numbered = NUMBERED_RE.match(stripped)
+            blocks.append(Block(
+                "item", inline(item.text), item.cites,
+                numbered[0] if numbered else "•", len(line) - len(stripped),
+            ))
+        elif line.startswith(("### ", "## ")):
+            title = escape(line.split(" ", 1)[1])
+            blocks.append(Block("heading", f"<b>{title}</b>"))
+        elif OWNER_RE.match(stripped):
+            blocks.append(Block("owner", inline(stripped)))
+        elif stripped:
+            blocks.append(Block("text", inline(line)))
+    return blocks
+
+
+@dataclass
+class Place:
+    """Where a cite lands in the transcript, as the strip lists it."""
+
+    rows: list[int]  # transcript records it covers, in order
+    stamp: str  # when the first of them starts, as the gutter says
+    speaker: str  # "You" or "Them"
+    quote: str  # the start of the first of them
+    more: int  # how many lines follow it inside the cite
+
+
+def quote(text: str) -> str:
+    """The start of a line, cut at a word."""
+    text = " ".join(text.split())
+    if len(text) <= QUOTE_CHARS:
+        return text
+    cut = text[:QUOTE_CHARS].rsplit(" ", 1)[0] or text[:QUOTE_CHARS]
+    return cut.rstrip(" ,;:.-") + "…"
+
+
+def cite_places(
+    cites: Sequence[citations.Cite], records: Sequence[dict],
+    offsets: Sequence[int],
+) -> list[Place]:
+    """The places a list of cites points at, top of the transcript first.
+
+    `offsets[i]` is record i's gutter second. A cite that no line falls in
+    and that comes before the first line is no place; two cites that cover
+    the same lines are one.
+    """
+    places: dict[tuple[int, ...], Place] = {}
+    for cite in cites:
+        rows = citations.resolve([cite], offsets)
+        if not rows or tuple(rows) in places:
+            continue
+        first = records[rows[0]]
+        places[tuple(rows)] = Place(
+            rows,
+            format_offset(offsets[rows[0]]),
+            "Them" if first.get("speaker", "them") == "them" else "You",
+            quote(str(first.get("text", ""))),
+            len(rows) - 1,
+        )
+    return sorted(places.values(), key=lambda place: place.rows[0])
 
 
 def escape(text: str) -> str:

@@ -156,6 +156,21 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
         box-shadow: inset 2px 0 0 {colors['teal']};
     }}
 
+    /* Where a summary item was said. One hue (yellow, a highlighter) joins
+       the item to the lines, and it is not the teal of the line being
+       played, so the two read apart when they land on the same row. */
+    list.transcript-past row.line-cited {{
+        background: alpha({colors['yellow']}, 0.18);
+        box-shadow: inset 2px 0 0 {colors['yellow']};
+    }}
+    list.transcript-past row.line-cited:hover {{
+        background: alpha({colors['yellow']}, 0.26);
+    }}
+    list.transcript-past row.line-cited.line-playing {{
+        background: {colors['surface1']};
+        box-shadow: inset 2px 0 0 {colors['teal']};
+    }}
+
     /* Interim text is provisional and says so by looking unfinished. */
     .interim {{ color: {colors['overlay1']}; font-style: italic; }}
 
@@ -191,6 +206,16 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
 
     /* ---- a past meeting ---- */
     .summary {{ font-size: 11.5pt; line-height: 1.6; color: {colors['text']}; }}
+    .summary-item {{ padding: 2px 8px; border-radius: 6px; }}
+    .cited-item:hover {{ background: alpha({colors['yellow']}, 0.10); }}
+    .cited-item:focus-visible {{
+        outline: 2px solid alpha({colors['yellow']}, 0.7);
+        outline-offset: -2px;
+    }}
+    .cited-item.item-active, .item-active {{
+        background: alpha({colors['yellow']}, 0.14);
+        box-shadow: inset 2px 0 0 {colors['yellow']};
+    }}
     .todo-done {{ color: {colors['overlay0']}; text-decoration: line-through; }}
     .owner-you  {{ color: {colors['teal']}; }}
     .owner-them {{ color: {colors['overlay2']}; }}
