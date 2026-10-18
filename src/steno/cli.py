@@ -1100,8 +1100,19 @@ def _preflight() -> None:
 _VALUE_FLAGS = {"--brief", "--allow", "--deny", "--dir", "--start-hold", "--end-grace"}
 
 
-def _names_a_command(argv: list[str], commands: set[str]) -> bool:
-    """Is the first positional word a subcommand? Option values are skipped."""
+# Commands that were renamed. Not aliases: they only say where it went.
+_RETIRED = {
+    "publish": "steno publish was renamed: use steno project-notes",
+    "unpublish": (
+        "steno unpublish was renamed: "
+        "use steno project-notes --remove NAME"
+    ),
+}
+
+
+def _first_word(argv: list[str]) -> str | None:
+    """The first positional word on the command line. Option values are
+    skipped."""
     skip = False
     for token in argv:
         if skip:
@@ -1109,8 +1120,22 @@ def _names_a_command(argv: list[str], commands: set[str]) -> bool:
         elif token in _VALUE_FLAGS:
             skip = True
         elif not token.startswith("-"):
-            return token in commands
-    return False
+            return token
+    return None
+
+
+def _names_a_command(argv: list[str], commands: set[str]) -> bool:
+    """Is the first positional word a subcommand?"""
+    return _first_word(argv) in commands
+
+
+def _refuse_retired(argv: list[str]) -> None:
+    """Say where a renamed command went and stop. Without this the word
+    fell through to the window's parser, which complained about
+    `--allow` for `steno publish --all`."""
+    if (said := _RETIRED.get(_first_word(argv) or "")) is not None:
+        print(said, file=sys.stderr)
+        sys.exit(2)
 
 
 def _add_detection_flags(parser: argparse.ArgumentParser) -> None:
@@ -1146,6 +1171,7 @@ def _add_detection_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand declared inline
+    _refuse_retired(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="steno",
         description="Steno: listens, keeps up, and turns calls into notes.",

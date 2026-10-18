@@ -115,6 +115,32 @@ class TestMainDispatch(unittest.TestCase):
         args = self.run_main("--brief", "show", "--any-app")
         self.assertEqual(args.brief, Path("show"))
 
+    def test_the_retired_commands_say_where_they_went(self):
+        """One line and a failure, whatever follows the word: it used to
+        fall through to the window's parser and complain about --allow."""
+        for argv, said in (
+            (["publish"], "steno publish was renamed: "
+                          "use steno project-notes\n"),
+            (["publish", "--all"], "steno publish was renamed: "
+                                   "use steno project-notes\n"),
+            (["unpublish", "20260928-143000"],
+             "steno unpublish was renamed: "
+             "use steno project-notes --remove NAME\n"),
+        ):
+            with self.subTest(argv=argv), \
+                 mock.patch.object(sys, "argv", ["steno", *argv]), \
+                 mock.patch.object(cli, "cmd_gui") as window, \
+                 redirect_stderr(io.StringIO()) as err, \
+                 self.assertRaises(SystemExit) as raised:
+                cli.main()
+            self.assertEqual(err.getvalue(), said)
+            self.assertNotEqual(raised.exception.code, 0)
+            window.assert_not_called()
+
+    def test_an_app_called_publish_is_still_an_app(self):
+        args = self.run_main("--allow", "publish")
+        self.assertEqual(args.allow, "publish")
+
     def test_unknown_flag_after_a_subcommand_is_an_error(self):
         with mock.patch.object(sys, "argv", ["steno", "status", "--bogus"]), \
              redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
