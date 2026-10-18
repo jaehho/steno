@@ -1,4 +1,4 @@
-"""The engine's lifecycle: what counts as busy, and on-request summaries."""
+"""The engine's lifecycle: what counts as busy, on-request summaries, asking."""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +10,13 @@ from types import SimpleNamespace
 from unittest import mock
 
 from steno import session
-from steno.events import EngineError, Finalizing, MeetingEnded, SummaryReady
+from steno.events import (
+    AdviceDone,
+    EngineError,
+    Finalizing,
+    MeetingEnded,
+    SummaryReady,
+)
 from steno.summarize import Summary, load_meta
 
 
@@ -254,6 +260,44 @@ class TestSummarizeNow(unittest.TestCase):
         self.assertIn("host down", errors[0].message)
         self.assertFalse(engine.busy)
         self.assertFalse(any(isinstance(e, MeetingEnded) for e in events))
+
+
+class TestAsking(unittest.TestCase):
+    """A question goes to the model the window chose, not the summary's."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.engine, self.events = make_engine(Path(tmp.name))
+        self.engine.transcript = [{"speaker": "them", "text": "hi", "ts": 1.0}]
+
+    def ask(self, **kw) -> mock.AsyncMock:
+        stream = mock.AsyncMock(return_value="an answer")
+        with mock.patch.object(session.claude, "stream_text", stream):
+            asyncio.run(self.engine.ask("what?", **kw))
+        return stream
+
+    def test_it_uses_the_model_it_was_given(self):
+        stream = self.ask(model="picked")
+        self.assertEqual(stream.call_args.kwargs["model"], "picked")
+
+    def test_without_one_it_uses_the_engines_own(self):
+        stream = self.ask()
+        self.assertEqual(stream.call_args.kwargs["model"], "m")
+
+    def test_the_summary_model_is_not_moved_by_a_question(self):
+        self.ask(model="picked")
+        self.assertEqual(self.engine.model, "m")
+
+    def test_the_answer_is_marked_as_a_models(self):
+        self.ask(model="picked")
+        self.assertEqual(self.events[-1], AdviceDone("an answer"))
+
+    def test_the_engines_own_word_is_not(self):
+        self.engine.transcript = []
+        self.ask(model="picked")
+        (done,) = [e for e in self.events if isinstance(e, AdviceDone)]
+        self.assertFalse(done.by_model)
 
 
 if __name__ == "__main__":

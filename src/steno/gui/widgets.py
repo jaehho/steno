@@ -12,6 +12,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk, Pango
 
 from ..notes import load_notes, save_notes
+from .askmodel import AskModelButton
 
 NOTES_AUTOSAVE_S = 3
 
@@ -136,7 +137,10 @@ class AskBox(Gtk.Box):
     """A question about this meeting, and the answer as it streams in.
 
     The answer area stays collapsed until something has been asked; an empty
-    pane reserving space is the opposite of glanceable.
+    pane reserving space is the opposite of glanceable. The model that
+    answers is the one in the button under the box when the question is
+    sent, kept in `asked_with` for whoever submits it, and named under the
+    answer so a surprising one can be explained.
     """
 
     IDLE_PLACEHOLDER = "Ask about this meeting  (Ctrl+G)"
@@ -151,6 +155,7 @@ class AskBox(Gtk.Box):
         # under an answer still in flight: it is for the old page, not this one.
         self._busy = False
         self._ignore = False
+        self.asked_with = ""
 
         self.question = hint_label()
         self.question.set_wrap(True)
@@ -169,12 +174,22 @@ class AskBox(Gtk.Box):
         self.answer_scroll.set_visible(False)
         self.append(self.answer_scroll)
 
+        self.byline = hint_label()
+        self.byline.set_wrap(True)
+        self.byline.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.byline.set_max_width_chars(30)
+        self.byline.set_visible(False)
+        self.append(self.byline)
+
         self.entry = Gtk.Entry()
         self.entry.add_css_class("ask")
         self.entry.set_placeholder_text(self.IDLE_PLACEHOLDER)
         self.entry.set_icon_from_icon_name(Gtk.EntryIconPosition.PRIMARY, "system-search-symbolic")
         self.entry.connect("activate", lambda _e: self._submit())
         self.append(self.entry)
+
+        self.model_button = AskModelButton()
+        self.append(self.model_button)
 
     def _submit(self) -> None:
         question = self.entry.get_text().strip()
@@ -189,7 +204,9 @@ class AskBox(Gtk.Box):
         self.answer.set_text("Thinking…")
         self.answer.add_css_class("advice-thinking")
         self.answer_scroll.set_visible(True)
+        self.byline.set_visible(False)
         self._buf = ""
+        self.asked_with = self.model_button.model
         self._on_ask(question)
 
     def _finish(self) -> None:
@@ -205,7 +222,9 @@ class AskBox(Gtk.Box):
         self._buf += text
         self.answer.set_text(self._buf)
 
-    def done(self, text: str) -> None:
+    def done(self, text: str, *, by_model: bool = True) -> None:
+        """The answer is over. `by_model` is False for a message from the
+        window itself, which no model wrote."""
         was_ignored = self._ignore
         self._finish()
         if was_ignored:
@@ -217,6 +236,9 @@ class AskBox(Gtk.Box):
         elif not self._buf:
             self.answer_scroll.set_visible(False)
             self.question.set_visible(False)
+        if by_model and self._buf and self.asked_with:
+            self.byline.set_text(f"answered by {self.asked_with}")
+            self.byline.set_visible(True)
 
     def clear(self) -> None:
         self._ignore = self._busy
@@ -224,6 +246,7 @@ class AskBox(Gtk.Box):
         self.answer.set_text("")
         self.answer_scroll.set_visible(False)
         self.question.set_visible(False)
+        self.byline.set_visible(False)
 
     def focus(self) -> None:
         self.entry.grab_focus()

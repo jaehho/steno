@@ -419,6 +419,92 @@ class TestEndpointConfig(unittest.TestCase):
         with self.assertRaisesRegex(claude.ClaudeError, "unknown STENO_PROVIDER"):
             claude.base_url()
 
+    def test_presets_lead_with_the_providers_default(self):
+        self.assertEqual(claude.presets(),
+                         ["mimo-v2.6-flash", "mimo-v2.6-pro[1m]"])
+        os.environ["STENO_PROVIDER"] = "openrouter"
+        self.assertEqual(claude.presets(), ["@preset/cc-flash-med"])
+
+
+class TestModelList(unittest.TestCase):
+    """The provider's own list, which fills the Ask model menu."""
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {
+            "STENO_API_KEY": "sk-test",
+            "STENO_PROVIDER": "mimo",
+            "STENO_BASE_URL": "https://example.test/v1/chat/completions",
+        }, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def serve(self, response, seen=None):
+        def handler(request):
+            if seen is not None:
+                seen.append(request)
+            return response
+
+        return mock.patch.object(claude, "_transport", httpx.MockTransport(handler))
+
+    def test_the_list_sits_beside_the_chat_endpoint(self):
+        self.assertEqual(claude.models_url("https://x.test/v1/chat/completions/"),
+                         "https://x.test/v1/models")
+
+    def test_an_endpoint_that_is_not_chat_completions_has_no_list(self):
+        with self.assertRaises(ValueError):
+            claude.models_url("https://x.test/v1/messages")
+
+    def test_ids_are_sorted_and_not_repeated(self):
+        body = {"object": "list", "data": [
+            {"id": "b-2"}, {"id": "a-1", "owned_by": "x"}, {"id": "b-2"},
+            {"id": " "}, {"id": 7}, {"name": "no id"}, "junk"]}
+        self.assertEqual(claude.parse_models(body), ["a-1", "b-2"])
+
+    def test_speech_models_are_left_out_of_a_list_for_chat(self):
+        body = {"data": [{"id": i} for i in (
+            "mimo-v2.5-pro", "mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone",
+            "mimo-v2.5-asr", "openai/whisper-1", "vendor/tts", "stats-1")]}
+        self.assertEqual(claude.parse_models(body),
+                         ["mimo-v2.5-pro", "openai/whisper-1", "stats-1"])
+
+    def test_a_reply_that_is_not_a_list_lists_nothing(self):
+        for body in ({}, {"data": None}, {"data": "x"}, [], "x", None):
+            self.assertEqual(claude.parse_models(body), [], body)
+
+    def test_it_asks_with_the_key_and_returns_the_ids(self):
+        seen = []
+        reply = httpx.Response(200, json={"data": [{"id": "m-2"}, {"id": "m-1"}]})
+        with self.serve(reply, seen):
+            got = asyncio.run(claude.list_models(timeout=5))
+        self.assertEqual(got, ["m-1", "m-2"])
+        (request,) = seen
+        self.assertEqual(str(request.url), "https://example.test/v1/models")
+        self.assertEqual(request.headers["authorization"], "Bearer sk-test")
+
+    def test_a_refusal_is_a_claude_error(self):
+        reply = httpx.Response(401, json={"error": {"message": "bad key"}})
+        with (self.serve(reply), self.assertRaisesRegex(claude.ClaudeError, "bad key")):
+            asyncio.run(claude.list_models(timeout=5))
+
+    def test_a_reply_that_is_not_json_is_a_claude_error(self):
+        with (self.serve(httpx.Response(200, content=b"<html>")),
+              self.assertRaises(claude.ClaudeError)):
+            asyncio.run(claude.list_models(timeout=5))
+
+    def test_an_unreachable_host_is_a_claude_error(self):
+        def refuse(request):
+            msg = "no route"
+            raise httpx.ConnectError(msg, request=request)
+
+        with (mock.patch.object(claude, "_transport", httpx.MockTransport(refuse)),
+              self.assertRaises(claude.ClaudeError)):
+            asyncio.run(claude.list_models(timeout=5))
+
+    def test_an_endpoint_with_no_list_is_a_claude_error(self):
+        os.environ["STENO_BASE_URL"] = "https://example.test/v1/messages"
+        with self.assertRaises(claude.ClaudeError):
+            asyncio.run(claude.list_models(timeout=5))
+
 
 if __name__ == "__main__":
     unittest.main()

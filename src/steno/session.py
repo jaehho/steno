@@ -555,12 +555,18 @@ class Engine:
     # --------------------------------------------------------------- the advisor
 
     async def ask(
-        self, question: str = "", max_lines: int = 80, session_dir: Path | None = None
+        self,
+        question: str = "",
+        max_lines: int = 80,
+        session_dir: Path | None = None,
+        model: str | None = None,
     ) -> None:
         """Answer a question about a meeting, streaming as it arrives.
 
         With no `session_dir` that is the meeting in progress, where only the
         recent stretch matters. A past meeting is asked about as a whole.
+        `model` is the one the window chose for asking; without it the
+        engine's own (the summary's) answers.
         """
         if self._asking:
             return
@@ -571,7 +577,7 @@ class Engine:
                 else self.transcript[-max_lines:]
             )
             if not lines:
-                self.emit(AdviceDone("Nothing has been transcribed yet."))
+                self.emit(AdviceDone("Nothing has been transcribed yet.", by_model=False))
                 return
             convo = "\n".join(
                 f"{r['speaker']}: {redact_text(str(r.get('text', '')))}"
@@ -589,7 +595,7 @@ class Engine:
             answer = await claude.stream_text(
                 content,
                 system=system,
-                model=self.model,
+                model=model or self.model,
                 on_delta=lambda d: self.emit(AdviceDelta(d)),
             )
             self.emit(AdviceDone(answer))

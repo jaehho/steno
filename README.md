@@ -63,7 +63,9 @@ OpenAI-style chat-completions request to a model host, MiMo by default, with
 its key in `~/.config/mimo.env` (`MIMO_API_KEY`). `STENO_PROVIDER=openrouter`
 reads `~/.config/openrouter.env` instead; `STENO_MODEL`, `STENO_BASE_URL` and
 `STENO_API_KEY` override the model, endpoint and key (the template `steno init`
-writes lists them). `STENO_NO_ASST=1` (any non-empty value, `0` included)
+writes lists them). `STENO_ASK_MODEL` does the same for the Ask box alone and
+wins over the model picked in the window (below); summaries keep
+`STENO_MODEL`. `STENO_NO_ASST=1` (any non-empty value, `0` included)
 stops Steno running `asst`, the task app your action items are filed in, so
 a scratch run cannot touch your real lists. Optionally write
 `~/.config/steno/brief.md` — a short, curated page about who you are and what
@@ -116,6 +118,19 @@ audio, drop the audio but keep the words, copy or save the meeting as
 markdown, put it away (Archive, below), or delete it. Right-clicking a meeting in the list (or `Menu` /
 `Shift+F10` on it) opens that meeting and shows the same menu. Deleting goes
 to your desktop trash, all of it together, recoverable from there.
+
+The Ask box answers with the model named under it, the summary's model until
+you choose another. Click the name for the choices: the default, the
+provider's presets, the models it lists at its `/models` endpoint, and
+**Custom…** for an id you type. The list is fetched once per run, the first time
+the menu is opened and off the window's thread; if the provider will not give
+it, the presets are all there is and nothing says why. Speech models (`tts`,
+`asr`) are left out of it. The choice is kept in `gui.json` under
+`$XDG_STATE_HOME/steno` (`~/.local/state/steno`) and applies from the next
+question; summaries do not change. `STENO_ASK_MODEL` overrides it, and the menu
+then says that instead of offering a choice that would be ignored. Each answer
+says under it which model gave it (*answered by …*), so a surprising one can be
+explained; a question already on its way keeps the model it was sent with.
 
 A summary says where each point was said. The model ends every bullet with
 the transcript lines that support it; Steno checks those against the

@@ -374,7 +374,7 @@ class Window(Adw.ApplicationWindow):
                 self._asker.delta(event.text)
         elif isinstance(event, AdviceDone):
             if self._asker is not None:
-                self._asker.done(event.text)
+                self._asker.done(event.text, by_model=event.by_model)
             self._asker = None
         else:
             self._on_finishing_event(event)
@@ -474,15 +474,19 @@ class Window(Adw.ApplicationWindow):
     def _submit_question(self, asker: AskBox, question: str, session_dir: Path | None) -> None:
         engine, bridge = self.app.engine, self.app.bridge
         if engine is None or bridge is None:
-            asker.done("Steno isn't running, so there is nothing to ask.")
+            asker.done("Steno isn't running, so there is nothing to ask.", by_model=False)
             return
         if self._asker is not None and self._asker is not asker:
             # One question at a time: the engine drops a second one, and a box
             # left saying "Thinking..." forever reads as a hang.
-            asker.done("Still answering the question asked elsewhere; ask again in a moment.")
+            asker.done(
+                "Still answering the question asked elsewhere; ask again in a moment.",
+                by_model=False,
+            )
             return
         self._asker = asker
-        bridge.submit(engine.ask(question, session_dir=session_dir))
+        bridge.submit(engine.ask(
+            question, session_dir=session_dir, model=asker.asked_with or None))
 
     def _focus_ask(self) -> None:
         self.split.set_show_content(True)
