@@ -18,7 +18,9 @@ project (a symlinked `notes`), is refused. It replaces only a file it
 wrote, which says so on its first line after the front matter; any other
 file is left as it is and reported. A file is written when its bytes
 would change, whole (a temp file, then a rename). Transcripts are other
-people's speech, so the `.gitignore` made with the folder ignores all.
+people's speech, so the `.gitignore` made with the folder ignores all,
+or, in a folder that already held files of the user's, only the
+transcripts: `*` would hide those files from git.
 
 meta.json keeps a `published` record, the project and the file names, so
 that a new title, a new project or a deleted meeting takes away what an
@@ -69,6 +71,17 @@ GITIGNORE = """\
 # make the meetings committable; steno will not write it again.
 *
 !.gitignore
+"""
+
+# For a folder that already held files of the user's when steno first
+# wrote in it: `*` would hide those from git, and `git add` would refuse
+# them, with nothing to say why.
+GITIGNORE_BESIDE = """\
+# Written by steno when it first wrote in this folder, which already held
+# files of yours. The transcripts are other people's speech, so they are
+# not committed; your files are not ignored. Delete this file to make the
+# transcripts committable; steno will not write it again.
+*.transcript.md
 """
 
 INDEX_INTRO = """\
@@ -600,11 +613,28 @@ class _Folder:
         self.names.discard(name)
         self.entries.pop(name, None)
 
+    def _holds_others(self) -> bool:
+        """True when the folder has anything steno did not write: a
+        file of the user's, a directory, a link. Call before the run
+        puts its own files here."""
+        for name in self.names:
+            text = _read_text(self.dir / name) if _is_page_name(name) else None
+            if text is None or not is_generated(text):
+                return True
+        return False
+
     def add_gitignore(self) -> None:
         """Make `.gitignore` when the folder is new, and not again:
-        with an index here, a missing one was deleted on purpose."""
-        if GITIGNORE_NAME not in self.names and not self._holds_index():
-            self.put(GITIGNORE_NAME, GITIGNORE, None)
+        with an index here, a missing one was deleted on purpose.
+
+        It ignores everything in a folder steno made. Where the user's
+        own files are already, it ignores only the transcripts, so that
+        git still shows the rest.
+        """
+        if GITIGNORE_NAME in self.names or self._holds_index():
+            return
+        text = GITIGNORE_BESIDE if self._holds_others() else GITIGNORE
+        self.put(GITIGNORE_NAME, text, None)
 
     def stem_for(self, meeting: Meeting) -> str:
         """The file name stem for a meeting. Its minute and title, or
@@ -636,7 +666,9 @@ class _Folder:
             return
         path = self.dir / GITIGNORE_NAME
         try:
-            if _read(path) != GITIGNORE.encode():
+            if _read(path) not in (
+                GITIGNORE.encode(), GITIGNORE_BESIDE.encode()
+            ):
                 return
             if not self.dry_run:
                 path.unlink()

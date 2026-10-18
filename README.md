@@ -257,6 +257,12 @@ git sees that one file and none of the meetings. Steno stages and commits
 nothing. To keep the meetings in the repository, delete the `.gitignore`;
 Steno writes it once, with the folder, and does not write it back.
 
+If `notes/meetings` already holds files of yours when Steno first writes in
+it, a `*` would hide them from git too, and `git add` would refuse the next one
+you write there. So that folder gets a `.gitignore` of `*.transcript.md`
+alone: the transcripts stay out of git, your files stay visible, and the
+summary pages and the index show up as new files for you to commit or ignore.
+
 **A synced folder.** The `.gitignore` is for git alone; a sync tool does not
 read it. If the project's `notes/` is synced (an Obsidian vault with a sync
 plugin, a Nextcloud or Syncthing folder), the meetings go with it,
@@ -358,9 +364,10 @@ lives. It is now also a file in the project of each meeting, as heard, without
 the scrubbing above (that is for what is sent to the model host, not for what
 is kept or exported). Whatever reads that folder reads it: an editor, a
 backup, a sync client, an agent you run in the project, which sends what it
-reads to its own provider. Steno keeps the pages out of git with a
-`.gitignore`; it cannot keep them out of a sync (an Obsidian vault, say),
-which carries the meetings to every device it syncs to.
+reads to its own provider. Steno keeps the transcripts out of git with a
+`.gitignore`, the summaries too in a folder it made; it cannot keep either out
+of a sync (an Obsidian vault, say), which carries the meetings to every device
+it syncs to.
 `STENO_PROJECT_NOTES=0` turns the copies off.
 
 It records other people automatically. That is a deliberate choice, and getting

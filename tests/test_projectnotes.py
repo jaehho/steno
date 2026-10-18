@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from datetime import date, datetime
@@ -662,11 +663,69 @@ class TestGitignore(Base):
         self.publish(self.session("20261006-161200", title="Bravo"))
         self.assertNotIn(".gitignore", self.names())
 
-    def test_a_folder_that_is_new_to_steno_gets_one(self):
-        self.meetings().mkdir(parents=True)
-        (self.meetings() / "mine.md").write_text("hand-made\n")
+    def test_a_folder_steno_made_hides_every_page_from_git(self):
         self.publish(self.session())
+        self.assertEqual(
+            self.git_ignores([".gitignore", SUMMARY_NAME, TRANSCRIPT_NAME,
+                              "README.md"]),
+            {".gitignore": False, SUMMARY_NAME: True,
+             TRANSCRIPT_NAME: True, "README.md": True},
+        )
+
+    def test_a_folder_with_files_of_yours_hides_none_of_them(self):
+        """A `*` there would leave a note written tomorrow out of
+        `git status` and refuse it in `git add`."""
+        self.meetings().mkdir(parents=True)
+        (self.meetings() / "2026-09-01 kickoff.md").write_text("mine\n")
+        (self.meetings() / "attachments").mkdir()
+        self.publish(self.session())
+        later = "2026-09-02 standup.md"  # written after the publish
+        self.assertEqual(
+            self.git_ignores(["2026-09-01 kickoff.md", later, "attachments/x",
+                              TRANSCRIPT_NAME, SUMMARY_NAME]),
+            {"2026-09-01 kickoff.md": False, later: False,
+             "attachments/x": False, TRANSCRIPT_NAME: True,
+             SUMMARY_NAME: False},
+        )
+        text = self.read(".gitignore")
+        rules = [x for x in text.splitlines() if not x.startswith("#")]
+        self.assertEqual(rules, ["*.transcript.md"])
+        self.assertIn("other people's speech", text)
+
+    def test_the_ignore_beside_your_files_goes_when_the_folder_empties(self):
+        self.meetings().mkdir(parents=True)
+        mine = self.meetings() / "mine.md"
+        mine.write_text("mine\n")
+        d = self.session()
+        self.publish(d)
         self.assertIn(".gitignore", self.names())
+        mine.unlink()
+        self.unpublish(d)
+        self.assertFalse(self.meetings().exists())
+
+    def git_ignores(self, names: list[str]) -> dict[str, bool]:
+        """Which of these paths in the meetings folder git would ignore,
+        by `git check-ignore` in a repository made around the project."""
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("no git to ask")
+        project = self.projects / "demo"
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_CONFIG_SYSTEM=os.devnull)
+
+        def run(*args: str) -> int:
+            return subprocess.run(
+                [git, "-C", str(project), *args], env=env, check=False,
+                capture_output=True,
+            ).returncode
+
+        self.assertEqual(run("init", "-q"), 0)
+        found = {}
+        for name in names:
+            status = run("check-ignore", "-q", f"notes/meetings/{name}")
+            self.assertIn(status, (0, 1), name)  # 128 is an error
+            found[name] = status == 0
+        return found
 
 
 class TestSwitch(Base):
