@@ -639,6 +639,80 @@ class TestInTheWindow(unittest.TestCase):
         rows = load_todos(self.folder("Alpha"))
         self.assertTrue(all(t.dropped for t in rows))
 
+    def notes_over_the_to_dos(self) -> list[Gtk.Label]:
+        """The hint lines above the list."""
+        lines = []
+        child = self.page.todo_box.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Label) and child.has_css_class("hint"):
+                lines.append(child)
+            child = child.get_next_sibling()
+        return lines
+
+    def put_away_the_old_way(self, asst: FakeAsst) -> None:
+        """Alpha with its task filed in asst, then put away as it was
+        before to-dos were closed with it: the flag and nothing else."""
+        self.open_with_filed_to_dos(asst)
+        set_archived(self.folder("Alpha"), True)
+        self.window.refresh_if_stale()
+        self.sidebar.select(self.folder("Alpha"))
+        settle()
+        self.assertTrue(self.page.current.archived)
+
+    def test_the_page_of_a_meeting_put_away_says_its_to_dos_were_closed(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.sidebar.select(self.folder("Alpha"))
+        settle()
+        (note,) = self.notes_over_the_to_dos()
+        self.assertEqual(
+            note.get_label(),
+            "Closed when this meeting was put away. "
+            "Unarchive it to open them again.",
+        )
+        # It wraps, or a narrow window is as wide as the sentence.
+        self.assertTrue(note.get_wrap())
+        self.assertLess(note.measure(Gtk.Orientation.HORIZONTAL, -1)[0], 300)
+
+    def test_a_meeting_put_away_before_this_has_its_to_dos_still_open(self):
+        asst = self.fake_asst()
+        self.put_away_the_old_way(asst)
+        (note,) = self.notes_over_the_to_dos()
+        self.assertTrue(note.get_label().startswith("Some are still open"))
+        self.assertTrue(note.get_wrap())
+        self.assertLess(note.measure(Gtk.Orientation.HORIZONTAL, -1)[0], 300)
+        self.assertEqual(len(asst.tasks()), 1)
+        self.assertEqual(self.page.todo_count.get_text(), "")
+
+    def test_archiving_it_again_closes_what_was_left_open(self):
+        asst = self.fake_asst()
+        self.put_away_the_old_way(asst)
+        self.run_action("unarchive")
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.assertEqual(
+            self.toasts[-1][0],
+            "Archived “Alpha”. Removed 1 open task from asst.",
+        )
+        self.assertEqual(asst.tasks(), [])
+        self.sidebar.select(self.folder("Alpha"))
+        settle()
+        (note,) = self.notes_over_the_to_dos()
+        self.assertTrue(note.get_label().startswith("Closed when"))
+
+    def test_a_task_asst_kept_leaves_the_page_saying_it_is_still_open(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        asst.down = True
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.sidebar.select(self.folder("Alpha"))
+        settle()
+        (note,) = self.notes_over_the_to_dos()
+        self.assertTrue(note.get_label().startswith("Some are still open"))
+
     def test_quitting_waits_for_asst_to_finish_removing_the_tasks(self):
         asst = self.fake_asst()
         self.open_with_filed_to_dos(asst)

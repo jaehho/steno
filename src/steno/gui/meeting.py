@@ -719,11 +719,14 @@ class MeetingPage(Gtk.Box):
         # Two groups, not one list with a tiny owner tag. Your work is the
         # to-do; what you wait on is a reminder, so it sits under its own
         # head. An item nobody has claimed is yours until someone does.
-        if s.archived and any(not t.done for t in todos):
-            self.todo_box.append(hint_label(
-                "Closed when this meeting was put away. "
-                "Unarchive it to open them again."
-            ))
+        if s.archived:
+            for line in words.put_away_notes(
+                closed=any(t.dropped and not t.uid for t in todos),
+                unclosed=any(t.unclosed for t in todos),
+            ):
+                note = hint_label(line)
+                note.set_wrap(True)
+                self.todo_box.append(note)
         if yours:
             self.todo_box.append(self._group_label("For you"))
             for todo in yours:

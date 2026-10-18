@@ -113,6 +113,12 @@ class Todo:
         """Still to do: not ticked, and not closed with the meeting."""
         return not self.done and not self.dropped
 
+    @property
+    def unclosed(self) -> bool:
+        """Open, or closed with its asst task not yet seen to go: what
+        archiving the meeting again still has to close."""
+        return self.open or (self.dropped and bool(self.uid))
+
 
 def notes_path(session_dir: Path) -> Path:
     return session_dir / NOTES_FILENAME

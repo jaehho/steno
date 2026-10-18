@@ -121,6 +121,26 @@ def archived_toast(title: str, removed: int, stuck: int = 0) -> str:
     return said
 
 
+def put_away_notes(closed: bool, unclosed: bool) -> list[str]:
+    """The lines over the to-dos of a meeting that is put away: what
+    was closed with it, and what was not. A meeting put away before its
+    to-dos were closed with it has the second kind, and so has one whose
+    asst would not give a task up; neither says so anywhere else."""
+    lines = []
+    if closed:
+        lines.append(
+            "Closed when this meeting was put away. "
+            "Unarchive it to open them again."
+        )
+    if unclosed:
+        lines.append(
+            "Some are still open: asst would not let go of a task, or "
+            "this meeting was put away before its to-dos were closed "
+            "with it. Unarchive it and archive it again to close them."
+        )
+    return lines
+
+
 def unarchived_toast(title: str, filed: int, failed: int = 0) -> str:
     """What bringing a meeting back says it did to its to-dos, "" when
     there was nothing to say: no asst task came back with it."""

@@ -224,6 +224,12 @@ to-do that never reached asst is closed here alone, so a meeting needs no
 asst to be put away. Archiving does not rewrite the pages the meeting has
 in a project (below).
 
+A meeting put away before to-dos were closed with it keeps its open
+to-dos, and their tasks in asst: nothing closes them on its own, since
+that takes tasks out of asst. Its page says "Some are still open".
+`steno archive NAME` closes them (it says "already archived" first), as
+does Unarchive and then Archive in the window.
+
 A meeting about one of your projects is also kept in that project, as
 pages of its own; see Project notes, below.
 
