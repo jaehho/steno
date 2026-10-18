@@ -11,9 +11,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 APP_ID = "dev.jaeho.Steno"
 OBJECT_PATH = "/" + APP_ID.replace(".", "/")
+# A launched app owns its bus name before its main loop runs, and an action
+# call waits for that loop. Seconds to wait for the name, and for the answer.
+START_WAIT_S = 20
 
 
 def _bus():
@@ -41,7 +45,9 @@ def is_running() -> bool:
         return False
 
 
-def activate(action: str, args: list | None = None) -> bool:
+def activate(
+    action: str, args: list | None = None, timeout_ms: int = 2000
+) -> bool:
     """Activate one app action in the running instance. False if it isn't up."""
     if not is_running():
         return False
@@ -57,7 +63,7 @@ def activate(action: str, args: list | None = None) -> bool:
         bus.call_sync(
             APP_ID, OBJECT_PATH, "org.gtk.Actions", "Activate",
             GLib.Variant("(sava{sv})", (action, params, {})),
-            None, Gio.DBusCallFlags.NONE, 2000, None,
+            None, Gio.DBusCallFlags.NONE, timeout_ms, None,
         )
     except Exception:
         return False
@@ -65,7 +71,7 @@ def activate(action: str, args: list | None = None) -> bool:
         return True
 
 
-def launch(background: bool = False) -> bool:
+def _spawn(background: bool) -> subprocess.Popen | None:
     """Start the app detached, so a bar click doesn't own the process."""
     exe = shutil.which("steno")
     cmd = [exe] if exe else [sys.executable, "-m", "steno.cli"]
@@ -73,7 +79,7 @@ def launch(background: bool = False) -> bool:
     if background:
         cmd.append("--background")
     try:
-        subprocess.Popen(  # our own binary, no shell, fixed argv
+        return subprocess.Popen(  # our own binary, no shell, fixed argv
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -82,9 +88,12 @@ def launch(background: bool = False) -> bool:
             env=os.environ.copy(),
         )
     except OSError:
-        return False
-    else:
-        return True
+        return None
+
+
+def launch(background: bool = False) -> bool:
+    """Start the app detached. False if it could not even be spawned."""
+    return _spawn(background) is not None
 
 
 def show() -> bool:
@@ -92,3 +101,23 @@ def show() -> bool:
     if activate("show"):
         return True
     return launch()
+
+
+def toggle_record() -> bool:
+    """Start or stop recording, starting the app first if it isn't running.
+
+    False when the call did not reach an app: it would not start, it exited
+    on its own (its preflight says why), or it never answered.
+    """
+    if not is_running():
+        proc = _spawn(background=True)
+        if proc is None:
+            return False
+        deadline = time.monotonic() + START_WAIT_S
+        while not is_running():
+            if proc.poll() is not None or time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+    # One long call, never a retry: a toggle that was answered late and then
+    # sent again would stop the recording it had just started.
+    return activate("toggle-record", timeout_ms=START_WAIT_S * 1000)

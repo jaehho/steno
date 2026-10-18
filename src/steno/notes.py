@@ -301,16 +301,19 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
 
 
 def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
-    """Retry anything that failed to reach asst.
+    """Retry a tick that failed to reach asst.
 
-    asstd can be down for a minute; a tick or a new item must not be lost,
-    and when the daemon returns the next pull must not undo what the user
-    already did. Call this before reading remote state.
+    asstd can be down for a minute; a tick must not be lost, and when the
+    daemon returns the next pull must not undo what the user already did.
+    Call this before reading remote state.
+
+    Only ticks go out. Filing an item is `file_with_asst`, run when a summary
+    lands: this runs on every pull, which is every time a meeting is opened,
+    and opening a meeting must not write a task into a task app.
     """
     todos = load_todos(session_dir) if todos is None else todos
     if not asstlink.available():
         return todos
-    todos = file_with_asst(session_dir, todos)
     delivered: list[tuple[str, bool]] = []
     for t in todos:
         if t.dirty and t.uid and asstlink.set_done(t.uid, t.done):
@@ -332,12 +335,12 @@ def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
 def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
     """Adopt asst's checked state for this meeting.
 
-    First push whatever is still dirty or unfiled (asstd may have just come
-    back). Then remote wins when asst answers: a phone check-off has to show
-    up here. A row still dirty keeps its local tick. A task deleted in asst
-    is deleted here too — a row that has reached the phone and then vanished
+    First push whatever tick is still dirty (asstd may have just come back).
+    Then remote wins when asst answers: a phone check-off has to show up
+    here. A row still dirty keeps its local tick. A task deleted in asst is
+    deleted here too — a row that has reached the phone and then vanished
     from it was removed on purpose. Rows that never filed (theirs, or yours
-    not yet sent) are local and stay.
+    not yet sent) are local and stay: a pull files nothing.
 
     The comparison is made against todos.json as it is after the (slow)
     fetch, so a tick made while this ran is a dirty row, not a lost one.

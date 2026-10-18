@@ -77,7 +77,7 @@ steno                      the window (same as `steno gui`)
 steno gui --background     listen with no window (what autostart runs)
 steno autostart [on|off]   start listening at login, for this user
 steno show                 raise the window, starting it if needed
-steno toggle               start or stop recording
+steno toggle               start or stop recording (starts the listener if it is down)
 steno pause 45m            stop detecting for a while; --off to resume
 steno quit                 stop the listener
 steno bar                  waybar JSON on stdout, one line per change
@@ -111,7 +111,7 @@ parked beside the call works.
 
 `Ctrl+G` ask · `Ctrl+F` search · `Ctrl+R` record · `Ctrl+Space` play ·
 `Ctrl+` `+`/`-`/`0` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`
-quit (stops listening) · `Ctrl+?` all of these
+quit (asks first, then stops listening) · `Ctrl+?` all of these
 
 ## The bar
 
