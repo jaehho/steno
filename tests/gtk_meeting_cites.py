@@ -193,14 +193,13 @@ class CitedMeeting(unittest.TestCase):
 
     def item(self, words: str):
         """The summary item whose text has these words."""
-        (found,) = [
-            s for s in self.view.sources if words in s.markup
-        ]
+        (found,) = [s for s in self.view.sources if words in s.markup]
         return found
 
     def lit(self) -> list[int]:
         return [
-            i for i, row in enumerate(self.page._rows)
+            i
+            for i, row in enumerate(self.page._rows)
             if row.has_css_class("line-cited")
         ]
 
@@ -218,7 +217,7 @@ class TestSummaryRows(CitedMeeting):
             self.assertTrue(source.mark.has_css_class("cited-item"))
             self.assertTrue(source.mark.get_focusable())
             self.assertEqual(source.mark.get_cursor().get_name(), "pointer")
-            # A selectable label takes the click and shows a text cursor.
+            # A selectable label takes the click, with a text cursor.
             self.assertFalse(source.mark.get_last_child().get_selectable())
 
     def test_a_cited_item_says_how_many_places_in_its_tooltip(self):
@@ -237,7 +236,9 @@ class TestSummaryRows(CitedMeeting):
             ("Ship", "Ship in March 2"),
             ("Pay", "Pay the deposit by Friday 1"),
         ):
-            self.assertEqual(self.item(words).mark.get_last_child().get_text(), text)
+            self.assertEqual(
+                self.item(words).mark.get_last_child().get_text(), text
+            )
 
     def test_the_action_items_live_in_the_todo_list_not_the_summary(self):
         self.assertNotIn(
@@ -251,7 +252,8 @@ class TestSummaryRows(CitedMeeting):
             rows.append(row)
             row = row.get_next_sibling()
         (plain,) = [
-            r for r in rows
+            r
+            for r in rows
             if r.has_css_class("summary-item")
             and not r.has_css_class("cited-item")
             and "Nothing cited" in r.get_last_child().get_label()
@@ -297,11 +299,13 @@ class TestSummaryRows(CitedMeeting):
             s.mark for s in self.page._todo_sources if "figures" in s.markup
         )
         check, _label, target = todo_parts(todo)
-        # Tab goes by where things are, so they have to have been placed.
+        # Tab goes by where things are: they have to be placed first.
         self.assertTrue(wait_for(lambda: target.get_width() > 0))
         self.window.set_focus(check)
 
-        self.assertTrue(self.page.todo_box.child_focus(Gtk.DirectionType.TAB_FORWARD))
+        self.assertTrue(
+            self.page.todo_box.child_focus(Gtk.DirectionType.TAB_FORWARD)
+        )
 
         self.assertIs(self.window.get_focus(), target)
 
@@ -354,7 +358,9 @@ class TestChoosingAnItem(CitedMeeting):
         self.assertIsNot(stacked, wide)
         adjustment = stacked.get_vadjustment()
         self.assertTrue(
-            wait_for(lambda: adjustment.get_upper() > adjustment.get_page_size()),
+            wait_for(
+                lambda: adjustment.get_upper() > adjustment.get_page_size()
+            ),
             "the stacked layout never laid out the transcript",
         )
         self.scroll_top()
@@ -371,7 +377,9 @@ class TestChoosingAnItem(CitedMeeting):
         click(self.item("Ship").mark)
 
         self.assertEqual(self.lit(), SHIP)
-        self.assertFalse(self.item("deposit").mark.has_css_class("item-active"))
+        self.assertFalse(
+            self.item("deposit").mark.has_css_class("item-active")
+        )
         self.assertTrue(self.item("Ship").mark.has_css_class("item-active"))
 
     def test_a_click_brings_the_focus_into_the_page_so_escape_gets_there(self):
@@ -392,7 +400,9 @@ class TestChoosingAnItem(CitedMeeting):
         click(self.item("deposit").mark)
 
         self.assertEqual(self.lit(), [])
-        self.assertFalse(self.item("deposit").mark.has_css_class("item-active"))
+        self.assertFalse(
+            self.item("deposit").mark.has_css_class("item-active")
+        )
 
     def test_enter_and_space_choose_the_focused_item(self):
         mark = self.item("deposit").mark
@@ -415,7 +425,9 @@ class TestChoosingAnItem(CitedMeeting):
         self.assertTrue(press(self.page, Gdk.KEY_Escape))
 
         self.assertEqual(self.lit(), [])
-        self.assertFalse(self.item("deposit").mark.has_css_class("item-active"))
+        self.assertFalse(
+            self.item("deposit").mark.has_css_class("item-active")
+        )
         # With nothing lit, Escape is left for whoever else wants it.
         self.assertFalse(press(self.page, Gdk.KEY_Escape))
 
@@ -437,7 +449,9 @@ class TestChoosingAnItem(CitedMeeting):
             self.page._rows[DEPOSIT[1]].has_css_class("line-playing")
         )
 
-    def test_the_second_click_of_a_double_click_does_not_play_the_line_it_lands_on(self):
+    def test_a_double_click_does_not_play_the_line_it_lands_on(
+        self,
+    ):
         """The first click took the page to the lines, so the second one
         is on a line, not on the item."""
         click(self.item("deposit").mark)
@@ -470,7 +484,8 @@ def children(widget: Gtk.Widget) -> list[Gtk.Widget]:
 def texts(button: Gtk.Button) -> list[str]:
     """The words on a place row, left to right."""
     return [
-        c.get_label() for c in children(button.get_child())
+        c.get_label()
+        for c in children(button.get_child())
         if isinstance(c, Gtk.Label)
     ]
 
@@ -496,7 +511,9 @@ class TestTheBar(CitedMeeting):
         self.assertEqual(self.bar.count.get_text(), "1 place")
         (button,) = self.buttons()
         stamp, who, quote, more = texts(button)
-        self.assertEqual((stamp, who, more), ("10:00", "Them", "+2 more lines"))
+        self.assertEqual(
+            (stamp, who, more), ("10:00", "Them", "+2 more lines")
+        )
         self.assertTrue(quote.startswith("“line 120 of the meeting"), quote)
         self.assertTrue(quote.endswith("”"))
         # A single place has nothing to step to.
@@ -505,7 +522,9 @@ class TestTheBar(CitedMeeting):
 
     def test_it_names_the_item_it_is_for(self):
         click(self.item("deposit").mark)
-        self.assertEqual(self.bar.title.get_text(), "Pay the deposit by Friday")
+        self.assertEqual(
+            self.bar.title.get_text(), "Pay the deposit by Friday"
+        )
 
     def test_it_sits_outside_the_scrolling_page(self):
         """In the scroller it would go off screen with the jump it is for."""
@@ -524,7 +543,9 @@ class TestTheBar(CitedMeeting):
         click(self.item("Ship").mark)
         bar = self.bar.get_allocation().height
         self.assertTrue(
-            wait_for(lambda: bar > 0 and taken() == self.bar.get_allocation().height),
+            wait_for(
+                lambda: bar > 0 and taken() == self.bar.get_allocation().height
+            ),
             f"the page gave up {taken()} of {before}, the bar took {bar}",
         )
         self.assertLessEqual(self.bar.scroller.get_height(), 120)
@@ -578,7 +599,8 @@ class TestTheBar(CitedMeeting):
     def test_a_long_list_scrolls_inside_the_bar_and_follows_the_steps(self):
         folder = self.page.current.dir
         (folder / "summary.md").write_text(
-            "# T\n\n## Key facts\n- Said often <!--cite 10,50,90,130,170,195-->\n"
+            "# T\n\n## Key facts\n"
+            "- Said often <!--cite 10,50,90,130,170,195-->\n"
         )
         self.page.reload()
         click(self.item("often").mark)
@@ -648,7 +670,9 @@ class TestTheBar(CitedMeeting):
         self.assertEqual(self.toasts, [GONE])
         self.assertTrue(on_screen(self.page._rows[SHIP[1]]))
 
-    def test_a_meeting_with_no_audio_still_lights_and_scrolls_without_play(self):
+    def test_a_meeting_with_no_audio_still_lights_and_scrolls_without_play(
+        self,
+    ):
         for wav in self.page.current.dir.glob("*.wav"):
             wav.unlink()
         self.page.reload()
@@ -661,7 +685,11 @@ class TestTheBar(CitedMeeting):
         self.assertTrue(on_screen(self.page._rows[DEPOSIT[0]]))
         (button,) = self.buttons()
         self.assertFalse(
-            [c for c in children(button.get_child()) if isinstance(c, Gtk.Image)]
+            [
+                c
+                for c in children(button.get_child())
+                if isinstance(c, Gtk.Image)
+            ]
         )
         self.assertEqual(button.get_tooltip_text(), "Show this place")
 
@@ -669,7 +697,13 @@ class TestTheBar(CitedMeeting):
         click(self.item("deposit").mark)
         (button,) = self.buttons()
         self.assertEqual(
-            len([c for c in children(button.get_child()) if isinstance(c, Gtk.Image)]),
+            len(
+                [
+                    c
+                    for c in children(button.get_child())
+                    if isinstance(c, Gtk.Image)
+                ]
+            ),
             1,
         )
         self.assertEqual(button.get_tooltip_text(), "Play from here")
@@ -697,7 +731,12 @@ class TestTheBar(CitedMeeting):
     def test_a_rebuilt_transcript_keeps_the_bar_for_the_same_item(self):
         click(self.item("Ship").mark)
         path = self.page.current.dir / "transcript.jsonl"
-        extra = {"speaker": "them", "text": "one more", "ts": STARTED + 2000, "offset": 2000.0}
+        extra = {
+            "speaker": "them",
+            "text": "one more",
+            "ts": STARTED + 2000,
+            "offset": 2000.0,
+        }
         path.write_text(path.read_text() + json.dumps(extra) + "\n")
 
         self.page.refresh_transcript()
@@ -751,12 +790,14 @@ class TestTodos(CitedMeeting):
             cited.get_tooltip_text(), "Show where this was said (1 place)"
         )
         self.assertEqual(cited.get_cursor().get_name(), "pointer")
-        # One that cites nothing is as it was: the words are the box's label.
+        # One that cites nothing is as it was: the box's own label.
         plain = self.words_of("Draft the table")
         self.assertFalse(plain.has_css_class("cited-item"))
         self.assertIs(plain.get_parent(), self.check_of("Draft the table"))
 
-    def test_clicking_the_words_lights_the_lines_and_leaves_the_box_alone(self):
+    def test_clicking_the_words_lights_the_lines_and_leaves_the_box_alone(
+        self,
+    ):
         self.scroll_top()
         row = self.todo_rows()["Send the figures"]
         check = self.check_of("Send the figures")
@@ -767,7 +808,11 @@ class TestTodos(CitedMeeting):
         self.assertTrue(row.has_css_class("item-active"))
         self.assertFalse(check.get_active())
         self.assertFalse(
-            next(t for t in load_todos(self.page.current.dir) if "figures" in t.text).done
+            next(
+                t
+                for t in load_todos(self.page.current.dir)
+                if "figures" in t.text
+            ).done
         )
         self.assertTrue(self.bar_shows("Send the figures"))
         self.assertTrue(on_screen(self.page._rows[FIGURES[0]]))
@@ -786,9 +831,13 @@ class TestTodos(CitedMeeting):
 
         check.set_active(True)
 
-        todo = next(t for t in load_todos(self.page.current.dir) if "figures" in t.text)
+        todo = next(
+            t for t in load_todos(self.page.current.dir) if "figures" in t.text
+        )
         self.assertTrue(todo.done)
-        self.assertTrue(self.words_of("Send the figures").has_css_class("todo-done"))
+        self.assertTrue(
+            self.words_of("Send the figures").has_css_class("todo-done")
+        )
         self.assertEqual(self.lit(), FIGURES)
 
     def test_the_words_of_a_plain_to_do_still_tick_its_box(self):
@@ -800,7 +849,9 @@ class TestTodos(CitedMeeting):
         click(self.item("deposit").mark)
         click(self.target_of("Send the figures"))
         self.assertEqual(self.lit(), FIGURES)
-        self.assertFalse(self.item("deposit").mark.has_css_class("item-active"))
+        self.assertFalse(
+            self.item("deposit").mark.has_css_class("item-active")
+        )
 
         click(self.item("deposit").mark)
         self.assertEqual(self.lit(), DEPOSIT)
@@ -813,26 +864,31 @@ class TestTodos(CitedMeeting):
         click(self.target_of("Send the figures"))
         old = self.todo_rows()["Send the figures"]
 
-        self.page._load_todos(self.page.current, ensure_todos(self.page.current.dir))
+        self.page._load_todos(
+            self.page.current, ensure_todos(self.page.current.dir)
+        )
 
         new = self.todo_rows()["Send the figures"]
         self.assertIsNot(new, old)
         self.assertTrue(new.has_css_class("item-active"))
         self.assertEqual(self.lit(), FIGURES)
-        # And clicking the new row puts it out, as the old one would have.
+        # Clicking the new row puts it out, as the old one would.
         click(self.target_of("Send the figures"))
         self.assertEqual(self.lit(), [])
 
     def test_a_lit_summary_item_is_not_touched_by_a_rebuilt_list(self):
         click(self.item("deposit").mark)
 
-        self.page._load_todos(self.page.current, ensure_todos(self.page.current.dir))
+        self.page._load_todos(
+            self.page.current, ensure_todos(self.page.current.dir)
+        )
 
         self.assertEqual(self.lit(), DEPOSIT)
         self.assertTrue(self.item("deposit").mark.has_css_class("item-active"))
 
     def test_the_words_sit_where_they_would_in_the_box(self):
         """The same left edge and the same first line, cited or not."""
+
         def inset(text: str) -> tuple[float, float]:
             """Where the words start inside their own row."""
             label = self.words_of(text)
@@ -843,7 +899,9 @@ class TestTodos(CitedMeeting):
             return point.x, point.y
 
         self.assertTrue(
-            wait_for(lambda: self.words_of("Send the figures").get_height() > 0)
+            wait_for(
+                lambda: self.words_of("Send the figures").get_height() > 0
+            )
         )
         cited, plain = inset("Send the figures"), inset("Draft the table")
         self.assertAlmostEqual(cited[0], plain[0], delta=1.5)
@@ -875,7 +933,9 @@ class TestWithoutCitations(CitedMeeting):
         )
         self.assertEqual(self.page.current.title, "Plain")
 
-    def test_a_summary_that_cites_nothing_says_so_quietly_and_nothing_nags(self):
+    def test_a_summary_that_cites_nothing_says_so_quietly_and_nothing_nags(
+        self,
+    ):
         self.open_plain()
 
         self.assertTrue(self.page.summary_hint.get_visible())

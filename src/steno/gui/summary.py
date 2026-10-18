@@ -60,7 +60,8 @@ def places_word(count: int) -> str:
 
 
 def make_citable(
-    target: Gtk.Widget, source: CiteSource,
+    target: Gtk.Widget,
+    source: CiteSource,
     on_choose: Callable[[CiteSource], None],
 ) -> None:
     """Make `target` the thing to click, or press Enter on, to see where
@@ -78,8 +79,8 @@ def make_citable(
     def released(_gesture, presses: int, _x: float, _y: float) -> None:
         # A double click is two presses; only the first one chooses.
         if presses == 1:
-            # Focus comes with the click, so Esc and Enter reach the page from
-            # here and not from wherever the focus was (the meeting list).
+            # Focus comes with the click, so Esc and Enter reach the
+            # page from here, not from where it was (the meeting list).
             target.grab_focus()
             on_choose(source)
 
@@ -122,7 +123,7 @@ class SummaryView(Gtk.Box):
         label.add_css_class("summary")
         label.set_markup(block.markup)
         if block.kind == "heading":
-            # Air above a section, none above the first thing on the page.
+            # Air above a section, none above the first thing on it.
             label.set_margin_top(10 if self.get_first_child() else 0)
         return label
 
@@ -143,13 +144,15 @@ class SummaryView(Gtk.Box):
         text = wrapping_label(selectable=not cited)
         text.add_css_class("summary")
         text.set_hexpand(True)
-        count = len(block.cites)
-        text.set_markup(
-            block.markup + (
+        markup = block.markup
+        if cited:
+            # How many places: small and underlined, after the words.
+            count = len(block.cites)
+            markup += (
                 f' <span size="smaller" alpha="60%" underline="single">'
-                f"{count}</span>" if cited else ""
+                f"{count}</span>"
             )
-        )
+        text.set_markup(markup)
         row.append(text)
 
         if cited:
@@ -200,7 +203,9 @@ class CiteBar(Gtk.Box):
 
         self.places = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.scroller = Gtk.ScrolledWindow()
-        self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scroller.set_policy(
+            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC
+        )
         self.scroller.set_propagate_natural_height(True)
         self.scroller.set_max_content_height(MAX_PLACES_HEIGHT)
         self.scroller.set_child(self.places)
@@ -246,18 +251,21 @@ class CiteBar(Gtk.Box):
         for widget in (stamp, who, quote):
             row.append(widget)
         if place.more:
-            more = Gtk.Label(
-                label=f"+{place.more} more line{'' if place.more == 1 else 's'}"
-            )
+            lines = "line" if place.more == 1 else "lines"
+            more = Gtk.Label(label=f"+{place.more} more {lines}")
             more.add_css_class("hint")
             row.append(more)
         if playable:
-            row.append(Gtk.Image.new_from_icon_name("media-playback-start-symbolic"))
+            row.append(
+                Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+            )
         button = Gtk.Button()
         button.set_child(row)
         button.add_css_class("flat")
         button.add_css_class("place")
-        button.set_tooltip_text("Play from here" if playable else "Show this place")
+        button.set_tooltip_text(
+            "Play from here" if playable else "Show this place"
+        )
         return button
 
     def set_current(self, index: int) -> None:
@@ -274,14 +282,19 @@ class CiteBar(Gtk.Box):
 
     def _reveal(self, button: Gtk.Button) -> None:
         """Scroll the list, if it is long enough to scroll, to a row."""
-        # The rows are its direct children, so the allocation is where they
-        # sit in it, padding included.
+        # The rows are its direct children, so the allocation is where
+        # they sit in it, padding included.
         box = button.get_allocation()
         adjustment = self.scroller.get_vadjustment()
         if box.y < adjustment.get_value():
             adjustment.set_value(box.y)
-        elif box.y + box.height > adjustment.get_value() + adjustment.get_page_size():
-            adjustment.set_value(box.y + box.height - adjustment.get_page_size())
+        elif (
+            box.y + box.height
+            > adjustment.get_value() + adjustment.get_page_size()
+        ):
+            adjustment.set_value(
+                box.y + box.height - adjustment.get_page_size()
+            )
 
     def clear(self) -> None:
         while (child := self.places.get_first_child()) is not None:
