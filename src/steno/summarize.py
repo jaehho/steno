@@ -60,7 +60,9 @@ the point: a run as `L12-15`, a single line as `L40`. A line that merely \
 mentions the topic is not support. A bullet that no line supports gets no \
 tag. Use only ids that appear in the transcript; never invent one. The tag is \
 the last thing on the bullet. The title, headings and the `**You**`, \
-`**Them**` and `**Unassigned**` lines take none.
+`**Them**` and `**Unassigned**` lines take none. Tags change nothing else: a \
+section with nothing for it is still left out, and no bullet is written just \
+to have lines to cite.
 Example of the format only: the lines `[L40 02:11] them: can you send the \
 usage figures by Friday?` and `[L41 02:15] you: yes, Thursday` give the \
 bullet `- Send the usage figures by Friday [L40-41]`.
