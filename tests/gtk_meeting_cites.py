@@ -908,6 +908,68 @@ class TestTodos(CitedMeeting):
         self.assertAlmostEqual(cited[1], plain[1], delta=1.5)
 
 
+class FakeClipboard:
+    def __init__(self) -> None:
+        self.text = ""
+
+    def set(self, text: str) -> None:
+        self.text = text
+
+
+class FakeFile:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def get_path(self) -> str:
+        return str(self.path)
+
+
+class FakeFileDialog:
+    """Answers a save at once with a path chosen in advance."""
+
+    chosen: Path
+
+    def set_initial_name(self, _name: str) -> None:
+        pass
+
+    def save(self, _parent, _cancellable, callback) -> None:
+        callback(self, None)
+
+    def save_finish(self, _result) -> FakeFile:
+        return FakeFile(self.chosen)
+
+
+class TestLeavingTheApp(CitedMeeting):
+    """Copy and Save write each citation as the time stamps the
+    transcript section of the same page carries, never the marker."""
+
+    def check(self, text: str) -> None:
+        self.assertNotIn("<!--", text)
+        self.assertIn("- Pay the deposit by Friday [10:00]\n", text)
+        self.assertIn("- Ship in March [01:40, 13:20]\n", text)
+        self.assertIn("- [ ] Send the figures [06:40]\n", text)
+        self.assertIn("\n[10:00] ", text.partition("## Transcript")[2])
+
+    def test_copy_puts_stamps_on_the_clipboard(self):
+        clipboard = FakeClipboard()
+        with mock.patch.object(
+            self.page, "get_clipboard", return_value=clipboard
+        ):
+            self.page.actions.activate_action("copy", None)
+
+        self.check(clipboard.text)
+        self.assertEqual(self.toasts, ["Copied this meeting"])
+
+    def test_save_writes_the_same_page_to_the_file_chosen(self):
+        target = self.root / "saved.md"
+        FakeFileDialog.chosen = target
+        with mock.patch.object(Gtk, "FileDialog", FakeFileDialog):
+            self.page.actions.activate_action("save", None)
+
+        self.check(target.read_text())
+        self.assertEqual(self.toasts, ["Saved to saved.md"])
+
+
 class TestStylesheet(unittest.TestCase):
     def test_gtk_reads_every_rule_of_it(self):
         """A mistyped property is only a warning on stderr and the look

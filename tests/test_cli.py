@@ -314,6 +314,48 @@ class TestSummarizeUncited(unittest.TestCase):
                 self.assertIn("chooses the sessions itself", self.err)
 
 
+class TestExportCommand(unittest.TestCase):
+    """`steno export` is a copy that leaves the app: citations are stamps."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        folder = self.root / "20260801-090000"
+        folder.mkdir()
+        rows = [{"ts": 1000.0 + 30 * n, "speaker": "them", "text": f"row {n}"}
+                for n in range(4)]
+        (folder / "transcript.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows)
+        )
+        (folder / "meta.json").write_text(
+            json.dumps({"started_at": 1000.0, "title": "Kickoff"})
+        )
+        (folder / "summary.md").write_text(
+            "# Kickoff\n\n## Decisions\n- Ship in March <!--cite 30,90-->\n"
+        )
+
+    def export(self, output: Path | None = None) -> tuple[str, str]:
+        args = argparse.Namespace(session=None, output=output, dir=self.root)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.cmd_export(args)
+        return out.getvalue(), (output.read_text() if output else "")
+
+    def test_printed_it_has_stamps_and_no_marker(self):
+        printed, _ = self.export()
+        self.assertIn("- Ship in March [00:30, 01:30]\n", printed)
+        self.assertIn("[00:30] them: row 1", printed)
+        self.assertNotIn("cite", printed)
+
+    def test_saved_it_is_the_same_page(self):
+        printed, _ = self.export()
+        target = self.root / "out.md"
+        said, saved = self.export(target)
+        self.assertEqual(said, f"wrote {target}\n")
+        self.assertEqual(saved, printed)
+
+
 class TestTodosCommand(unittest.TestCase):
     def test_listing_todos_files_nothing(self):
         """`steno todos` reads asst. It used to file every meeting's

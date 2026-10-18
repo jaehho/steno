@@ -1,12 +1,18 @@
 """What a meeting looks like when it leaves the app as markdown."""
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from steno import claude
 from steno.export import default_filename, meeting_markdown
+from steno.summarize import summarize_session
+from tests.test_summarize import CITED_REPLY, SESSION_ROWS, FakeModel
 
 SUMMARY = """# Vendor Pricing Call
 
@@ -178,6 +184,43 @@ class TestMeetingMarkdown(unittest.TestCase):
         md = meeting_markdown(d)
         self.assertIn("555-0102", md)
         self.assertIn("thruput is… wrong", md)
+
+
+class TestRefsFindTheirLines(unittest.TestCase):
+    """A ref in the summary is a stamp in the transcript section of the
+    same page, or it points at nothing. They come from different code:
+    the cites from what the model was shown, the stamps from the export.
+    """
+
+    REF_RE = re.compile(r"\[(\d{2}:\d{2}(?:, \d{2}:\d{2})*)\]")
+    STAMP_RE = re.compile(r"^\[(\d+:\d{2}(?::\d{2})?)\] ", re.MULTILINE)
+
+    def export_of(self, rows: list[dict]) -> str:
+        root = Path(tempfile.mkdtemp())
+        folder = _session(
+            root, transcript_jsonl=_rows(*rows),
+            meta_json=json.dumps({"started_at": 1000.0}),
+        )
+        with mock.patch.object(claude, "run_structured", FakeModel(CITED_REPLY)):
+            asyncio.run(summarize_session(folder, "m", None, root / "none"))
+        return meeting_markdown(folder)
+
+    def check(self, rows: list[dict]) -> None:
+        summary, _, transcript = self.export_of(rows).partition("## Transcript")
+        refs = [
+            stamp
+            for found in self.REF_RE.findall(summary)
+            for stamp in found.split(", ")
+        ]
+        stamps = self.STAMP_RE.findall(transcript)
+        self.assertGreaterEqual(len(refs), 3)
+        self.assertEqual([r for r in refs if r not in stamps], [])
+
+    def test_when_the_first_line_is_said_some_seconds_in(self):
+        self.check(SESSION_ROWS)
+
+    def test_when_the_transcriber_reported_where_each_line_starts(self):
+        self.check([dict(r, offset=r["ts"] - 1000.0 - 1.7) for r in SESSION_ROWS])
 
 
 class TestDefaultFilename(unittest.TestCase):
