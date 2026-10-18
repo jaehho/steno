@@ -20,6 +20,7 @@ import contextlib
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
+from .. import citations
 from ..cost import format_meter, prerecorded_cost, stream_cost
 from ..notes import ensure_todos, open_count
 from ..summarize import (
@@ -89,7 +90,7 @@ class Session:
             return {"where": "title", "line": -1}
         for name, label in ((SUMMARY_FILENAME, "summary"), ("notes.md", "notes")):
             try:
-                text = (self.dir / name).read_text()
+                text = _read_searchable(self.dir / name)
             except OSError:
                 continue
             if hit(text):
@@ -109,11 +110,18 @@ class Session:
             parts = [self.title or "", self.project or "", self.dir.name]
             for name in (SUMMARY_FILENAME, "notes.md", "transcript.txt"):
                 with contextlib.suppress(OSError):
-                    parts.append((self.dir / name).read_text())
+                    parts.append(_read_searchable(self.dir / name))
             self._haystack = "\n".join(parts).lower()
         if all(w in self._haystack for w in words):
             return {"where": "meeting", "line": -1}
         return None
+
+
+def _read_searchable(path: Path) -> str:
+    """A meeting file as search should see it: a citation marker is not a
+    word, and "cite" must not find every cited summary."""
+    text = path.read_text()
+    return citations.strip(text) if path.name == SUMMARY_FILENAME else text
 
 
 def _session_cost(path: Path, minutes: float) -> float:

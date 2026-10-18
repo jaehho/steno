@@ -26,6 +26,7 @@ from . import __version__, config_dir, data_dir, migrate_legacy, model_default
 from .brief import BRIEF_FILENAME, brief_age_days, estimate_tokens, load_brief
 from .claude import check_ready
 from .control import activate, show, toggle_record
+from .cost import SUMMARY_GUESS, format_usd
 from .detect import (
     DEFAULT_ALLOW,
     END_GRACE_S,
@@ -44,7 +45,9 @@ from .state import bar_json, read_state
 from .summarize import (
     has_summary,
     iter_sessions,
+    load_meta,
     load_title,
+    needs_citations,
     resolve_session,
     summarize_session,
 )
@@ -71,6 +74,10 @@ DEEPGRAM_API_KEY=
 
 # Optional. 0 hides the tray icon, for a bar already running `steno bar`.
 # STENO_TRAY=0
+
+# Optional. Any value stops steno running `asst`: no to-do is filed, ticked
+# or removed in the task app. For scratch runs; "0" does not undo it.
+# STENO_NO_ASST=1
 """
 
 
@@ -311,9 +318,40 @@ def _summarize_one(
     return True
 
 
+def _summarize_uncited(
+    args: argparse.Namespace, model: str, brief: str | None
+) -> None:
+    """Redo the summaries that have no citations, after saying what it costs."""
+    targets = [s for s in iter_sessions(args.dir) if needs_citations(s)]
+    if not targets:
+        print("every summary already has citations")
+        return
+    noun = "summary" if len(targets) == 1 else "summaries"
+    print(f"{len(targets)} {noun} without citations, newest first:")
+    for target in targets:
+        minutes = load_meta(target).get("duration_min")
+        print(f"  {target.name}  {load_title(target) or '(untitled)'}"
+              + (f"  ({minutes:.0f} min)" if isinstance(minutes, (int, float)) else ""))
+    # One flat guess per summary: a long meeting costs more than a short one.
+    print(f"about {format_usd(len(targets) * SUMMARY_GUESS)} to write "
+          f"{'it' if len(targets) == 1 else 'them'} again. Notes, ticked "
+          "to-dos and projects are kept.")
+    if not args.yes:
+        print("nothing done; pass --yes to go ahead")
+        return
+    results = [_summarize_one(t, model, brief) for t in targets]
+    print(f"{results.count(True)}/{len(targets)} summarized")
+    if False in results:
+        sys.exit(1)
+
+
 def cmd_summarize(args: argparse.Namespace) -> None:
     load_dotenv(config_dir() / ".env")
 
+    if args.uncited and (args.all or args.session):
+        print("--uncited chooses the sessions itself: no name, no --all",
+              file=sys.stderr)
+        sys.exit(1)
     if err := check_ready():
         print(f"{err} -- summaries run through the chat-completions endpoint.", file=sys.stderr)
         sys.exit(1)
@@ -321,6 +359,9 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     model = model_default()
     brief = load_brief(_brief_path(args))
 
+    if args.uncited:
+        _summarize_uncited(args, model, brief)
+        return
     if args.all:
         targets = iter_sessions(args.dir)
         if not targets:
@@ -754,6 +795,11 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     p_sum.add_argument("--all", action="store_true", help="Summarize every session")
     p_sum.add_argument("--force", action="store_true",
                        help="Re-summarize even if summary.md exists")
+    p_sum.add_argument("--uncited", action="store_true",
+                       help="Redo every summary written before citations: "
+                            "lists them and the cost, and waits for --yes")
+    p_sum.add_argument("--yes", action="store_true",
+                       help="With --uncited: do it; without, only list and price")
     p_sum.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_sum.set_defaults(func=cmd_summarize)
 

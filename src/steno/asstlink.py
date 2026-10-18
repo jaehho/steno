@@ -20,15 +20,26 @@ session bus. The GTK window is not required.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 TIMEOUT_S = 15.0
 COMPLETED_LIMIT = "9999"
+OFF_ENV = "STENO_NO_ASST"
 
 
 def available() -> bool:
+    """False when STENO_NO_ASST is set to anything, else asst on PATH.
+
+    The switch is for scratch runs: `asst` writes through D-Bus to the
+    user's real daemon and its GitHub-backed lists, and a PATH shim cannot
+    be trusted to come first. "0" turns it off too: a switch that guards
+    real data fails to the safe side.
+    """
+    if os.environ.get(OFF_ENV):
+        return False
     return shutil.which("asst") is not None
 
 

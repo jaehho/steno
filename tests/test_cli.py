@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sys
 import tempfile
@@ -226,6 +227,133 @@ class TestDeleteSafety(unittest.TestCase):
              redirect_stdout(io.StringIO()):
             cli.cmd_delete(args)
         forget.assert_called_once()
+
+
+class TestSummarizeUncited(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        # Two from before citations, one with them, one that was asked
+        # and came back without, one with no summary at all.
+        self.old = self.session("20260801-090000", "- x\n", title="Kickoff",
+                                duration_min=42.0)
+        self.newer = self.session("20260901-090000", "- y\n")
+        self.session("20260902-090000", "- z <!--cite 5-->\n")
+        self.session("20260903-090000", "- w\n",
+                     cites={"items": 1, "cited": 0})
+        self.session("20260904-090000", None)
+
+    def session(self, name: str, body: str | None, **meta) -> Path:
+        folder = self.root / name
+        folder.mkdir()
+        (folder / "transcript.jsonl").write_text("{}\n")
+        (folder / "meta.json").write_text(json.dumps(meta))
+        if body is not None:
+            (folder / "summary.md").write_text(f"# T\n\n## TL;DR\n{body}")
+        return folder
+
+    def run_cmd(self, yes=False, session=None, all_=False, redone=True):
+        args = argparse.Namespace(
+            session=session, all=all_, force=False, uncited=True, yes=yes,
+            dir=self.root,
+        )
+        out, err = io.StringIO(), io.StringIO()
+        self.code = None
+        with mock.patch.object(cli, "load_dotenv"), \
+             mock.patch.object(cli, "check_ready", return_value=None), \
+             mock.patch.object(cli, "model_default", return_value="m"), \
+             mock.patch.object(cli, "load_brief", return_value=None), \
+             mock.patch.object(cli, "_summarize_one",
+                               return_value=redone) as one, \
+             redirect_stdout(out), redirect_stderr(err):
+            try:
+                cli.cmd_summarize(args)
+            except SystemExit as e:
+                self.code = e.code
+        self.one, self.out, self.err = one, out.getvalue(), err.getvalue()
+
+    def test_without_yes_it_lists_and_prices_and_does_nothing(self):
+        self.run_cmd()
+        self.one.assert_not_called()
+        self.assertIn("2 summaries without citations", self.out)
+        self.assertIn("20260801-090000  Kickoff  (42 min)", self.out)
+        self.assertIn("about $0.02", self.out)
+        self.assertIn("--yes", self.out)
+        for left_alone in ("20260902", "20260903", "20260904"):
+            self.assertNotIn(left_alone, self.out)
+
+    def test_newest_comes_first(self):
+        self.run_cmd()
+        self.assertLess(self.out.index("20260901"), self.out.index("20260801"))
+
+    def test_with_yes_it_redoes_those_and_only_those(self):
+        self.run_cmd(yes=True)
+        self.assertEqual([c.args[0] for c in self.one.call_args_list],
+                         [self.newer, self.old])
+        self.assertIn("2/2 summarized", self.out)
+        self.assertIsNone(self.code)
+
+    def test_a_failure_is_an_error_exit(self):
+        self.run_cmd(yes=True, redone=False)
+        self.assertEqual(self.code, 1)
+
+    def test_nothing_to_redo_says_so(self):
+        for folder in (self.old, self.newer):
+            (folder / "summary.md").write_text("# T\n\n- x <!--cite 1-->\n")
+        self.run_cmd(yes=True)
+        self.one.assert_not_called()
+        self.assertIn("already has citations", self.out)
+
+    def test_it_chooses_its_own_sessions(self):
+        for given in ({"session": "20260801-090000"}, {"all_": True}):
+            with self.subTest(**given):
+                self.run_cmd(yes=True, **given)
+                self.one.assert_not_called()
+                self.assertEqual(self.code, 1)
+                self.assertIn("chooses the sessions itself", self.err)
+
+
+class TestExportCommand(unittest.TestCase):
+    """`steno export` leaves the app: a citation becomes a stamp."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        folder = self.root / "20260801-090000"
+        folder.mkdir()
+        rows = [{"ts": 1000.0 + 30 * n, "speaker": "them", "text": f"row {n}"}
+                for n in range(4)]
+        (folder / "transcript.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows)
+        )
+        (folder / "meta.json").write_text(
+            json.dumps({"started_at": 1000.0, "title": "Kickoff"})
+        )
+        (folder / "summary.md").write_text(
+            "# Kickoff\n\n## Decisions\n- Ship in March <!--cite 30,90-->\n"
+        )
+
+    def export(self, output: Path | None = None) -> tuple[str, str]:
+        args = argparse.Namespace(session=None, output=output, dir=self.root)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.cmd_export(args)
+        return out.getvalue(), (output.read_text() if output else "")
+
+    def test_printed_it_has_stamps_and_no_marker(self):
+        printed, _ = self.export()
+        self.assertIn("- Ship in March [00:30, 01:30]\n", printed)
+        self.assertIn("[00:30] them: row 1", printed)
+        self.assertNotIn("cite", printed)
+
+    def test_saved_it_is_the_same_page(self):
+        printed, _ = self.export()
+        target = self.root / "out.md"
+        said, saved = self.export(target)
+        self.assertEqual(said, f"wrote {target}\n")
+        self.assertEqual(saved, printed)
 
 
 class TestTodosCommand(unittest.TestCase):

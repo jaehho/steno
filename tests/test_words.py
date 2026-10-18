@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+from steno import citations
 from steno.gui import words
 from steno.gui.sidebar import Session
 
@@ -76,27 +77,135 @@ class TestStatusCard(unittest.TestCase):
         self.assertEqual(words.status_card("finalizing", "", 0.0, 0.0)[2], "")
 
 
-class TestSummary(unittest.TestCase):
+def shown(md: str, has_todos: bool) -> list[tuple[str, str]]:
+    return [(b.kind, b.markup) for b in words.summary_blocks(md, has_todos)]
+
+
+class TestSummaryBlocks(unittest.TestCase):
     def test_title_and_tldr_label_are_dropped(self):
-        body = words.summary_body(SUMMARY, has_todos=True)
-        self.assertNotIn("Workshop paper", body)
-        self.assertNotIn("TL;DR", body)
-        self.assertTrue(body.startswith("Submission stays"))
+        blocks = shown(SUMMARY, has_todos=True)
+        self.assertEqual(
+            blocks[0], ("text", "Submission stays on September 26.")
+        )
+        for _kind, markup in blocks:
+            self.assertNotIn("Workshop paper", markup)
+            self.assertNotIn("TL;DR", markup)
+
+    def test_rows_come_in_the_order_of_the_page(self):
+        self.assertEqual(
+            [kind for kind, _ in shown(SUMMARY, has_todos=True)],
+            ["text", "heading", "item", "heading", "item"],
+        )
 
     def test_action_items_move_to_the_todo_list(self):
-        body = words.summary_body(SUMMARY, has_todos=True)
-        self.assertNotIn("Action items", body)
-        self.assertNotIn("rerun the baseline", body)
-        self.assertIn("## Open questions", body)
+        blocks = shown(SUMMARY, has_todos=True)
+        text = " ".join(markup for _kind, markup in blocks)
+        self.assertNotIn("Action items", text)
+        self.assertNotIn("rerun the baseline", text)
+        self.assertIn(("heading", "<b>Open questions</b>"), blocks)
 
     def test_action_items_stay_when_there_is_no_todo_list(self):
         """Items that failed to become to-dos must not vanish from the page."""
-        body = words.summary_body(SUMMARY, has_todos=False)
-        self.assertIn("rerun the baseline", body)
+        blocks = shown(SUMMARY, has_todos=False)
+        self.assertIn(("item", "<b>You</b>: rerun the baseline."), blocks)
+
+    def test_owner_lines_are_headers_not_items(self):
+        md = "## Action items\n**You**\n- Pay it\n**Them**:\n- Send it\n"
+        self.assertEqual(
+            shown(md, has_todos=False),
+            [
+                ("heading", "<b>Action items</b>"),
+                ("owner", "<b>You</b>"),
+                ("item", "Pay it"),
+                ("owner", "<b>Them</b>:"),
+                ("item", "Send it"),
+            ],
+        )
+
+    def test_an_item_carries_its_cites_and_the_marker_is_not_shown(self):
+        marked = SUMMARY.replace(
+            "Out of distribution?", "Out of distribution? <!--cite 12-30,41-->"
+        ).replace("appendix.", "appendix. <!--cite 5-->")
+        for has_todos in (True, False):
+            blocks = words.summary_blocks(marked, has_todos)
+            self.assertEqual(
+                [(b.kind, b.markup) for b in blocks],
+                shown(SUMMARY, has_todos),
+            )
+            self.assertNotIn("cite", " ".join(b.markup for b in blocks))
+        self.assertEqual(
+            [b.cites for b in words.summary_blocks(marked, True)],
+            [[], [], [(5, 5)], [], [(12, 30), (41, 41)]],
+        )
+
+    def test_an_item_is_what_the_citation_engine_calls_one(self):
+        """The rows that can carry a cite are the ones `items` finds."""
+        md = (
+            "# T\n\n## Decisions\n- one <!--cite 1-->\n* two\n"
+            "1. three <!--cite 2-->\n   - four\n- [ ] five\nplain\n"
+        )
+        rows = [b for b in words.summary_blocks(md, False) if b.kind == "item"]
+        self.assertEqual(
+            [b.markup for b in rows], [i.text for i in citations.items(md)]
+        )
+        self.assertEqual(
+            [(b.bullet, b.indent) for b in rows],
+            [("•", 0), ("•", 0), ("1.", 0), ("•", 3), ("•", 0)],
+        )
 
     def test_markup_escapes_before_formatting(self):
-        self.assertEqual(words.markup("- **a** & <b>"), "•  <b>a</b> &amp; &lt;b&gt;")
-        self.assertEqual(words.markup("## Decisions"), "<b>Decisions</b>")
+        md = "- **a** & <b>\nplain `x` <i>\n## A & B\n"
+        self.assertEqual(
+            shown(md, has_todos=False),
+            [
+                ("item", "<b>a</b> &amp; &lt;b&gt;"),
+                ("text", "plain <tt>x</tt> &lt;i&gt;"),
+                ("heading", "<b>A &amp; B</b>"),
+            ],
+        )
+
+
+RECORDS = [
+    {"speaker": "them", "text": "can you send the figures"},
+    {"speaker": "you", "text": "yes, Thursday"},
+    {"speaker": "them", "text": "great"},
+    {"speaker": "you", "text": "x" * 30 + " " + "word " * 30},
+]
+OFFSETS = [10, 14, 20, 75]
+
+
+class TestCitePlaces(unittest.TestCase):
+    def places(self, *cites):
+        return words.cite_places(cites, RECORDS, OFFSETS)
+
+    def test_a_range_is_one_place_with_the_lines_that_follow_the_first(self):
+        (place,) = self.places((10, 14))
+        self.assertEqual(
+            (place.rows, place.stamp, place.speaker, place.quote, place.more),
+            ([0, 1], "00:10", "Them", "can you send the figures", 1),
+        )
+
+    def test_a_second_in_the_middle_of_a_line_finds_the_line(self):
+        (place,) = self.places((16, 16))
+        self.assertEqual((place.rows, place.stamp, place.more), ([1], "00:14", 0))
+
+    def test_places_are_listed_top_of_the_transcript_first(self):
+        found = self.places((75, 75), (10, 10), (20, 20))
+        self.assertEqual([p.rows for p in found], [[0], [2], [3]])
+
+    def test_cites_that_land_on_the_same_lines_are_one_place(self):
+        self.assertEqual(len(self.places((10, 14), (10, 14), (9, 15))), 1)
+
+    def test_a_cite_before_the_first_line_is_no_place(self):
+        self.assertEqual(self.places((3, 5)), [])
+        self.assertEqual(
+            words.cite_places([(5, 9)], [], []), []
+        )
+
+    def test_a_long_line_is_quoted_up_to_a_word(self):
+        (place,) = self.places((75, 75))
+        self.assertLessEqual(len(place.quote), words.QUOTE_CHARS + 1)
+        self.assertTrue(place.quote.endswith("word…"), place.quote)
 
 
 if __name__ == "__main__":
@@ -144,6 +253,15 @@ class TestSearchLocate(unittest.TestCase):
     def test_miss_returns_none(self):
         self.assertIsNone(self.session.locate("quantum"))
 
+    def test_a_citation_marker_is_not_a_word_to_search_for(self):
+        (self.dir / "summary.md").write_text(
+            "# Budget chat\n\n- We agreed. <!--cite 1-2-->\n"
+        )
+        session = type(self.session)(self.dir)
+        self.assertEqual(session.locate("agreed")["where"], "summary")
+        for query in ("cite", "<!--", "1-2"):
+            self.assertIsNone(session.locate(query))
+
     def test_matches_delegates_to_locate(self):
         self.assertTrue(self.session.matches("roadmap"))
         self.assertFalse(self.session.matches("quantum"))
@@ -169,3 +287,36 @@ class TestSummaryMissing(unittest.TestCase):
         text, offer = words.summary_missing(12, "Writing the summary…")
         self.assertEqual(text, "Writing the summary…")
         self.assertFalse(offer)
+
+
+class TestSummaryNote(unittest.TestCase):
+    """The line beside the Summary heading."""
+
+    def test_a_summary_that_cites_nothing_offers_to_do_it_again(self):
+        self.assertEqual(
+            words.summary_note(citations.Coverage(items=3, cited=0)),
+            'No citations. <a href="summarize" '
+            'title="Write this summary again">Summarize again</a> '
+            "to add them.",
+        )
+        self.assertEqual(words.SUMMARIZE_AGAIN, "summarize")
+
+    def test_a_summary_with_a_citation_has_nothing_to_say(self):
+        self.assertEqual(words.summary_note(citations.Coverage(3, 1)), "")
+
+    def test_one_with_nothing_to_cite_is_not_nagged_about(self):
+        self.assertEqual(words.summary_note(citations.Coverage(0, 0)), "")
+
+    def test_while_it_is_written_over_it_says_so_and_offers_nothing(self):
+        note = words.summary_note(
+            citations.Coverage(items=3, cited=0), "Writing the summary…"
+        )
+        self.assertEqual(note, "Writing the summary…")
+        self.assertEqual(
+            words.summary_note(citations.Coverage(3, 3), "Writing…"),
+            "Writing…",
+        )
+
+    def test_what_is_said_is_escaped_for_markup(self):
+        self.assertEqual(words.summary_note(citations.Coverage(), "a < b"),
+                         "a &lt; b")

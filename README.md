@@ -63,10 +63,12 @@ OpenAI-style chat-completions request to a model host, MiMo by default, with
 its key in `~/.config/mimo.env` (`MIMO_API_KEY`). `STENO_PROVIDER=openrouter`
 reads `~/.config/openrouter.env` instead; `STENO_MODEL`, `STENO_BASE_URL` and
 `STENO_API_KEY` override the model, endpoint and key (the template `steno init`
-writes lists them). Optionally write `~/.config/steno/brief.md` — a short,
-curated page about who you are and what you work on, used to resolve names and
-jargon that speech recognition mangles. `steno brief --new` drafts one with
-Claude Code.
+writes lists them). `STENO_NO_ASST=1` (any non-empty value, `0` included)
+stops Steno running `asst`, the task app your action items are filed in, so
+a scratch run cannot touch your real lists. Optionally write
+`~/.config/steno/brief.md` — a short, curated page about who you are and what
+you work on, used to resolve names and jargon that speech recognition mangles.
+`steno brief --new` drafts one with Claude Code.
 
 ## Use
 
@@ -82,6 +84,7 @@ steno pause 45m            stop detecting for a while; --off to resume
 steno quit                 stop the listener
 steno bar                  waybar JSON on stdout, one line per change
 steno summarize [NAME]     (re)summarize a session; --all to catch up
+steno summarize --uncited  redo the summaries that have no citations (lists, prices, --yes)
 steno export [NAME] [-o F] print or save a meeting as markdown
 steno realign [NAME]       re-time an old session against its audio (costs a pass)
 steno delete [NAME]        move a meeting to the trash
@@ -98,12 +101,51 @@ ask Claude about what's being said. A past meeting is one page — its summary,
 to-dos, your notes, a question box, and the full transcript, where **clicking
 any line plays that moment back**. A meeting that never got its summary says so
 and has a **Summarize now** button. The sidebar's "N to-dos open" lists what you
-still owe across every meeting; a row opens its meeting. The ⋯ menu acts on the meeting you are
-looking at: re-time it against its audio, drop the audio but keep the words,
-copy or save the meeting as markdown, or delete it. Right-clicking a meeting in
-the list (or `Menu` / `Shift+F10` on it) opens that meeting and shows the same
-menu. Deleting goes to your desktop trash, all of it together, recoverable from
-there.
+still owe across every meeting; a row opens its meeting. The ⋯ menu acts on
+the meeting you are looking at: summarize it again, re-time it against its
+audio, drop the audio but keep the words, copy or save the meeting as
+markdown, or delete it. Right-clicking a meeting in the list (or `Menu` /
+`Shift+F10` on it) opens that meeting and shows the same menu. Deleting goes
+to your desktop trash, all of it together, recoverable from there.
+
+A summary says where each point was said. The model ends every bullet with
+the transcript lines that support it; Steno checks those against the
+transcript and keeps them in `summary.md` as a hidden comment at the end of
+the line, `<!--cite 201-221,460-->`. The numbers are seconds into the meeting,
+the ones the transcript's time column shows, so `steno realign` does not
+strand them. GitHub and Obsidian show nothing; `steno export`, Copy meeting and
+Save meeting write it as `[03:21, 07:40]`, which matches the stamps in the
+transcript section. A bullet nothing supports gets none. A meeting summarized
+before this has none until it is summarized again: **Summarize again** in the
+⋯ menu (or in the menu of its row in the list), which asks first and says
+what it costs, about a cent; `steno summarize NAME --force` for one; or
+`steno summarize --uncited`, which lists every summary without citations and
+what redoing them costs, and does it when you add `--yes`. The old summary
+stays on the page, with a note by its heading, until the new one replaces it,
+and stays for good if the model fails. Summarizing again keeps what is yours:
+your notes, the meeting's project, and your ticks. The model is shown the
+meeting's action items as they stand and told to keep their wording where the
+transcript still supports them, so the same promise stays the same row. A
+to-do the new summary words differently anyway (say "Send usage figures to
+Alice by Friday" for "Send the usage figures by Friday") stays the same row,
+with its tick and its task in asst, when the two read alike and differ only
+in small words ("the", "to") or in a name, day or number one of them adds.
+Any other word swapped (the "final" draft for the "first", the team for the
+client) makes it a new one, so a new promise never arrives already ticked.
+
+In the window a point that has citations ends in a small underlined number,
+the count of places it was said. Click it (or press `Enter` on it) and the
+lines it came from are marked in the transcript, the page scrolls to the first
+of them unless it is already in view, and a bar above the player lists the
+places: when, who, the first words, and `+2 more lines` for a stretch. The
+arrows in the bar step from one place to the next, and a row plays the
+recording from there. With the audio gone, or while a meeting is being
+recorded, it scrolls and says why it does not play. The words of a to-do that
+cites work the same way (its box still ticks). `Esc`, the bar's close button,
+or clicking the point again puts the marks out; so does opening another
+meeting. Points with no number are plain text you can select, and a summary
+with no citations says so beside its heading, with a link to summarize it
+again.
 
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window
@@ -184,15 +226,16 @@ reconnect.
 ## Layout
 
 - **engine** — `detect.py` (who's holding the mic), `audio.py`, `transcribe.py`
-  (Deepgram, streaming and batch), `summarize.py`, `notes.py`, `retention.py`,
-  `playback.py`, `session.py` (the lifecycle that drives them). No GUI
+  (Deepgram, streaming and batch), `summarize.py`, `citations.py` (the
+  markers above), `notes.py`, `retention.py`, `playback.py`, `session.py`
+  (the lifecycle that drives them). No GUI
   dependency, so `make test` runs headless.
 - **`gui/`** — GTK4. `app.py` is the long-running listener and owns the engine;
   `window.py` is a view it can live without. `bridge.py` is the only place the
   engine's asyncio loop and GTK's main loop meet; everything crossing back goes
   through `GLib.idle_add`. `sidebar.py`, `meeting.py` and `live.py` are the three
-  surfaces; `words.py` is what they say, testable headlessly. `player.py` is
-  GStreamer, for playback.
+  surfaces; `summary.py` is the summary's rows and the bar of places; `words.py`
+  is what they say, testable headlessly. `player.py` is GStreamer, for playback.
 - **`events.py`** — what the engine says. The engine never touches a widget.
 - **`state.py` / `control.py`** — what the bar reads, and how a click reaches
   the running app (its own D-Bus actions; no socket, no pidfile).

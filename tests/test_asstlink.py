@@ -12,6 +12,7 @@ from unittest import mock
 
 from steno import asstlink, notes
 from steno.notes import save_todos, set_done, sync_todos
+from tests import real_available
 
 
 class TestSourceKey(unittest.TestCase):
@@ -230,6 +231,8 @@ class TestSuiteIsolation(unittest.TestCase):
         """
         if shutil.which("asst") is None:
             self.skipTest("asst is not installed")
+        if os.environ.get("STENO_NO_ASST"):
+            self.skipTest("scratch run: the asst on PATH may be a shim")
         proc = subprocess.run(
             ["asst", "--json", "lists"],
             capture_output=True, text=True, timeout=15, check=False,
@@ -245,6 +248,57 @@ class TestSuiteIsolation(unittest.TestCase):
         with mock.patch.object(asstlink.subprocess, "run") as run:
             sync_todos(Path(tempfile.mkdtemp()), summary)
         run.assert_not_called()
+
+
+class TestOffSwitch(unittest.TestCase):
+    """STENO_NO_ASST: an asst on PATH is still never run."""
+
+    def setUp(self):
+        # tests/__init__ replaced `available`; this test needs the real one.
+        for patcher in (
+            mock.patch.object(asstlink, "available", real_available),
+            mock.patch.object(asstlink.shutil, "which",
+                              return_value="/usr/bin/asst"),
+            mock.patch.dict(os.environ),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        os.environ.pop("STENO_NO_ASST", None)
+        self.session = Path(tempfile.mkdtemp())
+        (self.session / "meta.json").write_text("{}\n")
+
+    def test_any_non_empty_value_turns_it_off(self):
+        for value in ("1", "0", "false", "yes"):
+            os.environ["STENO_NO_ASST"] = value
+            self.assertFalse(asstlink.available(), value)
+
+    def test_unset_or_empty_leaves_asst_on_path_alone(self):
+        self.assertTrue(asstlink.available())
+        os.environ["STENO_NO_ASST"] = ""
+        self.assertTrue(asstlink.available())
+
+    def test_no_process_is_spawned(self):
+        os.environ["STENO_NO_ASST"] = "1"
+        with mock.patch.object(asstlink.subprocess, "run") as run, \
+             mock.patch.object(asstlink.subprocess, "Popen") as popen:
+            self.assertIsNone(asstlink._run(["lists"]))
+            self.assertEqual(asstlink.list_names(), [])
+            self.assertIsNone(asstlink.target_list(self.session, "thesis"))
+            self.assertIsNone(asstlink.add_todo(self.session, "Send", "send"))
+            self.assertFalse(asstlink.set_done("0F27", True))
+            self.assertIsNone(asstlink.completed("0F27"))
+            self.assertEqual(asstlink.move_todos(["0F27"], "thesis"), 0)
+            self.assertEqual(asstlink.rm_todos(["0F27"]), 0)
+            self.assertIsNone(asstlink.fetch_session(self.session))
+        run.assert_not_called()
+        popen.assert_not_called()
+
+    def test_unset_it_would_have_spawned(self):
+        """The control: the same call does run asst without the switch."""
+        with mock.patch.object(asstlink.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="[]", stderr="")
+            asstlink.list_names()
+        run.assert_called_once()
 
 
 class TestFileWithAsst(unittest.TestCase):

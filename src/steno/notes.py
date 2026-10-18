@@ -16,25 +16,61 @@ import json
 import re
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 
-from . import asstlink
+from . import asstlink, citations
 
 NOTES_FILENAME = "notes.md"
 TODOS_FILENAME = "todos.json"
 
-# `- [ ] text` / `**You**` headers, as the summary writes them.
-# Models vary: `- x`, `* x`, `1. x`, and an owner as `**You**`, `**You:**`,
-# `**You**:` or a `### You` heading. Dropping any of these loses a promise.
-_BULLET_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.+?)\s*$")
+# Models vary: a bullet as `- x`, `* x` or `1. x` (`citations.BULLET_RE`),
+# and an owner as `**You**`, `**You:**`, `**You**:` or a `### You` heading.
+# Dropping any of these loses a promise.
 _OWNER_RE = re.compile(
     r"^\s*(?:#{3,}\s+)?(?:\*\*)?(You|Them|Unassigned)\s*:?\s*(?:\*\*)?\s*:?\s*$",
     re.IGNORECASE,
 )
 _ACTION_HEADING_RE = re.compile(r"^\s*#+\s*action\s+items?\s*$", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s*#+\s+")
+# A bullet that says there are no action items ("No commitments were
+# made.") is a model padding a section it was told to leave out. It is
+# not a promise, and would come up as an open to-do nobody owes.
+_NONE_RE = re.compile(
+    r"(?:none|n/a|nothing\s+(?:was|were|is|came|specific|concrete)"
+    r"|no(?:\s+\w+){0,2}?\s+(?:commitments?|action\s+items?|tasks?"
+    r"|follow-?\s?ups?|next\s+steps?|deadlines?|promises?))\b",
+    re.IGNORECASE,
+)
+
+# A re-summarize can word one promise differently. An item that matches
+# no row by source or text is still taken for an old row of the same
+# owner when the two read this alike (difflib's ratio on the normalized
+# text) and say the same thing: apart from small words (`_FILLER`) and a
+# plural s they use the same words, or one adds only a name, day, month
+# or number to the other. A word swapped for another ("first" for
+# "final", "client" for "team") makes a different promise. Below all
+# that a pair stays two promises: a duplicate row is a nuisance, but a
+# new promise that comes up already ticked is a lost one.
+SAME_ITEM_RATIO = 0.8
+_WORD_RE = re.compile(r"[\w'\u2019-]+")
+_CALENDAR = frozenset((
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+))
+# Words a model adds, drops or trades when it rewords a promise, and
+# that do not change which promise it is. Not "by", "before", "from" or
+# "up": those do.
+_FILLER = frozenset((
+    "a", "an", "the", "to", "of", "for", "on", "in", "at", "with",
+    "about", "regarding", "please", "also", "will", "would", "shall",
+    "should", "can", "could", "must", "need", "needs",
+))
+# A word this long or longer loses a plural s ("was" and "bus" keep it).
+_PLURAL_FROM = 4
 
 
 @dataclass
@@ -54,6 +90,9 @@ class Todo:
     # A checkbox that did not reach asst (daemon down). Kept until it lands,
     # so a later pull cannot un-tick what the user just ticked.
     dirty: bool = False
+    # Where in the meeting this was said, as seconds on the transcript's
+    # timeline. Comes from the summary's markers, never from the text.
+    cites: list[citations.Cite] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -96,12 +135,15 @@ def parse_action_items(summary_body: str) -> list[Todo]:
     """Pull the Action items section out of a summary into todos.
 
     Owner comes from the `**You**` / `**Them**` sub-headers the summary prompt
-    asks for; bullets before any owner header are unassigned.
+    asks for; bullets before any owner header are unassigned. A citation
+    marker is not part of the wording: it becomes `cites`, so the text, and
+    the key and asst source made from it, are the same with or without one.
     """
     todos: list[Todo] = []
     in_section = False
     owner = "unassigned"
-    for line in summary_body.splitlines():
+    for raw in summary_body.splitlines():
+        line = citations.strip(raw)
         if _ACTION_HEADING_RE.match(line):
             in_section = True
             owner = "unassigned"
@@ -114,11 +156,13 @@ def parse_action_items(summary_body: str) -> list[Todo]:
             continue
         if _HEADING_RE.match(line):
             break  # the next section ends the list
-        m = _BULLET_RE.match(line)
+        m = citations.BULLET_RE.match(line)
         if m:
             text = m.group(1).strip()
-            if text:
-                todos.append(Todo(text=text, owner=owner))
+            if text and not _NONE_RE.match(text):
+                todos.append(
+                    Todo(text=text, owner=owner, cites=citations.parse(raw))
+                )
     return todos
 
 
@@ -137,6 +181,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             src=str(row.get("src", "") or ""),
             list_name=str(row.get("list_name", "") or ""),
             dirty=bool(row.get("dirty", False)),
+            cites=citations.coerce(row.get("cites")),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
     ]
@@ -175,15 +220,109 @@ def _with_src(session_dir: Path, todo: Todo) -> None:
         todo.src = asstlink.source_key(session_dir, todo.key)
 
 
+def _singular(word: str) -> str:
+    """Plural s off a lower-case word: "figures" is "figure"."""
+    if (
+        len(word) >= _PLURAL_FROM
+        and word.endswith("s")
+        and not word.endswith("ss")
+    ):
+        return word[:-1]
+    return word
+
+
+def _words(text: str) -> tuple[set[str], set[str]]:
+    """The words of an item that make it the promise it is, and which of
+    them are facts.
+
+    Facts tell two promises apart that otherwise read the same: numbers,
+    days and months, and names (a capitalized word that does not open the
+    line). Small words are left out and a plural s is folded, so "Send
+    the usage figures" and "Send usage figure" come out alike.
+    """
+    words: set[str] = set()
+    facts: set[str] = set()
+    for i, raw in enumerate(_WORD_RE.findall(text)):
+        low = raw.lower()
+        if low in _FILLER:
+            continue
+        word = _singular(low)
+        words.add(word)
+        if (
+            any(c.isdigit() for c in raw)
+            or low in _CALENDAR
+            or (i > 0 and len(raw) > 1 and raw[0].isupper())
+        ):
+            facts.add(word)
+    return words, facts
+
+
+def _likeness(a: Todo, b: Todo) -> float:
+    """How alike two action items read, 0.0 when they cannot be one."""
+    if a.owner != b.owner:
+        return 0.0
+    words_a, facts_a = _words(a.text)
+    words_b, facts_b = _words(b.text)
+    only_a, only_b = words_a - words_b, words_b - words_a
+    if not (words_a and words_b) or (only_a and only_b):
+        return 0.0  # nothing to compare, or a word was swapped for another
+    if not (only_a | only_b) <= (facts_a | facts_b):
+        return 0.0  # one adds more than a name, day or number
+    return SequenceMatcher(None, a.key, b.key).ratio()
+
+
+def _reworded_pairs(
+    fresh: Sequence[Todo], prior: Sequence[Todo]
+) -> list[tuple[Todo, Todo]]:
+    """Pair each new item with the old row it rewords, best match first.
+
+    One old row goes to one new item at most: of two look-alikes, the
+    closer one inherits and the other is new.
+    """
+    scored = sorted(
+        (
+            (-_likeness(f, p), i, j)
+            for i, f in enumerate(fresh) for j, p in enumerate(prior)
+        )
+    )
+    pairs: list[tuple[Todo, Todo]] = []
+    used_fresh: set[int] = set()
+    used_prior: set[int] = set()
+    for negative, i, j in scored:
+        if -negative < SAME_ITEM_RATIO:
+            break
+        if i in used_fresh or j in used_prior:
+            continue
+        used_fresh.add(i)
+        used_prior.add(j)
+        pairs.append((fresh[i], prior[j]))
+    return pairs
+
+
+def _carry_state(fresh: Todo, prior: Todo) -> None:
+    """Hand the user's side of a row to the item that replaces it."""
+    fresh.done = prior.done
+    fresh.done_at = prior.done_at
+    fresh.uid = prior.uid
+    fresh.src = prior.src
+    # A tick that has not reached asst yet must stay marked, or the
+    # next pull sees the task open there and undoes it.
+    fresh.dirty = prior.dirty
+    fresh.list_name = prior.list_name
+
+
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
     """Reconcile the summary's action items with what's already on disk.
 
-    Checked-off state is preserved by source, then by text. Items the user has
-    completed are kept even if a re-summarize drops them — deleting the record
-    of finished work would be the one unrecoverable thing this file could do.
-    An open item already on the phone is kept too: the model must not orphan a
-    task asst is holding. A rephrase becomes a second row (new source) rather
-    than a silent rewrite of the phone task.
+    Checked-off state is preserved by source, then by text, then by likeness:
+    an item the summary now words differently (`SAME_ITEM_RATIO`, and no
+    word swapped for another) is the same row, with the new wording and
+    the old state, uid and source, so the task asst holds is neither
+    duplicated nor orphaned. Items the user has completed are kept even if
+    a re-summarize drops them — deleting the record of finished work would
+    be the one unrecoverable thing this file could do. An open item already
+    on the phone is kept too: the model must not orphan a task asst is
+    holding. An item that matches nothing becomes a new row (new source).
 
     `file=False` only writes the local list: listing meetings must not push
     anything into a task app.
@@ -192,26 +331,30 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
         existing = load_todos(session_dir)
         by_src = {t.src: t for t in existing if t.src}
         by_key = {t.key: t for t in existing}
-        merged: list[Todo] = []
-        seen: set[int] = set()
-        for fresh in parse_action_items(summary_body):
+        fresh_items = parse_action_items(summary_body)
+        matched: list[tuple[Todo, Todo]] = []
+        loose: list[Todo] = []
+        taken: set[int] = set()
+        for fresh in fresh_items:
             _with_src(session_dir, fresh)
             prior = by_src.get(fresh.src) or by_key.get(fresh.key)
-            if prior is not None and id(prior) not in seen:
-                fresh.done = prior.done
-                fresh.done_at = prior.done_at
-                fresh.uid = prior.uid
-                fresh.src = prior.src
-                # A tick that has not reached asst yet must stay marked, or the
-                # next pull sees the task open there and undoes it.
-                fresh.dirty = prior.dirty
-                fresh.list_name = prior.list_name
-                seen.add(id(prior))
-            merged.append(fresh)
-        merged.extend(
-            t for t in existing
-            if id(t) not in seen and (t.done or t.uid or t.owner == "you")
+            if prior is not None and id(prior) not in taken:
+                matched.append((fresh, prior))
+                taken.add(id(prior))
+            else:
+                loose.append(fresh)
+        # Only after every exact match is settled, so a look-alike cannot
+        # take the row an item of the same wording is owed.
+        matched += _reworded_pairs(
+            loose, [t for t in existing if id(t) not in taken]
         )
+        for fresh, prior in matched:
+            _carry_state(fresh, prior)
+            taken.add(id(prior))
+        merged = fresh_items + [
+            t for t in existing
+            if id(t) not in taken and (t.done or t.uid or t.owner == "you")
+        ]
         save_todos(session_dir, merged)
     return file_with_asst(session_dir, merged) if file else merged
 

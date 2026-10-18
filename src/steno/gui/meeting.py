@@ -20,7 +20,8 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from .. import asstlink
+from .. import asstlink, citations
+from ..cost import SUMMARY_GUESS, format_usd, prerecorded_cost
 from ..export import default_filename, meeting_markdown
 from ..notes import (
     Todo,
@@ -44,6 +45,7 @@ from ..realign import plan
 from ..retention import audio_bytes, delete_audio, delete_session, human_bytes
 from ..summarize import (
     list_projects,
+    load_meta,
     load_records,
     projects_root,
     save_project,
@@ -51,6 +53,7 @@ from ..summarize import (
 from . import words
 from .player import Player
 from .sidebar import Session
+from .summary import CiteBar, CitedBox, CiteSource, SummaryView, make_citable
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
 
 NUDGE_S = 10.0
@@ -109,9 +112,25 @@ class MeetingPage(Gtk.Box):
         self._asst_bus = None
         self.current: Session | None = None
         self._records: list[dict] = []
+        # How much of the summary on the page cites, for the note by its
+        # heading.
+        self._seen = citations.Coverage()
         self._offsets: list[float] = []
+        # Each record's second on the gutter's clock, which is the clock a
+        # cite is written in; `_offsets` is where its audio starts.
+        self._display: list[int] = []
         self._rows: list[Gtk.ListBoxRow] = []
         self._playing_index = -1
+        # What was last asked where it was said, and the lines that answer.
+        self._active: CiteSource | None = None
+        self._cited: list[int] = []
+        self._places: list[words.Place] = []
+        self._place = -1  # the one in `_places` the page was last taken to
+        # When an item last took the page to its lines (GLib monotonic µs).
+        self._jumped_at = 0
+        # The to-dos on the page that cite, to find the lit one again when
+        # the list is rebuilt.
+        self._todo_sources: list[CiteSource] = []
         self._started_at = 0.0
         self.player = Player(on_tick=self._on_tick)
 
@@ -123,13 +142,25 @@ class MeetingPage(Gtk.Box):
             self.layouts.set_child(name, widget)
         self.layouts.set_layout_name("wide")
         self.append(self.layouts)
+        self.cite_bar = CiteBar(
+            on_step=self._step_place,
+            on_pick=self._pick_place,
+            on_close=self._clear_cites,
+        )
+        self.append(self.cite_bar)
         self.append(self._build_player())
+
+        # Esc puts the transcript back as it was, from wherever in the page.
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_page_key)
+        self.add_controller(keys)
 
         self.actions = Gio.SimpleActionGroup()
         for name, handler in (
             ("copy", self._copy_meeting),
             ("save", self._save_meeting),
             ("project", self._set_project),
+            ("summarize", self._confirm_summarize),
             ("realign", self._confirm_realign),
             ("delete-audio", self._confirm_delete_audio),
             ("delete", self._confirm_delete),
@@ -209,11 +240,23 @@ class MeetingPage(Gtk.Box):
     def _build_slots(self) -> list[Gtk.Widget]:
         self.summary_label = wrapping_label()
         self.summary_label.add_css_class("summary")
+        self.summary_view = SummaryView(self._toggle_cites)
+        # Quiet, beside the heading: a summary from before citations has
+        # nothing wrong, and is not nagged about. While one is being
+        # written over it says so instead, since the old text stays up.
+        self.summary_hint = hint_label()
+        self.summary_hint.set_visible(False)
+        self.summary_hint.connect("activate-link", self._on_hint_link)
         self.summarize_button = Gtk.Button(label="Summarize now")
         self.summarize_button.set_halign(Gtk.Align.START)
         self.summarize_button.set_visible(False)
-        self.summarize_button.connect("clicked", lambda _b: self._summarize())
-        summary = section("Summary", self.summary_label, self.summarize_button)
+        self.summarize_button.connect(
+            "clicked", lambda _b: self._summarize_now()
+        )
+        summary = section(
+            "Summary", self.summary_view, self.summary_label,
+            self.summarize_button, beside=self.summary_hint,
+        )
 
         self.todo_count = Gtk.Label(label="")
         self.todo_count.add_css_class("count")
@@ -345,17 +388,60 @@ class MeetingPage(Gtk.Box):
         With no summary the slot says why and, when it can be fixed from here,
         offers to: a failed summary must not be a note to go and use a terminal.
         """
+        # Whatever was lit belongs to the summary being replaced.
+        self._clear_cites()
         if s.summary_path.is_file():
-            body = words.summary_body(s.summary_path.read_text(), has_todos=bool(todos))
-            self.summary_label.set_markup(words.markup(body))
+            md = s.summary_path.read_text()
+            self.summary_view.show(words.summary_blocks(md, has_todos=bool(todos)))
+            self._seen = citations.coverage(md)
+            self._show_note(s)
+            self.summary_view.set_visible(True)
+            self.summary_label.set_visible(False)
             self.summarize_button.set_visible(False)
         else:
             text, offer = words.summary_missing(
                 len(self._records), self._working.get(s.dir, "")
             )
+            self.summary_view.clear()
+            self.summary_view.set_visible(False)
+            self._seen = citations.Coverage()
+            self._show_note(s)
             self.summary_label.set_markup(f"<i>{words.escape(text)}</i>")
+            self.summary_label.set_visible(True)
             self.summarize_button.set_visible(offer and self._on_summarize is not None)
         self._load_todos(s, todos)
+        self._update_actions()
+
+    def _show_note(self, s: Session) -> None:
+        """The line by the Summary heading, for the summary on the page.
+
+        A meeting with no summary says what is happening in the slot
+        below instead, so the heading has nothing to add.
+        """
+        has_summary = s.summary_path.is_file()
+        note = words.summary_note(
+            self._seen, self._working.get(s.dir, "") if has_summary else ""
+        )
+        self.summary_hint.set_markup(note)
+        self.summary_hint.set_visible(bool(note))
+
+    def _can_summarize(self) -> bool:
+        """Not while it is being written (a second ask would only be
+        told it is already running), and not with nothing to write it
+        from."""
+        s = self.current
+        return (
+            s is not None
+            and self._on_summarize is not None
+            and bool(self._records)
+            and s.dir not in self._working
+        )
+
+    def _update_actions(self) -> None:
+        """Switch off what the open meeting cannot do right now."""
+        self.actions.lookup_action("summarize").set_enabled(
+            self._can_summarize()
+        )
 
     def show_summary(self, s: Session) -> None:
         """A summary arrived for the open meeting.
@@ -378,7 +464,12 @@ class MeetingPage(Gtk.Box):
         if s is None or (session_dir is not None and s.dir != session_dir):
             return
         if load_records(s.dir) != self._records:
+            # New rows have none of the lines lit; light them again.
+            active = self._active
             self._load_transcript(s)
+            self._update_actions()
+            if active is not None:
+                self._show_cites(active, scroll=False)
 
     def mark_working(self, session_dir: Path, text: str) -> None:
         """Say what is being done to a meeting, or (empty text) that it is done."""
@@ -387,7 +478,14 @@ class MeetingPage(Gtk.Box):
         else:
             self._working.pop(session_dir, None)
         current = self.current
-        if current is not None and current.dir == session_dir:
+        if current is None or current.dir != session_dir:
+            return
+        if current.summary_path.is_file():
+            # The summary being written over stays up, and whatever is
+            # lit in it: the note by its heading is all that changes.
+            self._show_note(current)
+            self._update_actions()
+        else:
             self._show_summary(current, ensure_todos(session_dir))
 
     def clear_working(self, session_dir: Path | None = None) -> None:
@@ -399,12 +497,59 @@ class MeetingPage(Gtk.Box):
         for pending in [session_dir] if session_dir is not None else list(self._working):
             self.mark_working(pending, "")
 
-    def _summarize(self) -> None:
-        s = self.current
-        if s is None or self._on_summarize is None:
+    def _summarize_now(self) -> None:
+        """The button of a meeting that has no summary."""
+        if self.current is not None:
+            self._summarize(self.current)
+
+    def _summarize(self, s: Session) -> None:
+        if self._on_summarize is None:
             return
         self.mark_working(s.dir, "Writing the summary…")
         self._on_summarize(s.dir)
+
+    def _on_hint_link(self, _label: Gtk.Label, href: str) -> bool:
+        if href != words.SUMMARIZE_AGAIN:
+            return False
+        # Through the action, so that it is as switched off as the menu
+        # is.
+        self.actions.activate_action("summarize", None)
+        return True
+
+    def _summary_cost(self, s: Session) -> float:
+        """What writing the summary will cost, in dollars: the model,
+        and your side's transcription too when the engine has to do
+        that first (a meeting quit before its mic was transcribed)."""
+        cost = SUMMARY_GUESS
+        pending = load_meta(s.dir).get("mic_pending")
+        if pending and (s.dir / "you.wav").is_file():
+            cost += prerecorded_cost(s.minutes)
+        return cost
+
+    def _confirm_summarize(self) -> None:
+        s = self.current
+        if s is None or not self._can_summarize():
+            return
+        again = s.summary_path.is_file()
+        body = (
+            "The model reads the transcript and writes the summary and the "
+            "to-do list"
+            + (" again" if again else "")
+            + ", with a citation on each point it can support. It costs about "
+            f"{format_usd(self._summary_cost(s))}."
+        )
+        if again:
+            body += (
+                "\n\nThe new summary replaces this one. Your notes, the "
+                "project and the to-dos you ticked are kept."
+            )
+        self._dialog(
+            "Summarize this meeting again?" if again else "Write the summary?",
+            body,
+            "Summarize",
+            lambda: self._summarize(s),
+            destructive=False,
+        )
 
     def stop_pull(self) -> None:
         """Leave the meeting page: stop asking asst about this one."""
@@ -487,6 +632,7 @@ class MeetingPage(Gtk.Box):
     def _load_todos(self, s: Session, todos: list[Todo]) -> None:
         while (child := self.todo_box.get_first_child()) is not None:
             self.todo_box.remove(child)
+        self._todo_sources = []
         yours = [t for t in todos if t.owner != "them"]
         theirs = [t for t in todos if t.owner == "them"]
         self.todo_count.set_text(words.todo_count(sum(not t.done for t in yours)))
@@ -495,6 +641,7 @@ class MeetingPage(Gtk.Box):
                 "Nothing to do out of this one." if s.summary_path.is_file()
                 else "To-dos come with the summary."
             ))
+            self._keep_todo_cite()
             return
         # Two groups, not one list with a tiny owner tag. Your work is the
         # to-do; what they owe is a reminder, so it sits under its own head.
@@ -506,6 +653,20 @@ class MeetingPage(Gtk.Box):
             self.todo_box.append(self._group_label("They owe"))
             for todo in theirs:
                 self.todo_box.append(self._todo_row(s, todo))
+        self._keep_todo_cite()
+
+    def _keep_todo_cite(self) -> None:
+        """The to-do list was rebuilt (asst answered, a project moved the
+        tasks): a to-do that was lit is still the one lit."""
+        active = self._active
+        if active is None or active.ref[0] != "todo":
+            return
+        for source in self._todo_sources:
+            if source.ref == active.ref:
+                source.mark.add_css_class("item-active")
+                self._active = source
+                return
+        self._clear_cites()
 
     def _group_label(self, text: str) -> Gtk.Widget:
         label = Gtk.Label(label=text, xalign=0.0)
@@ -526,10 +687,31 @@ class MeetingPage(Gtk.Box):
         label.set_hexpand(True)
         if todo.done:
             label.add_css_class("todo-done")
-        # Clicking the words ticks the box, as it would in any checklist.
-        check.set_child(label)
-
-        row.append(check)
+        if todo.cites:
+            # Clicking these words shows where they were said, so they stand
+            # beside the box, which still ticks.
+            check.set_hexpand(False)
+            label.set_valign(Gtk.Align.START)
+            # Where the box's own label would sit, in its padding, so the
+            # words stay in line with those of a to-do that cites nothing.
+            label.set_margin_top(3)
+            words_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
+            words_row.set_hexpand(True)
+            words_row.append(check)
+            clickable = CitedBox(orientation=Gtk.Orientation.HORIZONTAL)
+            clickable.set_hexpand(True)
+            clickable.append(label)
+            words_row.append(clickable)
+            row.append(words_row)
+            source = CiteSource(
+                row, todo.cites, words.escape(todo.text), ("todo", todo.key)
+            )
+            make_citable(clickable, source, self._toggle_cites)
+            self._todo_sources.append(source)
+        else:
+            # Clicking the words ticks the box, as it would in any checklist.
+            check.set_child(label)
+            row.append(check)
         # asst list, right-aligned. The group header already says whose it is.
         if todo.list_name:
             where = Gtk.Label(label=todo.list_name, xalign=1.0)
@@ -563,11 +745,15 @@ class MeetingPage(Gtk.Box):
     def _load_transcript(self, s: Session) -> None:
         while (row := self.transcript_list.get_first_child()) is not None:
             self.transcript_list.remove(row)
+        self._clear_cites()
         self._records = load_records(s.dir)
         # Repairs and caches `started_at` for sessions recorded before the tool
         # wrote one, so the gutter and playback agree from the first click.
         self._started_at = repair_started_at(s.dir, self._records)
         self._offsets = [seek_offset(r, self._started_at) for r in self._records]
+        self._display = [
+            display_offset(r, self._started_at) for r in self._records
+        ]
         self._rows = []
         self._playing_index = -1
 
@@ -640,6 +826,13 @@ class MeetingPage(Gtk.Box):
         self._highlight(index)
 
     def _on_line_activated(self, _list, row) -> None:
+        # The second click of a double click on an item lands where the
+        # first one took the page: on a transcript line, which would start
+        # playing. A click that soon after is not meant for the line.
+        settings = Gtk.Settings.get_default()
+        window_ms = settings.props.gtk_double_click_time if settings else 400
+        if GLib.get_monotonic_time() - self._jumped_at < window_ms * 1000:
+            return
         self._play_line(row.get_index())
 
     def _on_scrub(self, _scale, _scroll, value: float) -> bool:
@@ -704,6 +897,75 @@ class MeetingPage(Gtk.Box):
         if frame is not None:
             scroller, y, _height = frame
             scroller.get_vadjustment().set_value(max(0.0, y - 80))
+
+    # ------------------------------------------------------------ where it was said
+
+    def _toggle_cites(self, source: CiteSource) -> None:
+        """An item was chosen: light the lines it came from, or, if it was
+        the one already lit, put them out."""
+        if source is self._active:
+            self._clear_cites()
+        else:
+            self._show_cites(source, scroll=True)
+            self._jumped_at = GLib.get_monotonic_time()
+
+    def _show_cites(self, source: CiteSource, scroll: bool) -> None:
+        self._clear_cites()
+        places = words.cite_places(source.cites, self._records, self._display)
+        if not places:
+            self._toast("Those lines are not in this transcript")
+            return
+        self._active = source
+        source.mark.add_css_class("item-active")
+        self._cited = sorted({i for place in places for i in place.rows})
+        for i in self._cited:
+            self._rows[i].add_css_class("line-cited")
+        self._places = places
+        self.cite_bar.show_places(
+            source.markup, places, playable=self.player_bar.get_visible()
+        )
+        self._place = 0
+        self.cite_bar.set_current(0)
+        if scroll:
+            self._bring_into_view(self._rows[self._cited[0]])
+
+    def _go_to_place(self, index: int) -> None:
+        self._place = index
+        self.cite_bar.set_current(index)
+        row = self._rows[self._places[index].rows[0]]
+        # Now if the line has a place, else as a search jump asks.
+        give_up = GLib.get_monotonic_time() + JUMP_GIVE_UP_US
+        if self._scroll_to_row(row, give_up):
+            GLib.timeout_add(JUMP_POLL_MS, self._scroll_to_row, row, give_up)
+
+    def _step_place(self, delta: int) -> None:
+        if 0 <= self._place + delta < len(self._places):
+            self._go_to_place(self._place + delta)
+
+    def _pick_place(self, index: int) -> None:
+        """A place was chosen in the bar: take the transcript there and play
+        from it. With no audio, or while recording, `_play_at` says why it
+        did not, and the transcript has moved all the same."""
+        self._go_to_place(index)
+        self._play_line(self._places[index].rows[0])
+
+    def _clear_cites(self) -> None:
+        if self._active is not None:
+            self._active.mark.remove_css_class("item-active")
+        for i in self._cited:
+            if i < len(self._rows):
+                self._rows[i].remove_css_class("line-cited")
+        self._active = None
+        self._cited = []
+        self._places = []
+        self._place = -1
+        self.cite_bar.hide()
+
+    def _on_page_key(self, _keys, key: int, _code: int, _state) -> bool:
+        if key != Gdk.KEY_Escape or self._active is None:
+            return False
+        self._clear_cites()
+        return True
 
     def stop_playback(self) -> None:
         """Let go of the audio device — on window close, and between meetings."""
