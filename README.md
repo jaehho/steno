@@ -360,7 +360,9 @@ projects in `~/projects` (`STENO_PROJECTS_DIR`), the summary may read that
 directory, read-only, to get names and files right; so whatever it reads is
 sent too. It can read nothing outside that directory, and nothing in a
 project's `notes/meetings`, where Steno keeps its copies of earlier
-meetings. Nothing is uploaded or shared on the tool's own initiative.
+meetings (the folder it leads to, if `notes` or `meetings` is a link to
+another folder in the project). Nothing is uploaded or shared on the tool's
+own initiative.
 
 Project notes (above) add local files and nothing else: no upload, no
 network, no model call, no git. What they change is where the transcript

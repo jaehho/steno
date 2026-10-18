@@ -296,12 +296,25 @@ _WITHHELD = ("notes", "meetings")
 
 
 def _withheld(top: Path, path: Path) -> bool:
-    """True for a resolved `path` in a project's published meetings."""
+    """True for a resolved `path` in a project's published meetings.
+
+    Those are where `notes/meetings` leads, not only where it is named:
+    steno follows a link to a directory inside the project (`notes ->
+    docs`) and writes there, so the pages are at `docs/meetings`.
+    """
     try:
         parts = path.relative_to(top).parts
     except ValueError:
         return False  # outside the root, which `_resolve` refuses
-    return parts[1:3] == _WITHHELD
+    if parts[1:3] == _WITHHELD:
+        return True
+    if not parts:
+        return False
+    try:
+        folder = top.joinpath(parts[0], *_WITHHELD).resolve()
+    except (OSError, RuntimeError):
+        return True  # a folder that cannot be told from here is not shown
+    return path.is_relative_to(folder)
 
 _TOOLS = (
     {"name": "list_dir", "description": "List a directory.",

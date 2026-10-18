@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
-from steno import projectnotes
+from steno import claude, projectnotes
 from steno.projectnotes import SWITCH_ENV
 
 ROWS = [
@@ -631,6 +631,58 @@ class TestOnlyInsideTheProject(Base):
         self.assertEqual(listing(outside / "meetings"), [SUMMARY_NAME])
         self.assertEqual(result.altered, [])
         self.assertEqual(len(result.skipped), 1)
+
+
+class TestTheSummaryModelDoesNotSeeThem(Base):
+    """The pages are other people's speech as heard, so the file tools of
+    a summary skip the folder wherever steno put it: a link to a
+    directory inside the project is followed, and the pages are there."""
+
+    def tool(self, name: str, **args: str) -> str:
+        call = {"id": "1", "function": {
+            "name": name, "arguments": json.dumps(args)}}
+        return claude._tool_result(self.projects, call)["content"]
+
+    def check(self) -> None:
+        project = self.projects / "demo"
+        (project / "ideas.md").write_text("morning plans, public\n")
+        self.publish(self.session())
+        pages = list(project.rglob(TRANSCRIPT_NAME))
+        self.assertEqual(len(pages), 1)
+        real = pages[0].resolve().relative_to(self.projects.resolve())
+        named = Path("demo", "notes", "meetings", TRANSCRIPT_NAME)
+        for page in (real, named):
+            self.assertTrue(
+                self.tool("read_file", path=str(page)).startswith("error:"),
+                page,
+            )
+        for folder in (real.parent, named.parent):
+            self.assertTrue(
+                self.tool("list_dir", path=str(folder)).startswith("error:"),
+                folder,
+            )
+        # Neither a listing of the directory it is in, nor a search.
+        beside = self.tool("list_dir", path=str(real.parent.parent))
+        self.assertNotIn(f"{real.parent.name}/", beside.splitlines())
+        found = self.tool("grep", pattern="morning", path="demo")
+        self.assertIn("ideas.md", found)  # the tools still work
+        self.assertNotIn("transcript", found)
+
+    def test_the_plain_folder(self):
+        self.check()
+
+    def test_a_notes_link_to_a_directory_in_the_project(self):
+        (self.projects / "demo" / "docs").mkdir()
+        (self.projects / "demo" / "notes").symlink_to("docs")
+        self.check()
+
+    def test_a_meetings_link_to_a_directory_in_the_project(self):
+        (self.projects / "demo" / "notes").mkdir()
+        (self.projects / "demo" / "minutes").mkdir()
+        (self.projects / "demo" / "notes" / "meetings").symlink_to(
+            "../minutes"
+        )
+        self.check()
 
 
 class TestGitignore(Base):
