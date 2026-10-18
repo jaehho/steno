@@ -18,7 +18,7 @@ gi.require_version("Gtk", "4.0")
 
 import contextlib
 
-from gi.repository import Gtk, Pango
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from ..cost import format_meter, prerecorded_cost, stream_cost
 from ..notes import ensure_todos, open_count
@@ -32,6 +32,7 @@ from ..summarize import (
     session_stamp,
 )
 from . import words
+from .menu import meeting_menu_model
 from .widgets import hint_label
 
 LIVE = "live"
@@ -133,6 +134,16 @@ def _session_cost(path: Path, minutes: float) -> float:
 Item = Session | str
 
 
+def row_menu(item: Item | None) -> Gio.Menu | None:
+    """The menu a row offers, or None when it offers none.
+
+    A past meeting gets what the page header's menu has. The meeting in
+    progress gets nothing: it is stopped from the status card, and nothing
+    in that menu should be done to a recording that is still being written.
+    """
+    return meeting_menu_model() if isinstance(item, Session) else None
+
+
 class Sidebar(Gtk.Box):
     def __init__(
         self,
@@ -152,6 +163,7 @@ class Sidebar(Gtk.Box):
         self.live_app = ""
         self.selected: Item | None = None
         self._status = "idle"
+        self._menu: Gtk.PopoverMenu | None = None
 
         self.append(self._build_status())
 
@@ -169,6 +181,13 @@ class Sidebar(Gtk.Box):
         self.list.set_header_func(self._header)
         self.list.connect("row-selected", self._on_row_selected)
         self.list.connect("row-activated", lambda *_a: on_activate())
+        keys = Gtk.ShortcutController()
+        for key in ("Menu", "<Shift>F10"):
+            keys.add_shortcut(Gtk.Shortcut.new(
+                Gtk.ShortcutTrigger.parse_string(key),
+                Gtk.CallbackAction.new(self._on_menu_key),
+            ))
+        self.list.add_controller(keys)
         self.placeholder = Gtk.Label(label="", justify=Gtk.Justification.CENTER)
         self.placeholder.add_css_class("empty-hint")
         self.placeholder.set_wrap(True)
@@ -362,6 +381,8 @@ class Sidebar(Gtk.Box):
         return LIVE if self.selected == LIVE else self._selected_dir()
 
     def _repopulate(self, keep: Path | str | None) -> None:
+        # The menu is parented to a row that is about to go.
+        self._drop_menu()
         while (row := self.list.get_first_child()) is not None:
             self.list.remove(row)
 
@@ -372,9 +393,12 @@ class Sidebar(Gtk.Box):
         self.items = ([LIVE] if self.live_dir is not None else []) + shown
         now = datetime.now()
         for item in self.items:
-            self.list.append(
-                self._session_row(item, now) if isinstance(item, Session) else self._live_row()
-            )
+            if isinstance(item, Session):
+                row = self._session_row(item, now)
+                self._add_menu_triggers(row)
+            else:
+                row = self._live_row()
+            self.list.append(row)
 
         self.placeholder.set_text(
             "No meeting matches that." if self.query
@@ -517,6 +541,70 @@ class Sidebar(Gtk.Box):
         # and reloading on it would stop playback every time a file changed.
         if not same:
             self._on_select(item)
+
+    # -------------------------------------------------------------------- menu
+
+    def _add_menu_triggers(self, row: Gtk.ListBoxRow) -> None:
+        """Right-click, or a long press on a touchscreen, asks for the menu."""
+        click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
+        click.connect("pressed", lambda g, _n, x, y: self._on_row_menu(g, x, y))
+        row.add_controller(click)
+        hold = Gtk.GestureLongPress(touch_only=True)
+        hold.connect("pressed", self._on_row_menu)
+        row.add_controller(hold)
+
+    def _on_row_menu(self, gesture, x: float, y: float) -> None:
+        # Claimed, so the list cannot also take a touch long press for a
+        # click and open the meeting's page over the menu.
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        row = gesture.get_widget()
+        if isinstance(row, Gtk.ListBoxRow):
+            self.popup_menu(row, x, y)
+
+    def _on_menu_key(self, *_args) -> bool:
+        """Menu or Shift+F10 on the row with the keyboard focus."""
+        row = self.list.get_focus_child() or self.list.get_selected_row()
+        return isinstance(row, Gtk.ListBoxRow) and self.popup_menu(row)
+
+    def popup_menu(
+        self, row: Gtk.ListBoxRow, x: float | None = None, y: float = 0
+    ) -> bool:
+        """Open a row's menu at the pointer, or under the row without one.
+
+        The menu's actions work on the meeting that is open, so the row is
+        opened first: never the meeting that happened to be open before.
+        """
+        index = row.get_index()
+        item = self.items[index] if 0 <= index < len(self.items) else None
+        menu = row_menu(item)
+        if menu is None:
+            return False
+        self.list.select_row(row)
+        self._drop_menu()
+        popover = Gtk.PopoverMenu.new_from_model(menu)
+        popover.set_parent(row)
+        popover.set_has_arrow(False)
+        popover.set_halign(Gtk.Align.START)
+        if x is not None:
+            area = Gdk.Rectangle()
+            area.x, area.y, area.width, area.height = int(x), int(y), 1, 1
+            popover.set_pointing_to(area)
+        popover.connect("closed", self._on_menu_closed)
+        self._menu = popover
+        popover.popup()
+        return True
+
+    def _on_menu_closed(self, popover: Gtk.PopoverMenu) -> None:
+        # Not here: the click that closed it is still delivering its action.
+        GLib.idle_add(self._drop_menu, popover)
+
+    def _drop_menu(self, popover: Gtk.PopoverMenu | None = None) -> bool:
+        popover = popover or self._menu
+        if popover is self._menu:
+            self._menu = None
+        if popover is not None and popover.get_parent() is not None:
+            popover.unparent()
+        return GLib.SOURCE_REMOVE
 
     def select(self, key: Path | str | None) -> None:
         self._repopulate(key)

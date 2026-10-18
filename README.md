@@ -100,8 +100,10 @@ any line plays that moment back**. A meeting that never got its summary says so
 and has a **Summarize now** button. The sidebar's "N to-dos open" lists what you
 still owe across every meeting; a row opens its meeting. The ⋯ menu acts on the meeting you are
 looking at: re-time it against its audio, drop the audio but keep the words,
-copy or save the meeting as markdown, or delete it. Deleting goes to your
-desktop trash, all of it together, recoverable from there.
+copy or save the meeting as markdown, or delete it. Right-clicking a meeting in
+the list (or `Menu` / `Shift+F10` on it) opens that meeting and shows the same
+menu. Deleting goes to your desktop trash, all of it together, recoverable from
+there.
 
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window

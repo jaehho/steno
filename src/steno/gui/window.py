@@ -42,6 +42,7 @@ from ..summarize import load_records
 from . import words
 from .live import LivePage
 from .meeting import MeetingPage
+from .menu import meeting_menu_model
 from .sidebar import LIVE, Session, Sidebar
 from .style import palette, stylesheet
 from .widgets import AskBox
@@ -170,19 +171,10 @@ class Window(Adw.ApplicationWindow):
         titles.append(self.page_subtitle)
         header.pack_start(titles)
 
-        menu = Gio.Menu()
-        menu.append("Copy this meeting", "meeting.copy")
-        menu.append("Save this meeting...", "meeting.save")
-        menu.append("Set project...", "meeting.project")
-        menu.append("Re-time against the audio...", "meeting.realign")
-        danger = Gio.Menu()
-        danger.append("Delete the audio, keep the text...", "meeting.delete-audio")
-        danger.append("Delete this meeting...", "meeting.delete")
-        menu.append_section(None, danger)
         self.meeting_menu = Gtk.MenuButton()
         self.meeting_menu.set_icon_name("view-more-symbolic")
         self.meeting_menu.set_tooltip_text("This meeting")
-        self.meeting_menu.set_menu_model(menu)
+        self.meeting_menu.set_menu_model(meeting_menu_model())
         header.pack_end(self.meeting_menu)
 
         self.stop_button = Gtk.Button(label="Stop")
