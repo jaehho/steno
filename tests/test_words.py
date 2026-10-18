@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from steno import citations
+from steno import citations, projectnotes
 from steno.gui import words
 from steno.gui.sidebar import Session
 
@@ -351,3 +351,37 @@ class TestSummaryNote(unittest.TestCase):
     def test_what_is_said_is_escaped_for_markup(self):
         self.assertEqual(words.summary_note(citations.Coverage(), "a < b"),
                          "a &lt; b")
+
+
+class TestProjectNotesProblem(unittest.TestCase):
+    """A page left alone, or a write that failed, is told; the rest of
+    what a publish can come to is not worth a toast."""
+
+    def change(self, action: str, note: str = "") -> projectnotes.Change:
+        return projectnotes.Change(action, Path("/p/notes/meetings/a.md"), note)
+
+    def problem(self, **given) -> str:
+        return words.project_notes_problem(projectnotes.Result("demo", **given))
+
+    def test_a_page_that_is_not_steno_s_is_named(self):
+        said = self.problem(changes=[self.change("skip", "not written by steno")])
+        self.assertIn("a.md", said)
+        self.assertIn("not written by steno", said)
+
+    def test_a_failed_write_says_why(self):
+        self.assertIn("No space", self.problem(error="No space left on device"))
+
+    def test_many_pages_are_not_all_listed(self):
+        said = self.problem(changes=[self.change("skip", "x")] * 5)
+        self.assertEqual(said.count("a.md"), words.NAMED_AT_MOST)
+        self.assertIn("…", said)
+
+    def test_a_publish_that_went_well_or_nowhere_says_nothing(self):
+        for given in (
+            {},
+            {"changes": [self.change("create"), self.change("same")]},
+            {"note": "no such project: /p/x"},
+            {"note": "STENO_PROJECT_NOTES='0': nothing written"},
+        ):
+            with self.subTest(**given):
+                self.assertEqual(self.problem(**given), "")

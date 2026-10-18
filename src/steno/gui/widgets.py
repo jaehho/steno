@@ -58,11 +58,17 @@ class NotesBox(Gtk.Overlay):
     """The user's notes for one meeting: a plain sheet, saved as they type.
 
     `notes.md` is theirs and is never rewritten by anything else, so this only
-    writes when they have actually changed something.
+    writes when they have actually changed something. `on_saved(dir)` hears
+    of each write, for whatever else is built from the notes.
     """
 
-    def __init__(self, placeholder: str = "Your notes. Saved with the meeting.") -> None:
+    def __init__(
+        self,
+        placeholder: str = "Your notes. Saved with the meeting.",
+        on_saved: Callable[[Path], None] | None = None,
+    ) -> None:
         super().__init__()
+        self._on_saved = on_saved
         self.session_dir: Path | None = None
         self._dirty = False
         self._timer: int | None = None
@@ -122,6 +128,8 @@ class NotesBox(Gtk.Overlay):
         buf = self.view.get_buffer()
         save_notes(self.session_dir, buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False))
         self._dirty = False
+        if self._on_saved is not None:
+            self._on_saved(self.session_dir)
 
 
 class AskBox(Gtk.Box):

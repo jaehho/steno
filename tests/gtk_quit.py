@@ -73,6 +73,7 @@ class StubApp(Adw.Application):
         self.since = 0.0
         self.engine = None
         self.bridge = None
+        self.republisher = None
         self.quits = 0
 
     def quit(self) -> None:

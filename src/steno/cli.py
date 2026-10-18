@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import datetime as _dt
 import json as _json
+import logging
 import math
 import os
 import shutil
@@ -18,11 +19,19 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections import Counter
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import __version__, config_dir, data_dir, migrate_legacy, model_default
+from . import (
+    __version__,
+    config_dir,
+    data_dir,
+    migrate_legacy,
+    model_default,
+    projectnotes,
+)
 from .brief import BRIEF_FILENAME, brief_age_days, estimate_tokens, load_brief
 from .claude import check_ready
 from .control import activate, show, toggle_record
@@ -47,8 +56,10 @@ from .summarize import (
     is_archived,
     iter_sessions,
     load_meta,
+    load_project,
     load_title,
     needs_citations,
+    projects_root,
     resolve_session,
     set_archived,
     summarize_session,
@@ -77,6 +88,10 @@ DEEPGRAM_API_KEY=
 
 # Optional. 0 hides the tray icon, for a bar already running `steno bar`.
 # STENO_TRAY=0
+
+# Optional. 0 stops steno copying a meeting's summary and transcript into
+# its project's notes/meetings folder. On by default.
+# STENO_PROJECT_NOTES=0
 
 # Optional. Any value stops steno running `asst`: no to-do is filed, ticked
 # or removed in the task app. For scratch runs; "0" does not undo it.
@@ -340,6 +355,7 @@ def _summarize_one(
     _replace_line(f"  {session_dir.name}: {summary.title}{project}", progress)
     print(f"    -> {session_dir / 'summary.md'}"
           + (f"  ·  {open_n} todo{'s' if open_n != 1 else ''}" if open_n else ""))
+    _publish_after(session_dir)
     return True
 
 
@@ -452,6 +468,8 @@ def cmd_realign(args: argparse.Namespace) -> None:
             failed += 1
             continue
         _replace_line(f"  {job.name}: {lines} lines re-timed", progress)
+        if projectnotes.read_record(job.session_dir) is not None:
+            _publish_after(job.session_dir)
     if failed:
         sys.exit(1)
 
@@ -468,15 +486,24 @@ def _confirm(prompt: str) -> bool:
         return False
 
 
+def _recording_session(root: Path | None) -> Path | None:
+    """The meeting the listener is recording right now, if it is."""
+    newest = iter_sessions(root)
+    if read_state().get("status") == "recording" and newest:
+        return newest[0]
+    return None
+
+
 def _being_recorded(session_dir: Path, root: Path | None) -> bool:
     """Is this the meeting the listener is recording right now?"""
-    newest = iter_sessions(root)
-    return (read_state().get("status") == "recording" and bool(newest)
-            and newest[0].resolve() == session_dir.resolve())
+    recording = _recording_session(root)
+    return (recording is not None
+            and recording.resolve() == session_dir.resolve())
 
 
 def cmd_delete(args: argparse.Namespace) -> None:
     """Move sessions to the trash."""
+    load_dotenv(config_dir() / ".env")
     try:
         session_dir = resolve_session(args.session, args.dir)
     except FileNotFoundError as e:
@@ -492,11 +519,26 @@ def cmd_delete(args: argparse.Namespace) -> None:
     if not args.yes and not _confirm(f"delete '{title}' ({size})? [y/N] "):
         print("nothing done")
         return
+    # Its copy in a project goes first: unpublishing needs the meta.json
+    # that says where it went, which goes with the meeting, and a copy
+    # that cannot be taken out must not be left behind with nothing to
+    # say it is there. A transcript page is other people's speech.
+    gone = _publishing(projectnotes.try_unpublish, session_dir)
+    if gone.error:
+        print(f"could not take it out of {gone.project}'s notes: {gone.error}\n"
+              f"{session_dir.name} was not deleted; make that folder "
+              "writable and run it again", file=sys.stderr)
+        sys.exit(1)
+    if told := _to_report(gone.changes, set()):
+        print(f"taken out of {gone.project}'s notes:")
+        _print_changes(told, projects_root())
     # Same as the window's delete: tasks filed from this meeting go with it.
     freed = forget_asst(session_dir)
     if freed:
         print(f"removed {freed} task{'s' if freed != 1 else ''} from asst")
     outcome, where = delete_session(session_dir, permanent=args.permanent)
+    if outcome == "failed" and gone.altered:
+        _publishing(projectnotes.try_publish, session_dir)  # still here
     if outcome == "trashed":
         print(f"moved to trash: {where}")
     elif outcome == "deleted":
@@ -545,6 +587,236 @@ def cmd_archive(args: argparse.Namespace) -> None:
 def cmd_unarchive(args: argparse.Namespace) -> None:
     """Bring archived meetings back."""
     _archive_each(args, archive=False)
+
+
+def _publishing(call, session_dir: Path, **kwargs) -> projectnotes.Result:
+    """Run a publish or an unpublish whose report the caller prints.
+
+    The module logs a warning for each file it leaves alone, which is
+    for the window, where nothing else says so. Here the caller says it
+    on stdout, and a project's index in the way would be said once for
+    each of its meetings.
+    """
+    log = logging.getLogger(projectnotes.__name__)
+    level = log.level
+    log.setLevel(logging.ERROR)
+    try:
+        return call(session_dir, **kwargs)
+    finally:
+        log.setLevel(level)
+
+
+def _shown(path: Path, root: Path) -> str:
+    """A path inside the projects directory as `project/notes/...`."""
+    for base in (root, root.resolve()):
+        with contextlib.suppress(ValueError):
+            return str(path.relative_to(base))
+    return str(path)
+
+
+def _to_report(
+    changes: list[projectnotes.Change],
+    seen: set[tuple[Path, str]],
+) -> list[projectnotes.Change]:
+    """The changes worth a line, and not told before in this run.
+
+    A file that was already right is not. A project's index and
+    `.gitignore` are touched by each of its meetings: told once, as
+    made if the first meeting made it, so that a dry run, which makes
+    nothing, says what the real run does.
+    """
+    fresh = []
+    for change in changes:
+        key = (change.path, change.action)
+        if change.action == "same" or key in seen:
+            continue
+        if change.action == "update" and (change.path, "create") in seen:
+            continue
+        seen.add(key)
+        fresh.append(change)
+    return fresh
+
+
+def _print_changes(
+    changes: list[projectnotes.Change], root: Path, indent: str = "  "
+) -> None:
+    for change in changes:
+        note = f"  ({change.note})" if change.note else ""
+        print(f"{indent}{change.action:<7} {_shown(change.path, root)}{note}")
+
+
+def _publish_after(session_dir: Path) -> None:
+    """What a command that changed a meeting does for its project: write
+    its pages again, and say so in a line. A meeting with no project, or
+    project notes switched off, says nothing."""
+    result = _publishing(projectnotes.try_publish, session_dir)
+    root = projects_root()
+    if result.error:
+        print(f"    project notes: {result.error}", file=sys.stderr)
+        return
+    for change in result.skipped:
+        print(f"    project notes: left {_shown(change.path, root)} as it is "
+              f"({change.note})", file=sys.stderr)
+    if altered := result.altered:
+        many = "s" if len(altered) != 1 else ""
+        print(f"    -> {result.project}/notes/meetings: "
+              f"{len(altered)} file{many} changed")
+
+
+def _publishable(sessions: list[Path], project: str | None) -> list[Path]:
+    """The meetings a bulk publish goes through: those filed under a
+    project (under `project`, when given) and those with pages in one
+    that a publish would take away."""
+    kept = []
+    for session_dir in sessions:
+        filed = load_project(session_dir) or None
+        if project is not None and filed != project:
+            continue
+        if filed or projectnotes.read_record(session_dir) is not None:
+            kept.append(session_dir)
+    return kept
+
+
+def _tally(counts: Counter[str], dry_run: bool) -> str:
+    """`2 created, 1 updated`, or with a dry run `2 to create`."""
+    forms = (("create", "created", "to create"),
+             ("update", "updated", "to update"),
+             ("remove", "removed", "to remove"),
+             ("skip", "left alone", "left alone"))
+    parts = [f"{counts[act]} {dry if dry_run else done}"
+             for act, done, dry in forms if counts[act]]
+    return ", ".join(parts) or "nothing to change"
+
+
+def _publish_targets(args: argparse.Namespace) -> list[Path]:
+    """The meetings `steno publish` goes through, or an exit."""
+    if args.all and args.session:
+        print("name a meeting or pass --all, not both", file=sys.stderr)
+        sys.exit(1)
+    if not (args.force or projectnotes.enabled()):
+        print(f"{projectnotes.SWITCH_ENV}="
+              f"{os.environ[projectnotes.SWITCH_ENV]!r}: project notes are "
+              "off (--force publishes by hand anyway)", file=sys.stderr)
+        sys.exit(1)
+    recording = _recording_session(args.dir)
+    if not args.all:
+        return [_named_for_publish(args, recording)]
+    targets = _publishable(
+        _leave_out_archived(iter_sessions(args.dir)), args.project
+    )
+    return [t for t in targets if t != recording]
+
+
+def _say_published(
+    session_dir: Path,
+    result: projectnotes.Result,
+    root: Path,
+    named: bool,
+    seen: set[tuple[Path, str]],
+) -> tuple[str, list[projectnotes.Change]]:
+    """Print what a publish did to one meeting. Returns how it went,
+    `error`, `unfiled` (nothing to publish, which fails a meeting that
+    was asked for by name), `changed` or `current`, and the changes
+    that were told."""
+    title = load_title(session_dir) or "(untitled)"
+    head = f"{session_dir.name}  {title}  [{result.project or '-'}]"
+    if result.error:
+        print(f"{head}\n  could not write: {result.error}", file=sys.stderr)
+        return "error", []
+    if result.note or (named and result.project is None):
+        print(f"{head}\n  {result.note or 'not filed under a project'}")
+        return "unfiled", []
+    if told := _to_report(result.changes, seen):
+        print(head)
+        _print_changes(told, root)
+        return "changed", told
+    if named:
+        print(f"{head}: up to date")
+    return "current", []
+
+
+def cmd_publish(args: argparse.Namespace) -> None:
+    """Copy meetings' summaries and transcripts into their projects'
+    notes/meetings. `--dry-run` lists what it would do and writes
+    nothing; read that before a run over everything."""
+    load_dotenv(config_dir() / ".env")
+    targets = _publish_targets(args)
+    root = projects_root()
+    counts: Counter[str] = Counter()
+    outcomes: Counter[str] = Counter()
+    seen: set[tuple[Path, str]] = set()
+    for session_dir in targets:
+        result = _publishing(
+            projectnotes.try_publish, session_dir,
+            dry_run=args.dry_run, force=args.force,
+        )
+        outcome, told = _say_published(
+            session_dir, result, root, not args.all, seen
+        )
+        counts.update(c.action for c in told)
+        outcomes[outcome] += 1
+    if args.dry_run:
+        print("dry run, nothing written: ", end="")
+    if args.all:
+        print(f"{len(targets)} meetings looked at, {outcomes['current']} "
+              f"already up to date; {_tally(counts, args.dry_run)}")
+    elif args.dry_run:
+        print(_tally(counts, args.dry_run))
+    if outcomes["error"] or (not args.all and outcomes["unfiled"]):
+        sys.exit(1)
+
+
+def _named_for_publish(args: argparse.Namespace, recording: Path | None) -> Path:
+    """The one meeting `steno publish [NAME]` is about, or an exit."""
+    try:
+        session_dir = resolve_session(args.session, args.dir)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    if not transcript_path(session_dir).is_file():
+        print(f"not a meeting, no transcript: {args.session}", file=sys.stderr)
+        sys.exit(1)
+    if session_dir == recording:
+        print(f"{session_dir.name} is being recorded; stop it first",
+              file=sys.stderr)
+        sys.exit(1)
+    filed = load_project(session_dir) or None
+    if args.project is not None and filed != args.project:
+        print(f"{session_dir.name} is filed under {filed or 'no project'}, "
+              f"not {args.project}; nothing done", file=sys.stderr)
+        sys.exit(1)
+    return session_dir
+
+
+def cmd_unpublish(args: argparse.Namespace) -> None:
+    """Take meetings' pages out of their projects. Works with the app
+    stopped, and only removes what steno wrote."""
+    load_dotenv(config_dir() / ".env")
+    root = projects_root()
+    seen: set[tuple[Path, str]] = set()
+    failed = False
+    for spec in args.session:
+        try:
+            session_dir = resolve_session(spec, args.dir)
+        except FileNotFoundError as e:
+            print(str(e), file=sys.stderr)
+            failed = True
+            continue
+        result = _publishing(
+            projectnotes.try_unpublish, session_dir, dry_run=args.dry_run
+        )
+        if result.error:
+            print(f"{session_dir.name}: could not remove: {result.error}",
+                  file=sys.stderr)
+            failed = True
+        elif result.project is None:
+            print(f"{session_dir.name}: not published")
+        else:
+            print(f"{session_dir.name}  [{result.project}]"
+                  + ("  (dry run)" if args.dry_run else ""))
+            _print_changes(_to_report(result.changes, seen), root)
+    if failed:
+        sys.exit(1)
 
 
 def cmd_clean_echo(args: argparse.Namespace) -> None:
@@ -935,6 +1207,36 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     p_unarchive.add_argument("--dir", type=Path, default=None,
                              help="Sessions directory")
     p_unarchive.set_defaults(func=cmd_unarchive)
+
+    p_publish = sub.add_parser(
+        "publish",
+        help="Copy a meeting's summary and transcript into its project",
+    )
+    p_publish.add_argument("session", nargs="?", default=None,
+                           help="Session name or path; default: most recent")
+    p_publish.add_argument("--all", action="store_true",
+                           help="Every meeting filed under a project "
+                                "(not the archived ones)")
+    p_publish.add_argument("--project", default=None, metavar="P",
+                           help="Only meetings filed under project P")
+    p_publish.add_argument("--dry-run", action="store_true",
+                           help="List what it would write and write nothing")
+    p_publish.add_argument("--force", action="store_true",
+                           help="Publish even with STENO_PROJECT_NOTES=0")
+    p_publish.add_argument("--dir", type=Path, default=None,
+                           help="Sessions directory")
+    p_publish.set_defaults(func=cmd_publish)
+
+    p_unpublish = sub.add_parser(
+        "unpublish", help="Take a meeting's pages out of its project"
+    )
+    p_unpublish.add_argument("session", nargs="+",
+                             help="Session names or paths")
+    p_unpublish.add_argument("--dry-run", action="store_true",
+                             help="List what it would remove and remove nothing")
+    p_unpublish.add_argument("--dir", type=Path, default=None,
+                             help="Sessions directory")
+    p_unpublish.set_defaults(func=cmd_unpublish)
 
     p_todos = sub.add_parser("todos", help="What you owe, across every meeting")
     p_todos.add_argument("--all", action="store_true", help="Include finished items")

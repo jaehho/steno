@@ -102,6 +102,7 @@ class Window(Adw.ApplicationWindow):
             on_summarize=self._summarize,
             is_recording=self._is_recording,
             recording_dir=self._recording_dir,
+            republisher=app.republisher,
         )
         self.insert_action_group("meeting", self.meeting.actions)
 
@@ -178,7 +179,7 @@ class Window(Adw.ApplicationWindow):
         self.meeting_menu = Gtk.MenuButton()
         self.meeting_menu.set_icon_name("view-more-symbolic")
         self.meeting_menu.set_tooltip_text("This meeting")
-        self._menu_archived = False
+        self._menu_key = (False, False)
         self.meeting_menu.set_menu_model(meeting_menu_model())
         header.pack_end(self.meeting_menu)
 
@@ -299,7 +300,7 @@ class Window(Adw.ApplicationWindow):
                 self.meeting.jump_to(query)
             self.stack.set_visible_child_name("meeting")
         else:
-            self.meeting.stop_pull()
+            self.meeting.leave()
             if item == LIVE:
                 self.stack.set_visible_child_name("live")
             else:
@@ -341,9 +342,11 @@ class Window(Adw.ApplicationWindow):
         self.meeting_menu.set_visible(isinstance(item, Session))
         # A new model closes a menu that is open, and this runs every
         # second: only when the offer changes.
-        if isinstance(item, Session) and item.archived != self._menu_archived:
-            self._menu_archived = item.archived
-            self.meeting_menu.set_menu_model(meeting_menu_model(item.archived))
+        if isinstance(item, Session) and (
+            key := (item.archived, item.published)
+        ) != self._menu_key:
+            self._menu_key = key
+            self.meeting_menu.set_menu_model(meeting_menu_model(*key))
         # With the sidebar showing, Stop is on its status card; without it, on
         # whichever page you are on, so a recording is stoppable from a past
         # meeting you wandered into too.

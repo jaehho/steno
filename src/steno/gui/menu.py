@@ -10,13 +10,18 @@ from __future__ import annotations
 from gi.repository import Gio
 
 
-def meeting_menu_model(archived: bool = False) -> Gio.Menu:
+def meeting_menu_model(
+    archived: bool = False, published: bool = False
+) -> Gio.Menu:
     """The menu of a meeting. It offers to put the meeting away or to
-    bring it back, by whether it is put away: one item, never both."""
+    bring it back, by whether it is put away: one item, never both. It
+    offers its pages in the project's notes only when it has some."""
     menu = Gio.Menu()
     menu.append("Copy this meeting", "meeting.copy")
     menu.append("Save this meeting...", "meeting.save")
     menu.append("Set project...", "meeting.project")
+    if published:
+        menu.append("Show in project notes", "meeting.show-notes")
     menu.append("Summarize again...", "meeting.summarize")
     menu.append("Re-time against the audio...", "meeting.realign")
     if archived:

@@ -288,6 +288,34 @@ def _tail(text: str, n: int = 300) -> str:
 
 _PRUNE = {".git", "node_modules", ".venv", "__pycache__"}
 
+# `<project>/notes/meetings` is where steno keeps its copies of earlier
+# meetings (projectnotes.py): other people's speech as heard, not
+# scrubbed. A summary is of one meeting, so the tools never show the model
+# another, and nothing in it is sent on.
+_WITHHELD = ("notes", "meetings")
+
+
+def _withheld(top: Path, path: Path) -> bool:
+    """True for a resolved `path` in a project's published meetings.
+
+    Those are where `notes/meetings` leads, not only where it is named:
+    steno follows a link to a directory inside the project (`notes ->
+    docs`) and writes there, so the pages are at `docs/meetings`.
+    """
+    try:
+        parts = path.relative_to(top).parts
+    except ValueError:
+        return False  # outside the root, which `_resolve` refuses
+    if parts[1:3] == _WITHHELD:
+        return True
+    if not parts:
+        return False
+    try:
+        folder = top.joinpath(parts[0], *_WITHHELD).resolve()
+    except (OSError, RuntimeError):
+        return True  # a folder that cannot be told from here is not shown
+    return path.is_relative_to(folder)
+
 _TOOLS = (
     {"name": "list_dir", "description": "List a directory.",
      "parameters": {"type": "object", "properties": {
@@ -316,13 +344,19 @@ def _resolve(root: Path, path: str) -> Path:
     if not p.is_relative_to(root.resolve()):
         msg = f"{path} is outside the project directory"
         raise ValueError(msg)
+    if _withheld(root.resolve(), p):
+        msg = f"{path} is not available"
+        raise ValueError(msg)
     return p
 
 
 def _run_tool(root: Path, name: str, args: dict) -> str:
     if name == "list_dir":
-        entries = sorted(_resolve(root, args.get("path", ".")).iterdir(),
-                         key=lambda e: (e.is_file(), e.name))
+        top = root.resolve()
+        entries = sorted(
+            (e for e in _resolve(root, args.get("path", ".")).iterdir()
+             if not _withheld(top, e.resolve())),
+            key=lambda e: (e.is_file(), e.name))
         return "\n".join(f"{e.name}/" if e.is_dir() else e.name for e in entries[:200]) or "(empty)"
     if name == "read_file":
         text = _resolve(root, args["path"]).read_text(errors="replace")
@@ -366,6 +400,8 @@ def _grep(root: Path, pattern: str, path: str) -> str:
             # symlink the walk happens upon must meet the same rule, or a
             # `.env -> ../secrets` in a project is read and sent.
             if not f.resolve().is_relative_to(top):
+                return
+            if _withheld(top, f.resolve()):
                 return
             if f.stat().st_size > (1 << 20):
                 return

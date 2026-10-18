@@ -30,8 +30,12 @@ _ACTION_HEADING_RE = re.compile(r"^##\s+action\s+items?\s*$", re.IGNORECASE)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
-def meeting_markdown(session_dir: Path) -> str:
-    """The whole meeting as one markdown document. Ends with a newline."""
+def meeting_markdown(session_dir: Path, *, transcript: bool = True) -> str:
+    """The whole meeting as one markdown document. Ends with a newline.
+
+    `transcript=False` leaves the transcript section out: a page that
+    keeps the words in a file of their own.
+    """
     records = load_records(session_dir)
     title = load_title(session_dir) or "Untitled meeting"
     project = load_project(session_dir)
@@ -53,9 +57,8 @@ def meeting_markdown(session_dir: Path) -> str:
     if notes:
         parts += ["", "## Notes", notes]
 
-    transcript = _transcript(session_dir, records)
-    if transcript:
-        parts += ["", "## Transcript", transcript]
+    if transcript and (words := transcript_text(session_dir, records)):
+        parts += ["", "## Transcript", words]
 
     return "\n".join(parts).rstrip() + "\n"
 
@@ -66,8 +69,14 @@ def default_filename(session_dir: Path) -> str:
     title = load_title(session_dir)
     if not title:
         return f"{session_dir.name}.md"
-    slug = _SLUG_RE.sub("-", title.lower()).strip("-")
+    slug = title_slug(title)
     return f"{date}-{slug}.md" if slug else f"{date}.md"
+
+
+def title_slug(title: str) -> str:
+    """`Vendor Pricing: Call #2!` as `vendor-pricing-call-2`; "" when
+    nothing of the title is a letter or a digit."""
+    return _SLUG_RE.sub("-", title.lower()).strip("-")
 
 
 def _read_summary(session_dir: Path) -> str:
@@ -80,7 +89,7 @@ def _read_summary(session_dir: Path) -> str:
     return citations.to_refs(text)
 
 
-def _session_datetime(session_dir: Path) -> datetime:
+def session_datetime(session_dir: Path) -> datetime:
     started = session_start(session_dir)
     if started > 0:
         return datetime.fromtimestamp(started)
@@ -92,11 +101,11 @@ def _session_datetime(session_dir: Path) -> datetime:
 
 
 def _session_date(session_dir: Path) -> str:
-    return _session_datetime(session_dir).strftime("%Y-%m-%d")
+    return session_datetime(session_dir).strftime("%Y-%m-%d")
 
 
 def _meta_line(session_dir: Path, minutes: float, project: str | None) -> str:
-    when = _session_datetime(session_dir)
+    when = session_datetime(session_dir)
     parts = [f"{when:%A}, {when:%b} {when.day}, {when.year}, {when:%H:%M}"]
     if minutes >= 1:
         parts.append(f"{minutes:.0f} min")
@@ -147,7 +156,8 @@ def _action_items(todos: list[Todo]) -> str:
     return "\n".join(lines)
 
 
-def _transcript(session_dir: Path, records: list[dict]) -> str:
+def transcript_text(session_dir: Path, records: list[dict]) -> str:
+    """`[mm:ss] who: text` for each line, as the gutter stamps them."""
     if not records:
         return ""
     names = load_names(session_dir)

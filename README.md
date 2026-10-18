@@ -90,6 +90,9 @@ steno realign [NAME]       re-time an old session against its audio (costs a pas
 steno delete [NAME]        move a meeting to the trash
 steno archive NAME...      put meetings away: kept whole, left out of every --all
 steno unarchive NAME...    bring them back
+steno publish [NAME]       copy a meeting into its project's notes/meetings
+steno publish --all        ... every meeting filed under a project (--dry-run first)
+steno unpublish NAME...    take a meeting's pages out of its project again
 steno todos                what you owe, across every meeting
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
@@ -179,6 +182,9 @@ include it, and `STENO_KEEP_AUDIO_DAYS` treats it like any other.
 `steno status` counts the archived ones, and `steno unarchive NAME...`
 brings them back.
 
+A meeting about one of your projects is also kept in that project, as
+pages of its own; see Project notes, below.
+
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window
 parked beside the call works.
@@ -186,6 +192,137 @@ parked beside the call works.
 `Ctrl+G` ask · `Ctrl+F` search · `Ctrl+R` record · `Ctrl+Space` play ·
 `Ctrl+` `+`/`-`/`0` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`
 quit (asks first, then stops listening) · `Ctrl+?` all of these
+
+## Project notes
+
+A meeting that is about one of your projects is kept in it too, so that
+whoever opens the project, you or an agent working in it, finds the meetings
+it had. There is nothing to turn on: once a meeting has a project, Steno
+writes this inside it.
+
+```
+<project>/notes/meetings/
+    README.md                                    the meetings, newest first
+    2026-10-06-1612-rcnn-toolbox.md              summary, to-dos, your notes
+    2026-10-06-1612-rcnn-toolbox.transcript.md   what was said, [mm:ss] you: ...
+    .gitignore                                   `*`, made with the folder
+```
+
+The project is the one the summary picked from `~/projects` (or
+`STENO_PROJECTS_DIR`); **Set project...** in the ⋯ menu changes it. Each page
+opens with a front matter block (title, date, time, length, project, the
+session it came from) and a line saying Steno generated it. The summary page
+is what `steno export` makes without the words: the summary with its
+citations written as `[03:21, 07:40]`, your to-dos as a checklist in the
+state they are in now, your notes, and a link to the transcript page. The
+transcript page is `[mm:ss] who: text` for each line, with the far side's
+names where Steno has them, as the export has it. `README.md` is the index, a
+line per meeting (date, title, length, open to-dos) under a note on what the
+folder is, for an agent that lands in it.
+
+**When.** A page is written when the summary lands, when you set the project
+(the old project's pages are taken out), and a minute after the last change
+to a meeting that is already there: a tick, a saved note, a tick made on your
+phone, a re-timing. The wait is so that typing a note does not rewrite a file
+every few seconds; opening another meeting, or quitting, writes what is
+waiting at once. A tick or an edit never publishes a meeting that was not
+there already. `steno summarize` and `steno realign` do the same from a
+terminal. A meeting you delete is taken out of its project first; one you
+archive stays there. If the pages cannot be taken out (the folder is not
+writable, say), the meeting is not deleted, because the transcript would stay
+behind with nothing to say where it is: the window shows why, `steno delete`
+prints it and exits 1, and deleting again after the fix goes through.
+**Show in project notes** in the ⋯ menu opens the folder, for a meeting that
+has pages in one.
+
+**What it keeps to.**
+
+- It stays in the project. The project has to be a plain directory directly
+  under the projects directory, and Steno never makes one; it makes
+  `notes/meetings/` (and `notes/`, if there is none). A `notes` or `meetings`
+  that is a link leading out of the project is refused, not followed.
+- It touches only its own files. A file in that folder without the
+  generated-by line is yours: it is never overwritten or removed, only named
+  (in the toast, in the command's output, in the log). Delete that line from a
+  page to take it over; Steno leaves it alone from then on. A page that keeps
+  the line is Steno's and is rewritten when the meeting changes, so edit
+  nothing there, and an edit that comes back from another device is lost the
+  same way.
+- It writes only what changed. A page is compared byte for byte and written
+  when it differs, whole: to a hidden temporary file in the same folder, then
+  renamed over the old one. The same meeting published twice leaves every
+  modification time alone, and nobody reads half a page.
+- It runs no git, and sends nothing anywhere: no network, no model. The pages
+  are made from files Steno already has.
+
+**Git.** Transcripts are other people's speech, and project repositories get
+pushed. So the folder is made with a `.gitignore` of `*` and `!.gitignore`:
+git sees that one file and none of the meetings. Steno stages and commits
+nothing. To keep the meetings in the repository, delete the `.gitignore`;
+Steno writes it once, with the folder, and does not write it back.
+
+If `notes/meetings` already holds files of yours when Steno first writes in
+it, a `*` would hide them from git too, and `git add` would refuse the next one
+you write there. So that folder gets a `.gitignore` of `*.transcript.md`
+alone: the transcripts stay out of git, your files stay visible, and the
+summary pages and the index show up as new files for you to commit or ignore.
+
+**A synced folder.** The `.gitignore` is for git alone; a sync tool does not
+read it. If the project's `notes/` is synced (an Obsidian vault with a sync
+plugin, a Nextcloud or Syncthing folder), the meetings go with it,
+transcripts included, to every device and server it syncs to, and a vault
+lists and searches them with the rest. Steno cannot tell, and does not look.
+To keep them out, use the sync tool's own ignore setting for
+`notes/meetings`, or turn project notes off. Steno does what it can to be a
+quiet neighbour in such a folder: a sync sees one new page per meeting, and
+an update only when a tick or a note really changes a page. A tool that
+uploads hidden files may see the temporary file come and go.
+
+**The switch.** `STENO_PROJECT_NOTES=0` in `~/.config/steno/.env` turns all
+of it off: the window, `steno summarize` and `steno realign` write nothing,
+and `steno publish` refuses unless given `--force`. Unset or empty is on, and
+anything but a plain yes (`1`, `true`, `yes`, `on`) reads as off, so a typo
+fails towards writing nothing. It does not take back what is already
+written; `steno unpublish` does, and works with the switch off.
+
+**Meetings from before.** They are not copied until you ask. `steno publish
+--all --dry-run` lists every file it would create, update or take away, and
+writes none; read it, then run `steno publish --all`:
+
+```
+$ steno publish --all --dry-run
+20261012-100000  Weekly sync  [rcnn]
+  create  rcnn/notes/meetings/.gitignore
+  create  rcnn/notes/meetings/2026-10-12-1000-weekly-sync.md
+  create  rcnn/notes/meetings/2026-10-12-1000-weekly-sync.transcript.md
+  create  rcnn/notes/meetings/README.md
+20261006-161200  RCNN Toolbox  [rcnn]
+  create  rcnn/notes/meetings/2026-10-06-1612-rcnn-toolbox.md
+  create  rcnn/notes/meetings/2026-10-06-1612-rcnn-toolbox.transcript.md
+dry run, nothing written: 2 meetings looked at, 0 already up to date; 6 to create
+```
+
+`steno publish` alone does the newest meeting, `NAME` one, `--project P` only
+those filed under P. `--all` leaves the archived meetings out, as the other
+commands that go through everything do, and also takes pages away from a
+meeting that has since left its project. A file Steno would not touch is
+listed as `skip`, with why. `steno unpublish NAME...` takes meetings' pages
+back out (also with `--dry-run`), and the folder with them if nothing else is
+in it. None of this needs the app running.
+
+**For an agent.** Steno never edits a project's own files. To tell the agent
+working in a project that the folder is there, add one line to that project's
+`CLAUDE.md`:
+
+```
+Meetings recorded by steno are in notes/meetings/ (generated; read README.md there).
+```
+
+A clone of the repository has no meetings, since they were never committed, so
+the line is true on the machine that recorded them. An agent that reads the
+pages sends what it reads to its own provider; that is what they are for. The
+model that writes a summary is not shown them (see What it records, below),
+so a summary is not written from another meeting's pages, nor sends them on.
 
 ## The bar
 
@@ -221,8 +358,23 @@ summary and for questions you ask. Emails, phone numbers and the like are
 scrubbed from the transcript on the way out. When a meeting is about one of the
 projects in `~/projects` (`STENO_PROJECTS_DIR`), the summary may read that
 directory, read-only, to get names and files right; so whatever it reads is
-sent too. It can read nothing outside that directory. Nothing is uploaded or
-shared on the tool's own initiative.
+sent too. It can read nothing outside that directory, and nothing in a
+project's `notes/meetings`, where Steno keeps its copies of earlier
+meetings (the folder it leads to, if `notes` or `meetings` is a link to
+another folder in the project). Nothing is uploaded or shared on the tool's
+own initiative.
+
+Project notes (above) add local files and nothing else: no upload, no
+network, no model call, no git. What they change is where the transcript
+lives. It is now also a file in the project of each meeting, as heard, without
+the scrubbing above (that is for what is sent to the model host, not for what
+is kept or exported). Whatever reads that folder reads it: an editor, a
+backup, a sync client, an agent you run in the project, which sends what it
+reads to its own provider. Steno keeps the transcripts out of git with a
+`.gitignore`, the summaries too in a folder it made; it cannot keep either out
+of a sync (an Obsidian vault, say), which carries the meetings to every device
+it syncs to.
+`STENO_PROJECT_NOTES=0` turns the copies off.
 
 It records other people automatically. That is a deliberate choice, and getting
 their consent is yours to handle — a notification with a Stop button appears
@@ -259,15 +411,16 @@ reconnect.
 
 - **engine** — `detect.py` (who's holding the mic), `audio.py`, `transcribe.py`
   (Deepgram, streaming and batch), `summarize.py`, `citations.py` (the
-  markers above), `notes.py`, `retention.py`, `playback.py`, `session.py`
-  (the lifecycle that drives them). No GUI
-  dependency, so `make test` runs headless.
+  markers above), `notes.py`, `projectnotes.py` (a meeting's pages in its
+  project), `retention.py`, `playback.py`, `session.py` (the lifecycle that
+  drives them). No GUI dependency, so `make test` runs headless.
 - **`gui/`** — GTK4. `app.py` is the long-running listener and owns the engine;
   `window.py` is a view it can live without. `bridge.py` is the only place the
   engine's asyncio loop and GTK's main loop meet; everything crossing back goes
   through `GLib.idle_add`. `sidebar.py`, `meeting.py` and `live.py` are the three
   surfaces; `summary.py` is the summary's rows and the bar of places; `words.py`
-  is what they say, testable headlessly. `player.py` is GStreamer, for playback.
+  is what they say, testable headlessly; `republish.py` waits for a pause
+  before it rewrites a meeting's project pages. `player.py` is GStreamer, for playback.
 - **`events.py`** — what the engine says. The engine never touches a widget.
 - **`state.py` / `control.py`** — what the bar reads, and how a click reaches
   the running app (its own D-Bus actions; no socket, no pidfile).
