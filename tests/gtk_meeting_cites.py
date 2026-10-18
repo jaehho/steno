@@ -603,10 +603,11 @@ class TestTheBar(CitedMeeting):
         self.scroll_top()
         asked = []
         real = self.page._scroll_to_row
+        not_placed_yet = 2  # answers of True before it is
 
         def late(row, give_up):
             asked.append(row)
-            if len(asked) < 3:
+            if len(asked) <= not_placed_yet:
                 return True
             return real(row, give_up)
 
@@ -616,7 +617,8 @@ class TestTheBar(CitedMeeting):
 
         second = self.page._rows[SHIP[1]]
         self.assertTrue(wait_for(lambda: on_screen(second)))
-        self.assertEqual(asked, [second] * 3)
+        self.assertEqual(len(asked), not_placed_yet + 1)
+        self.assertEqual(set(asked), {second})
 
     def test_a_long_list_scrolls_inside_the_bar_and_follows_the_steps(self):
         folder = self.page.current.dir
