@@ -5,12 +5,19 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from steno import asstlink, citations, claude
-from steno.notes import Todo, load_todos, set_done_local, sync_todos
+from steno.notes import (
+    Todo,
+    load_todos,
+    save_todos,
+    set_done_local,
+    sync_todos,
+)
 from steno.speakers import load_names, save_names
 from steno.summarize import (
     MAX_EARLIER_TODOS,
@@ -19,6 +26,7 @@ from steno.summarize import (
     format_for_model,
     has_body,
     has_summary,
+    is_archived,
     iter_sessions,
     load_records,
     load_title,
@@ -27,6 +35,7 @@ from steno.summarize import (
     parse_summary,
     resolve_session,
     save_project,
+    set_archived,
     summarize_session,
 )
 
@@ -695,3 +704,128 @@ class TestResummarize(unittest.TestCase):
         self.assertEqual(
             {n: (self.dir / n).read_bytes() for n in names}, before
         )
+
+
+# What a summarized meeting's meta.json holds.
+SUMMARIZED_META = {
+    "started_at": 1000.0, "app": "zoom", "manual": False,
+    "title": "Vendor Pricing Call", "project": "thesis",
+    "lines": 5, "duration_min": 1.4,
+    "cites": {"items": 3, "cited": 3}, "cost_usd": 0.0123,
+}
+
+
+class TestArchive(unittest.TestCase):
+    """Putting a meeting away changes two keys in meta.json and nothing
+    else: no audio, text or to-do is touched."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.dir = _session(self.root, "20260101-090000", SESSION_ROWS)
+        self.meta_path = self.dir / "meta.json"
+        self.meta_path.write_text(json.dumps(SUMMARIZED_META, indent=2) + "\n")
+        # Everything a meeting holds that archiving must not reach.
+        self.kept = {
+            "transcript.jsonl": self.dir / "transcript.jsonl",
+            "summary.md": self.dir / "summary.md",
+            "notes.md": self.dir / "notes.md",
+            "todos.json": self.dir / "todos.json",
+            "you.wav": self.dir / "you.wav",
+        }
+        save_todos(self.dir, [Todo(text="Send the figures", owner="you")])
+        for name, path in self.kept.items():
+            if name not in ("transcript.jsonl", "todos.json"):
+                path.write_bytes(name.encode())
+            os.utime(path, ns=(OLD_NS, OLD_NS))
+
+    def meta(self) -> dict:
+        return json.loads(self.meta_path.read_text())
+
+    def test_a_meeting_is_not_archived_until_it_is_put_away(self):
+        self.assertFalse(is_archived(self.dir))
+        (self.dir / "meta.json").unlink()
+        self.assertFalse(is_archived(self.dir))
+
+    def test_only_a_true_flag_counts(self):
+        """A hand edit, or a file torn by a crash, never hides a meeting."""
+        for text in ('{"archived": "yes"}', '{"archived": 1}',
+                     '{"archived": false}', '{"archived"', "[]"):
+            with self.subTest(text=text):
+                self.meta_path.write_text(text)
+                self.assertFalse(is_archived(self.dir))
+
+    def test_archive_then_unarchive_keeps_every_other_key(self):
+        self.assertTrue(set_archived(self.dir, True))
+        archived = self.meta()
+        self.assertIs(archived["archived"], True)
+        self.assertAlmostEqual(archived["archived_at"], time.time(), delta=5)
+        self.assertEqual(
+            {k: v for k, v in archived.items()
+             if k not in ("archived", "archived_at")},
+            SUMMARIZED_META,
+        )
+        self.assertTrue(is_archived(self.dir))
+
+        self.assertTrue(set_archived(self.dir, False))
+        self.assertEqual(self.meta(), SUMMARIZED_META)
+        self.assertFalse(is_archived(self.dir))
+
+    def test_no_audio_text_or_to_do_is_touched(self):
+        before = {n: p.read_bytes() for n, p in self.kept.items()}
+        set_archived(self.dir, True)
+        set_archived(self.dir, False)
+        self.assertEqual(
+            {n: p.read_bytes() for n, p in self.kept.items()}, before
+        )
+        self.assertEqual(
+            {p.stat().st_mtime_ns for p in self.kept.values()}, {OLD_NS}
+        )
+
+    def test_doing_it_twice_changes_nothing_the_second_time(self):
+        self.assertTrue(set_archived(self.dir, True))
+        first = self.meta()["archived_at"]
+        os.utime(self.meta_path, ns=(OLD_NS, OLD_NS))
+        self.assertFalse(set_archived(self.dir, True))
+        self.assertEqual(self.meta()["archived_at"], first)
+        self.assertEqual(self.meta_path.stat().st_mtime_ns, OLD_NS)
+
+        self.assertTrue(set_archived(self.dir, False))
+        os.utime(self.meta_path, ns=(OLD_NS, OLD_NS))
+        self.assertFalse(set_archived(self.dir, False))
+        self.assertEqual(self.meta_path.stat().st_mtime_ns, OLD_NS)
+
+    def test_a_meeting_with_no_meta_gets_just_the_two_keys(self):
+        self.meta_path.unlink()
+        set_archived(self.dir, True)
+        self.assertEqual(set(self.meta()), {"archived", "archived_at"})
+
+    def test_the_file_is_replaced_whole(self):
+        set_archived(self.dir, True)
+        self.assertFalse((self.dir / "meta.json.tmp").exists())
+
+    def test_it_stays_listed_and_reachable_by_name(self):
+        """Hiding is the window's job and bulk commands' (`--all`); the
+        lookups every named command goes through do not look."""
+        set_archived(self.dir, True)
+        self.assertEqual(iter_sessions(self.root), [self.dir])
+        self.assertEqual(resolve_session(self.dir.name, self.root), self.dir)
+        self.assertEqual(resolve_session(None, self.root), self.dir)
+
+    def test_it_stays_archived_through_a_new_summary(self):
+        set_archived(self.dir, True)
+        stamp = self.meta()["archived_at"]
+        fake = FakeModel(CITED_REPLY)
+        with mock.patch.object(claude, "run_structured", fake):
+            asyncio.run(summarize_session(
+                self.dir, "m", None, Path(tempfile.mkdtemp())
+            ))
+        after = self.meta()
+        self.assertIs(after["archived"], True)
+        self.assertEqual(after["archived_at"], stamp)
+        self.assertEqual(after["title"], "Vendor Pricing Call")
+
+    def test_it_stays_archived_when_the_project_changes(self):
+        set_archived(self.dir, True)
+        save_project(self.dir, "lab")
+        self.assertTrue(is_archived(self.dir))
+        self.assertEqual(self.meta()["project"], "lab")

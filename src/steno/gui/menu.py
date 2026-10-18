@@ -10,13 +10,19 @@ from __future__ import annotations
 from gi.repository import Gio
 
 
-def meeting_menu_model() -> Gio.Menu:
+def meeting_menu_model(archived: bool = False) -> Gio.Menu:
+    """The menu of a meeting. It offers to put the meeting away or to
+    bring it back, by whether it is put away: one item, never both."""
     menu = Gio.Menu()
     menu.append("Copy this meeting", "meeting.copy")
     menu.append("Save this meeting...", "meeting.save")
     menu.append("Set project...", "meeting.project")
     menu.append("Summarize again...", "meeting.summarize")
     menu.append("Re-time against the audio...", "meeting.realign")
+    if archived:
+        menu.append("Unarchive", "meeting.unarchive")
+    else:
+        menu.append("Archive", "meeting.archive")
     danger = Gio.Menu()
     danger.append("Delete the audio, keep the text...", "meeting.delete-audio")
     danger.append("Delete this meeting...", "meeting.delete")

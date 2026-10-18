@@ -223,4 +223,27 @@ class TestStaleness(unittest.TestCase):
 
     def test_a_missing_file_is_not_a_crash(self):
         (self.session / "summary.md").unlink()
-        self.assertEqual(len(self.stamp()), 5)
+        self.assertEqual(len(self.stamp()), 6)
+
+    def test_archiving_from_a_terminal_shows_up(self):
+        before = self.stamp()
+        summarize.set_archived(self.session, True)
+        self.assertNotEqual(before, self.stamp())
+        summarize.set_archived(self.session, False)
+        self.assertEqual(before, self.stamp())
+
+    def test_the_flag_a_view_set_itself_leaves_the_file_times_alone(self):
+        before = self.stamp()
+        summarize.set_archived(self.session, True)
+        self.assertEqual(
+            summarize.stamp_with_archived(before, True), self.stamp()
+        )
+        os.utime(self.session / "summary.md", (1, 1))
+        self.assertNotEqual(
+            summarize.stamp_with_archived(before, True), self.stamp()
+        )
+
+    def test_a_project_change_does_not(self):
+        before = self.stamp()
+        summarize.save_project(self.session, "thesis")
+        self.assertEqual(before, self.stamp())

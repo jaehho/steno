@@ -46,6 +46,24 @@ class TestMenuModel(unittest.TestCase):
     def test_a_menu_is_built_per_call(self):
         self.assertIsNot(meeting_menu_model(), meeting_menu_model())
 
+    def test_it_offers_one_of_archive_and_unarchive(self):
+        put_away = menu_actions(meeting_menu_model(archived=True))
+        kept = menu_actions(meeting_menu_model())
+        self.assertIn("meeting.unarchive", put_away)
+        self.assertNotIn("meeting.archive", put_away)
+        self.assertIn("meeting.archive", kept)
+        self.assertNotIn("meeting.unarchive", kept)
+
+    def test_archiving_is_not_next_to_the_deletes(self):
+        for archived in (False, True):
+            menu = meeting_menu_model(archived)
+            last = menu.get_item_link(
+                menu.get_n_items() - 1, Gio.MENU_LINK_SECTION
+            )
+            self.assertEqual(
+                menu_actions(last), ["meeting.delete-audio", "meeting.delete"]
+            )
+
 
 def listening(port: int) -> bool:
     try:

@@ -88,8 +88,10 @@ steno summarize --uncited  redo the summaries that have no citations (lists, pri
 steno export [NAME] [-o F] print or save a meeting as markdown
 steno realign [NAME]       re-time an old session against its audio (costs a pass)
 steno delete [NAME]        move a meeting to the trash
+steno archive NAME...      put meetings away: kept whole, left out of every --all
+steno unarchive NAME...    bring them back
 steno todos                what you owe, across every meeting
-steno status               pause state and unsummarized sessions
+steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context
 ```
@@ -104,7 +106,7 @@ and has a **Summarize now** button. The sidebar's "N to-dos open" lists what you
 still owe across every meeting; a row opens its meeting. The ⋯ menu acts on
 the meeting you are looking at: summarize it again, re-time it against its
 audio, drop the audio but keep the words, copy or save the meeting as
-markdown, or delete it. Right-clicking a meeting in the list (or `Menu` /
+markdown, put it away (Archive, below), or delete it. Right-clicking a meeting in the list (or `Menu` /
 `Shift+F10` on it) opens that meeting and shows the same menu. Deleting goes
 to your desktop trash, all of it together, recoverable from there.
 
@@ -146,6 +148,36 @@ or clicking the point again puts the marks out; so does opening another
 meeting. Points with no number are plain text you can select, and a summary
 with no citations says so beside its heading, with a link to summarize it
 again.
+
+A meeting that no longer matters can be put away instead of deleted.
+**Archive** in the ⋯ menu (or in the menu of its row in the list) sets
+`archived` in its `meta.json` and touches nothing else, so the audio, the
+words and the to-dos stay as they were. It asks nothing: the toast that
+says so has an **Undo**. The meeting leaves the list and the search, and
+the page moves to the next meeting, or to an empty page that says how many
+are put away. While any meeting is, the last row of the list reads
+**Archived (3)**; it shows them again, dimmed and in a section of their
+own, and hides them on the next press. That is for this window only, a
+window opens without them. With a search typed the number counts the
+archived meetings that match it, so a search leaves nothing out, it only
+asks. A meeting opened from there (or from the to-do list, or from a
+notification) is a page like any other, with **Unarchive** in its menu
+where Archive was. The meeting being recorded cannot be archived: its item
+is greyed out.
+
+`steno archive NAME...` does the same from a terminal, and an open window
+follows when it is raised. Every command that goes through all meetings
+then leaves it out (`steno summarize --all` and `--uncited`,
+`steno realign --all`, `steno clean-echo --all`) and says how many it left;
+a command given the meeting's name (`export`, `summarize NAME`, `delete`)
+still reaches it. Its open to-dos stay open: they are counted in the
+list's "N to-dos open" (hover it for how many of those are in archived
+meetings), listed in it under the meeting's name, and listed by
+`steno todos`, because a promise made in a meeting does not lapse when the
+meeting is put away. The meeting count and the cost under the list still
+include it, and `STENO_KEEP_AUDIO_DAYS` treats it like any other.
+`steno status` counts the archived ones, and `steno unarchive NAME...`
+brings them back.
 
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window

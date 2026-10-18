@@ -119,6 +119,9 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
         font-weight: 600; font-size: 10pt; color: {colors['overlay2']};
         margin: 10px 10px 2px 10px;
     }}
+    /* Put away, and still there: dimmer, never struck through. */
+    .session-archived {{ opacity: 0.6; }}
+    .archive-toggle {{ margin-top: 8px; }}
 
     /* ---- transcripts ---- */
     .transcript-live {{

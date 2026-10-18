@@ -69,8 +69,16 @@ def row_meta(
     return [p for p in parts if p]
 
 
-def page_subtitle(start: datetime, mins: float, project: str | None) -> str:
-    parts = [f"{start:%A}, {start:%b} {start.day}, {start:%H:%M}", minutes(mins), project or ""]
+def page_subtitle(
+    start: datetime, mins: float, project: str | None,
+    archived: bool = False,
+) -> str:
+    parts = [
+        f"{start:%A}, {start:%b} {start.day}, {start:%H:%M}",
+        minutes(mins),
+        project or "",
+        "Archived" if archived else "",
+    ]
     return " · ".join(p for p in parts if p)
 
 
@@ -81,6 +89,45 @@ def todo_count(n: int) -> str:
 def owed_label(n: int) -> str:
     """The sidebar's cross-meeting count: what you still owe, everywhere."""
     return f"{n} to-do{'' if n == 1 else 's'} open"
+
+
+def owed_note(n_archived: int) -> str:
+    """Its tooltip: some of it is in meetings the list leaves out."""
+    if not n_archived:
+        return ""
+    return (
+        f"{n_archived} of them {'is' if n_archived == 1 else 'are'} in "
+        "archived meetings. Putting a meeting away does not keep a "
+        "promise made in it."
+    )
+
+
+def archived_toast(title: str, open_todos: int) -> str:
+    """What archiving says it did. The to-dos are the part that is not
+    obvious: the meeting leaves the list, its promises do not."""
+    said = f"Archived “{title}”"
+    if open_todos:
+        said += (
+            f" · {open_todos} to-do{'' if open_todos == 1 else 's'} "
+            "stay open"
+        )
+    return said
+
+
+def nothing_open(archived: int) -> tuple[str, str]:
+    """(title, description) of the page with no meeting on it."""
+    if archived:
+        many = archived != 1
+        return (
+            "Nothing open",
+            f"{archived} archived meeting{'s' if many else ''}. Open "
+            f"Archived in the list to see {'them' if many else 'it'}.",
+        )
+    return (
+        "No meetings yet",
+        "Steno records by itself when an app uses the microphone. "
+        "Start a call, or press Record.",
+    )
 
 
 def clock(seconds: float) -> str:

@@ -382,7 +382,8 @@ class TestTheWindowsOwnCallback(CitedMeeting):
     def test_it_hands_the_engine_this_meeting_on_the_bridge(self):
         sent = []
         self.app.engine = SimpleNamespace(
-            summarize_now=lambda folder: ("summarize_now", folder)
+            current=None,
+            summarize_now=lambda folder: ("summarize_now", folder),
         )
         self.app.bridge = SimpleNamespace(
             submit=lambda job: sent.append(job) or object()

@@ -470,7 +470,11 @@ def update_meta(session_dir: Path, **changes: object) -> None:
             meta.pop(key, None)
         else:
             meta[key] = value
-    (session_dir / META_FILENAME).write_text(json.dumps(meta, indent=2) + "\n")
+    # Whole or not at all: the window reads this file while a terminal
+    # writes it (`steno archive`), and half a file reads as no meta.
+    _write_atomic(
+        session_dir / META_FILENAME, json.dumps(meta, indent=2) + "\n"
+    )
 
 
 def save_project(session_dir: Path, project: str | None) -> None:
@@ -484,6 +488,25 @@ def save_project(session_dir: Path, project: str | None) -> None:
             meta = {}
     meta["project"] = project
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+
+
+def is_archived(session_dir: Path) -> bool:
+    """Put away by the user: out of the list and out of bulk commands."""
+    return load_meta(session_dir).get("archived") is True
+
+
+def set_archived(session_dir: Path, archived: bool) -> bool:
+    """Archive a meeting or bring it back. True if that changed anything.
+
+    Two keys in meta.json and nothing else: the audio, the words and the
+    to-dos stay where they are, so the to-dos are still counted. Archiving
+    what is archived keeps its first `archived_at`.
+    """
+    if is_archived(session_dir) == archived:
+        return False
+    when = time.time() if archived else None
+    update_meta(session_dir, archived=archived or None, archived_at=when)
+    return True
 
 
 def has_summary(session_dir: Path) -> bool:
@@ -546,7 +569,22 @@ def session_stamp(session_dir: Path) -> tuple:
             marks.append(path.stat().st_mtime_ns)
         except OSError:
             marks.append(0)
+    # Not meta.json's time: the window changes the project there too,
+    # and that is no reason to rebuild the page. Putting a meeting away
+    # is.
+    marks.append(int(is_archived(session_dir)))
     return (session_dir.name, *marks)
+
+
+def stamp_with_archived(stamp: tuple, archived: bool) -> tuple:
+    """`stamp` with the archive flag as the view now knows it.
+
+    For a view that changed the flag itself and read nothing else again:
+    a terminal putting the flag back is then a change, and the file
+    times stay those of what the view shows, so a summary rewritten
+    meanwhile is still news. The flag is the last mark.
+    """
+    return (*stamp[:-1], int(archived))
 
 
 def resolve_session(spec: str | None, root: Path | None = None) -> Path:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -100,6 +101,7 @@ class Window(Adw.ApplicationWindow):
             on_toast=self._toast,
             on_summarize=self._summarize,
             is_recording=self._is_recording,
+            recording_dir=self._recording_dir,
         )
         self.insert_action_group("meeting", self.meeting.actions)
 
@@ -176,6 +178,7 @@ class Window(Adw.ApplicationWindow):
         self.meeting_menu = Gtk.MenuButton()
         self.meeting_menu.set_icon_name("view-more-symbolic")
         self.meeting_menu.set_tooltip_text("This meeting")
+        self._menu_archived = False
         self.meeting_menu.set_menu_model(meeting_menu_model())
         header.pack_end(self.meeting_menu)
 
@@ -204,11 +207,9 @@ class Window(Adw.ApplicationWindow):
     def _build_empty_page(self) -> Adw.StatusPage:
         empty = Adw.StatusPage()
         empty.set_icon_name("audio-input-microphone-symbolic")
-        empty.set_title("No meetings yet")
-        empty.set_description(
-            "Steno records by itself when an app uses the microphone. "
-            "Start a call, or press Record."
-        )
+        empty.set_title(words.nothing_open(0)[0])
+        empty.set_description(words.nothing_open(0)[1])
+        self.empty = empty
 
         # The page that says "press Record" has to have the button, or on a
         # narrow window (where the status card is a page away) it points at
@@ -251,6 +252,11 @@ class Window(Adw.ApplicationWindow):
         # Quit sits next to it and costs the next meeting, so it asks. The
         # app's own `quit` (`steno quit`, the tray) is deliberate and doesn't.
         add("quit", self.confirm_quit, ["<Control>q"])
+
+    def _recording_dir(self) -> Path | None:
+        engine = self.app.engine
+        current = None if engine is None else engine.current
+        return None if current is None else current.session_dir
 
     def _is_recording(self) -> bool:
         engine = self.app.engine
@@ -297,6 +303,12 @@ class Window(Adw.ApplicationWindow):
             if item == LIVE:
                 self.stack.set_visible_child_name("live")
             else:
+                self.meeting.close_meeting()
+                title, description = words.nothing_open(
+                    self.sidebar.archived_count()
+                )
+                self.empty.set_title(title)
+                self.empty.set_description(description)
                 self.stack.set_visible_child_name("empty")
         self._update_header()
 
@@ -310,7 +322,9 @@ class Window(Adw.ApplicationWindow):
         collapsed = self.split.get_collapsed()
         if isinstance(item, Session):
             title = item.title or "Untitled"
-            subtitle = words.page_subtitle(item.start, item.minutes, item.project)
+            subtitle = words.page_subtitle(
+                item.start, item.minutes, item.project, item.archived
+            )
         elif item == LIVE:
             title = "Meeting in progress"
             started = datetime.fromtimestamp(self._live_started)
@@ -325,6 +339,11 @@ class Window(Adw.ApplicationWindow):
         self.page_subtitle.set_visible(bool(subtitle))
         self.content_page.set_title(title or "Meeting")
         self.meeting_menu.set_visible(isinstance(item, Session))
+        # A new model closes a menu that is open, and this runs every
+        # second: only when the offer changes.
+        if isinstance(item, Session) and item.archived != self._menu_archived:
+            self._menu_archived = item.archived
+            self.meeting_menu.set_menu_model(meeting_menu_model(item.archived))
         # With the sidebar showing, Stop is on its status card; without it, on
         # whichever page you are on, so a recording is stoppable from a past
         # meeting you wandered into too.
@@ -504,7 +523,10 @@ class Window(Adw.ApplicationWindow):
         self.live.zoom(delta)
         self._apply_css()
 
-    def _toast(self, text: str, open_session: Path | None = None) -> None:
+    def _toast(
+        self, text: str, open_session: Path | None = None,
+        undo: Callable[[], None] | None = None,
+    ) -> None:
         # Never steal focus or animate during a meeting; a toast is the loudest
         # this window is allowed to be while someone is talking.
         toast = Adw.Toast.new(text)
@@ -513,6 +535,9 @@ class Window(Adw.ApplicationWindow):
             toast.set_button_label("Open")
             toast.set_action_name("app.open-session")
             toast.set_action_target_value(GLib.Variant("s", str(open_session)))
+        elif undo is not None:
+            toast.set_button_label("Undo")
+            toast.connect("button-clicked", lambda _t: undo())
         self.toasts.add_toast(toast)
 
     def _show_shortcuts(self) -> None:
