@@ -25,7 +25,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Graphene", "1.0")
 
-from gi.repository import Gdk, Graphene, Gtk
+from gi.repository import Gdk, GLib, Graphene, Gtk
 
 from steno.gui.meeting import MeetingPage
 from steno.gui.window import Window
@@ -155,18 +155,26 @@ class TestTranscriptScroll(unittest.TestCase):
         scroller = self.open_long_meeting()
         hit = self.page._rows[HIT]
         self.assertTrue(hit.has_css_class("line-hit"))
-        # The jump waits for an idle pass, and whether the first frame
-        # has laid the rows out by then is up to the display. Ask again
-        # now that it has, as the page does for each meeting it opens.
-        scroller.get_vadjustment().set_value(0)
 
-        self.page.jump_to(NEEDLE)
-
+        # The jump the page made when the meeting was opened from the
+        # search, not a second one. Broadway lays the rows out after
+        # the first idle pass, so a jump that asked once would have
+        # moved a scroller with no extent yet and stayed at the top.
         self.assertTrue(
             wait_for(lambda: scroller.get_vadjustment().get_value() > 0),
             "the transcript stayed at the top",
         )
         self.assertTrue(on_screen(hit))
+
+    def test_a_jump_to_a_line_of_a_meeting_left_stops_asking(self):
+        short = self.page.current
+        self.open_long_meeting()
+        row = self.page._rows[HIT]
+        soon = GLib.get_monotonic_time() + 10 * GLib.USEC_PER_SEC
+
+        self.page.load(short)
+
+        self.assertFalse(self.page._scroll_to_row(row, soon))
 
     def test_the_view_follows_the_audio_down_the_transcript(self):
         scroller = self.open_long_meeting()
