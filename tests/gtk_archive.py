@@ -540,6 +540,7 @@ class TestInTheWindow(unittest.TestCase):
     def test_the_toast_says_so_and_takes_it_back(self):
         self.open("Bravo")
         self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
         (text, kw), = self.toasts
         self.assertIn("Bravo", text)
         self.assertEqual(titles(self.sidebar), ["Echo", "Charlie", ARCHIVE])
@@ -558,6 +559,7 @@ class TestInTheWindow(unittest.TestCase):
     def test_an_undo_for_a_meeting_deleted_since_leaves_the_list_alone(self):
         self.open("Bravo")
         self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
         undo = self.toasts[-1][1]["undo"]
         self.open("Bravo")
         with mock.patch("steno.gui.meeting.forget_asst"):
