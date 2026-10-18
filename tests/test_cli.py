@@ -11,8 +11,9 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from steno import cli
+from steno import asstlink, cli
 from steno.cli import _parse_duration, _replace_line, _split_csv
+from steno.notes import Todo, save_todos
 
 
 class TestReplaceLine(unittest.TestCase):
@@ -187,3 +188,30 @@ class TestDeleteSafety(unittest.TestCase):
              redirect_stdout(io.StringIO()):
             cli.cmd_delete(args)
         forget.assert_called_once()
+
+
+class TestTodosCommand(unittest.TestCase):
+    def test_listing_todos_files_nothing(self):
+        """`steno todos` reads asst. It used to file every meeting's
+        unfiled items on the way past (#19)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        meeting = Path(tmp.name) / "20260801-090000"
+        meeting.mkdir()
+        (meeting / "transcript.jsonl").write_text("{}\n")
+        (meeting / "meta.json").write_text("{}")
+        save_todos(meeting, [Todo(text="Send the report", owner="you")])
+        calls: list[list[str]] = []
+
+        def fake_asst(args: list[str]) -> str:
+            calls.append(args)
+            return "[]"
+
+        out = io.StringIO()
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "_run", side_effect=fake_asst), \
+             redirect_stdout(out):
+            cli.cmd_todos(argparse.Namespace(dir=Path(tmp.name), all=False))
+        self.assertIn("Send the report", out.getvalue())
+        self.assertIn(["ls"], calls)  # it did ask asst
+        self.assertEqual([a for a in calls if a[0] == "add"], [])

@@ -406,23 +406,28 @@ class TestOutageFallback(unittest.TestCase):
         self.assertFalse(out[0].dirty)
         self.assertTrue(out[0].done)
 
-    def test_unfiled_items_are_retried_on_pull(self):
+    def test_a_pull_does_not_file_unfiled_items(self):
+        """Filing is for when a summary lands. A pull runs whenever a meeting
+        is opened and for every meeting in `steno todos`, and it used to file
+        the items of a two-month-old meeting the first time anyone looked."""
         save_todos(self.dir, [
             Todo(text="Send", owner="you",
                  src=asstlink.source_key(self.dir, "send")),
         ])
-        remote = {
-            asstlink.source_key(self.dir, "send"): {
-                "id": "BEEF", "completed": False, "list": "Inbox",
-            },
-        }
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink, "add_todo", return_value="BEEF") as add, \
+             mock.patch.object(asstlink, "fetch_session", return_value={}):
+            out = pull_todos(self.dir)
+        add.assert_not_called()
+        self.assertEqual([(t.text, t.uid) for t in out], [("Send", "")])
+
+    def test_a_summary_landing_files_your_items(self):
         with mock.patch.object(asstlink, "available", lambda: True), \
              mock.patch.object(asstlink, "target_list", return_value=None), \
-             mock.patch.object(asstlink, "add_todo", return_value="BEEF") as add, \
-             mock.patch.object(asstlink, "fetch_session", return_value=remote):
-            out = pull_todos(self.dir)
-        self.assertEqual(add.call_count, 1)
-        self.assertEqual(out[0].uid, "BEEF")
+             mock.patch.object(asstlink, "add_todo", return_value="BEEF") as add:
+            out = sync_todos(self.dir, SUMMARY)
+        self.assertEqual(add.call_count, 2)  # the two "you"; not "them"
+        self.assertEqual([t.uid for t in out], ["BEEF", "BEEF", ""])
 
 
 class TestForgetAsst(unittest.TestCase):

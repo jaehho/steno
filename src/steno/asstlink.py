@@ -4,6 +4,9 @@ asst owns the task list; steno only files items and mirrors the checkbox. The
 link is `asst add --source steno:<session>/<key>`, which is idempotent on that
 key, so re-summarizing a meeting never duplicates its to-dos on the phone.
 
+Items are filed when a summary lands, never when a meeting is opened or
+listed: reading todos (the window, `steno todos`) only reads asst.
+
 Your items file into the asst list named after the meeting's project when that
 list exists; otherwise the inbox. A list tied to a GitHub repo will open issues
 for them, which is why an unset project stays out of those lists.
