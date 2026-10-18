@@ -252,6 +252,33 @@ class TestToolLoop(Keyed):
         self.assertNotIn("hunter2", result)
         self.assertNotIn(".env", result)
 
+    def test_the_tools_skip_a_projects_published_meetings(self):
+        """Steno's copies of earlier meetings are other people's speech,
+        unredacted: the model neither lists, reads nor finds them."""
+        root = Path(tempfile.mkdtemp())
+        notes = root / "thesis" / "notes"
+        (notes / "meetings").mkdir(parents=True)
+        page = notes / "meetings" / "2026-10-06-1612-x.transcript.md"
+        page.write_text("[00:01] Them: ring me on 555-0100\n")
+        (notes / "ideas.md").write_text("ring the supplier\n")
+        (notes / "alias").symlink_to(notes / "meetings")
+        (root / "thesis" / "page.md").symlink_to(page)
+
+        def tool(name, **args):
+            call = {"id": "1", "function": {
+                "name": name, "arguments": json.dumps(args)}}
+            return claude._tool_result(root, call)["content"]
+
+        self.assertEqual(tool("list_dir", path="thesis/notes"), "ideas.md")
+        for path in ("thesis/notes/meetings", "thesis/notes/alias",
+                     "thesis/notes/meetings/" + page.name):
+            self.assertTrue(tool("list_dir", path=path).startswith("error:"))
+            self.assertTrue(tool("read_file", path=path).startswith("error:"))
+        found = tool("grep", pattern="ring")
+        self.assertIn("ideas.md", found)
+        self.assertNotIn("555", found)
+        self.assertNotIn("page.md", found)
+
     def test_over_budget_forces_a_final_answer(self):
         projects = Path(tempfile.mkdtemp())
         seen = []
