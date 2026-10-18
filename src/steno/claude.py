@@ -296,7 +296,7 @@ _WITHHELD = ("notes", "meetings")
 
 
 def _withheld(top: Path, path: Path) -> bool:
-    """True for a resolved `path` in a project's published meetings.
+    """True for a resolved `path` in a project's meeting notes.
 
     Those are where `notes/meetings` leads, not only where it is named:
     steno follows a link to a directory inside the project (`notes ->

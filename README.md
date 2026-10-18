@@ -90,9 +90,9 @@ steno realign [NAME]       re-time an old session against its audio (costs a pas
 steno delete [NAME]        move a meeting to the trash
 steno archive NAME...      put meetings away: kept whole, left out of every --all
 steno unarchive NAME...    bring them back
-steno publish [NAME]       copy a meeting into its project's notes/meetings
-steno publish --all        ... every meeting filed under a project (--dry-run first)
-steno unpublish NAME...    take a meeting's pages out of its project again
+steno project-notes [NAME]  copy a meeting into its project's notes/meetings
+steno project-notes --all   ... every meeting filed under a project (--dry-run first)
+steno project-notes --remove NAME...  take a meeting's pages out again
 steno todos                what you owe, across every meeting
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
@@ -225,13 +225,13 @@ folder is, for an agent that lands in it.
 to a meeting that is already there: a tick, a saved note, a tick made on your
 phone, a re-timing. The wait is so that typing a note does not rewrite a file
 every few seconds; opening another meeting, or quitting, writes what is
-waiting at once. A tick or an edit never publishes a meeting that was not
-there already. `steno summarize` and `steno realign` do the same from a
-terminal. A meeting you delete is taken out of its project first; one you
-archive stays there. If the pages cannot be taken out (the folder is not
-writable, say), the meeting is not deleted, because the transcript would stay
-behind with nothing to say where it is: the window shows why, `steno delete`
-prints it and exits 1, and deleting again after the fix goes through.
+waiting at once. A tick or an edit never puts a meeting into a project that
+was not there already. `steno summarize` and `steno realign` do the same
+from a terminal. A meeting you delete is taken out of its project first;
+one you archive stays there. If the pages cannot be taken out (the folder is
+not writable, say), the meeting is not deleted, because the transcript would
+stay behind with nothing to say where it is: the window shows why, `steno
+delete` prints it and exits 1, and deleting again after the fix goes through.
 **Show in project notes** in the ⋯ menu opens the folder, for a meeting that
 has pages in one.
 
@@ -250,7 +250,7 @@ has pages in one.
   same way.
 - It writes only what changed. A page is compared byte for byte and written
   when it differs, whole: to a hidden temporary file in the same folder, then
-  renamed over the old one. The same meeting published twice leaves every
+  renamed over the old one. Writing the same meeting twice leaves every
   modification time alone, and nobody reads half a page.
 - It runs no git, and sends nothing anywhere: no network, no model. The pages
   are made from files Steno already has.
@@ -280,17 +280,17 @@ uploads hidden files may see the temporary file come and go.
 
 **The switch.** `STENO_PROJECT_NOTES=0` in `~/.config/steno/.env` turns all
 of it off: the window, `steno summarize` and `steno realign` write nothing,
-and `steno publish` refuses unless given `--force`. Unset or empty is on, and
-anything but a plain yes (`1`, `true`, `yes`, `on`) reads as off, so a typo
-fails towards writing nothing. It does not take back what is already
-written; `steno unpublish` does, and works with the switch off.
+and `steno project-notes` refuses unless given `--force`. Unset or empty is
+on, and anything but a plain yes (`1`, `true`, `yes`, `on`) reads as off, so
+a typo fails towards writing nothing. It does not take back what is already
+written; `steno project-notes --remove` does, and works with the switch off.
 
-**Meetings from before.** They are not copied until you ask. `steno publish
---all --dry-run` lists every file it would create, update or take away, and
-writes none; read it, then run `steno publish --all`:
+**Meetings from before.** They are not copied until you ask. `steno
+project-notes --all --dry-run` lists every file it would create, update or
+take away, and writes none; read it, then run `steno project-notes --all`:
 
 ```
-$ steno publish --all --dry-run
+$ steno project-notes --all --dry-run
 20261012-100000  Weekly sync  [rcnn]
   create  rcnn/notes/meetings/.gitignore
   create  rcnn/notes/meetings/2026-10-12-1000-weekly-sync.md
@@ -302,13 +302,13 @@ $ steno publish --all --dry-run
 dry run, nothing written: 2 meetings looked at, 0 already up to date; 6 to create
 ```
 
-`steno publish` alone does the newest meeting, `NAME` one, `--project P` only
-those filed under P. `--all` leaves the archived meetings out, as the other
+`steno project-notes` alone does the newest meeting, `NAME` one, `--project P`
+only those filed under P. `--all` leaves the archived meetings out, as the other
 commands that go through everything do, and also takes pages away from a
 meeting that has since left its project. A file Steno would not touch is
-listed as `skip`, with why. `steno unpublish NAME...` takes meetings' pages
-back out (also with `--dry-run`), and the folder with them if nothing else is
-in it. None of this needs the app running.
+listed as `skip`, with why. `steno project-notes --remove NAME...` takes
+meetings' pages back out (also with `--dry-run`), and the folder with them if
+nothing else is in it. None of this needs the app running.
 
 **For an agent.** Steno never edits a project's own files. To tell the agent
 working in a project that the folder is there, add one line to that project's
@@ -419,7 +419,7 @@ reconnect.
   engine's asyncio loop and GTK's main loop meet; everything crossing back goes
   through `GLib.idle_add`. `sidebar.py`, `meeting.py` and `live.py` are the three
   surfaces; `summary.py` is the summary's rows and the bar of places; `words.py`
-  is what they say, testable headlessly; `republish.py` waits for a pause
+  is what they say, testable headlessly; `rewrite.py` waits for a pause
   before it rewrites a meeting's project pages. `player.py` is GStreamer, for playback.
 - **`events.py`** — what the engine says. The engine never touches a widget.
 - **`state.py` / `control.py`** — what the bar reads, and how a click reaches

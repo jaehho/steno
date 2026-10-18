@@ -56,7 +56,7 @@ class TestMenuModel(unittest.TestCase):
 
     def test_its_pages_in_the_project_are_offered_only_when_it_has_some(self):
         self.assertNotIn("meeting.show-notes", menu_actions(meeting_menu_model()))
-        shown = menu_actions(meeting_menu_model(published=True))
+        shown = menu_actions(meeting_menu_model(has_notes=True))
         self.assertIn("meeting.show-notes", shown)
         self.assertEqual(
             shown.index("meeting.show-notes"),
@@ -65,7 +65,7 @@ class TestMenuModel(unittest.TestCase):
         for archived in (False, True):
             self.assertIn(
                 "meeting.show-notes",
-                menu_actions(meeting_menu_model(archived, published=True)),
+                menu_actions(meeting_menu_model(archived, has_notes=True)),
             )
 
     def test_archiving_is_not_next_to_the_deletes(self):

@@ -355,7 +355,7 @@ class TestSummaryNote(unittest.TestCase):
 
 class TestProjectNotesProblem(unittest.TestCase):
     """A page left alone, or a write that failed, is told; the rest of
-    what a publish can come to is not worth a toast."""
+    what a write can come to is not worth a toast."""
 
     def change(self, action: str, note: str = "") -> projectnotes.Change:
         return projectnotes.Change(action, Path("/p/notes/meetings/a.md"), note)
@@ -376,7 +376,7 @@ class TestProjectNotesProblem(unittest.TestCase):
         self.assertEqual(said.count("a.md"), words.NAMED_AT_MOST)
         self.assertIn("…", said)
 
-    def test_a_publish_that_went_well_or_nowhere_says_nothing(self):
+    def test_a_write_that_went_well_or_nowhere_says_nothing(self):
         for given in (
             {},
             {"changes": [self.change("create"), self.change("same")]},

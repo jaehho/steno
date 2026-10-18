@@ -5,7 +5,7 @@ display and never on a real one. The name keeps test discovery from
 importing this file in the main process, where `import gi` would connect
 to the desktop.
 
-The projects directory is a temp one, the republisher's clock is a fake
+The projects directory is a temp one, the rewriter's clock is a fake
 one (a minute passes when the test says), and a folder is never handed to
 the desktop: `_open_folder` is replaced. The app object is made but never
 started, so nothing listens to a microphone.
@@ -34,14 +34,14 @@ from steno.events import SummaryReady
 from steno.gui import meeting
 from steno.gui.app import App
 from steno.gui.menu import menu_actions
-from steno.gui.republish import DELAY_S, Republisher
+from steno.gui.rewrite import DELAY_S, Rewriter
 from steno.gui.window import Window
 from steno.notes import load_todos, save_todos
 from steno.summarize import update_meta
 from tests.gtk_quit import find, press
 from tests.gtk_sidebar_menu import StubApp, settle
 from tests.test_projectnotes import SUMMARY, make_session
-from tests.test_republish import FakeTime
+from tests.test_rewrite import FakeTime
 
 ALPHA, BRAVO, CHARLIE = "20260928-143000", "20261006-161200", "20261007-090000"
 ALPHA_PAGE = "2026-09-28-1430-vendor-pricing-call.md"
@@ -80,7 +80,7 @@ class Base(unittest.TestCase):
                                     project=None)
         self.time = FakeTime()
         self.problems: list[str] = []
-        self.rp = Republisher(self.problems.append, **self.time.timing)
+        self.rp = Rewriter(self.problems.append, **self.time.timing)
 
     def tearDown(self):
         self.rp.wait(10)
@@ -102,7 +102,7 @@ class TestInTheWindow(Base):
         super().setUp()
         self.app = StubApp()
         self.app.register(None)
-        self.app.republisher = self.rp
+        self.app.rewriter = self.rp
         self.window = Window(self.app, self.root)
         self.window.present()
         settle()
@@ -141,7 +141,7 @@ class TestInTheWindow(Base):
     # ----------------------------------------------------------------- edits
 
     def test_a_tick_reaches_the_project_after_a_pause(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.tick_second_item()
         self.assertTrue(load_todos(self.alpha)[1].done)
@@ -154,7 +154,7 @@ class TestInTheWindow(Base):
         self.assertIn("todos_open: 0", self.page_text())
 
     def test_a_tick_taken_back_leaves_every_file_as_it_was(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         folder = self.meetings()
         before = {p.name: p.stat().st_mtime_ns for p in folder.iterdir()}
         self.open(self.alpha)
@@ -166,7 +166,7 @@ class TestInTheWindow(Base):
         self.assertEqual(after, before)
 
     def test_notes_typed_reach_the_project(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.page.notes.view.get_buffer().set_text("call Dana back\n")
         self.page.notes.flush()
@@ -174,7 +174,7 @@ class TestInTheWindow(Base):
         self.settle()
         self.assertIn("call Dana back", self.page_text())
 
-    def test_a_meeting_nobody_published_is_not_published_by_an_edit(self):
+    def test_a_meeting_in_no_project_is_not_put_into_one_by_an_edit(self):
         self.open(self.bravo)
         self.page.notes.view.get_buffer().set_text("thoughts\n")
         self.page.notes.flush()
@@ -183,7 +183,7 @@ class TestInTheWindow(Base):
         self.assertFalse(self.meetings().exists())
 
     def test_opening_another_meeting_writes_what_was_waiting(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.tick_second_item()
         self.assertIn(OPEN_ITEM, self.page_text())
@@ -192,7 +192,7 @@ class TestInTheWindow(Base):
         self.assertIn(DONE_ITEM, self.page_text())
 
     def test_the_notes_typed_last_are_written_with_it(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.page.notes.view.get_buffer().set_text("typed just now\n")
         self.open(self.charlie)  # the box saves, the page is left
@@ -200,7 +200,7 @@ class TestInTheWindow(Base):
         self.assertIn("typed just now", self.page_text())
 
     def test_the_phone_ticking_is_a_change_too(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         s = self.page.current
         ticked = load_todos(self.alpha)
@@ -212,7 +212,7 @@ class TestInTheWindow(Base):
         self.assertIn(DONE_ITEM, self.page_text())
 
     def test_a_re_timing_that_finished_reaches_the_project(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         meta = json.loads((self.alpha / "meta.json").read_text())
         row = {"ts": meta["started_at"] + 5, "speaker": "them",
@@ -225,7 +225,7 @@ class TestInTheWindow(Base):
         self.assertIn("[00:05] them: re-timed words", words)
 
     def test_a_pull_that_finds_nothing_new_waits_for_nothing(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.page._apply_pull(self.page.current, load_todos(self.alpha))
         self.assertEqual(self.time.timers, {})
@@ -243,7 +243,7 @@ class TestInTheWindow(Base):
         press(dialog, "Save")
         self.settle()
 
-    def test_setting_a_project_publishes_there(self):
+    def test_setting_a_project_writes_its_pages_there(self):
         self.open(self.charlie)
         self.assertNotIn("meeting.show-notes", self.header_actions())
         self.choose_project("demo")
@@ -251,7 +251,7 @@ class TestInTheWindow(Base):
         self.assertIn("meeting.show-notes", self.header_actions())
 
     def test_moving_it_to_another_project_takes_the_pages_along(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.choose_project("other")
         self.assertFalse(self.meetings().exists())
@@ -259,7 +259,7 @@ class TestInTheWindow(Base):
         self.assertEqual(self.toasts[0], "Project: other")
 
     def test_clearing_the_project_takes_them_away(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.choose_project("None")
         self.assertFalse(self.meetings().exists())
@@ -268,7 +268,7 @@ class TestInTheWindow(Base):
     # ------------------------------------------------------------------ menu
 
     def test_the_menu_offers_the_pages_only_to_a_meeting_that_has_some(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.window.sidebar.refresh()
         settle()
         self.open(self.alpha)
@@ -280,7 +280,7 @@ class TestInTheWindow(Base):
         self.open(self.charlie)
         self.assertNotIn("meeting.show-notes", self.header_actions())
         update_meta(self.charlie, project="demo")
-        projectnotes.publish(self.charlie)  # what the app did on its worker
+        projectnotes.write(self.charlie)  # what the app did on its worker
         self.window.on_event(
             SummaryReady(self.charlie, "Charlie", SUMMARY, requested=True)
         )
@@ -288,7 +288,7 @@ class TestInTheWindow(Base):
         self.assertIn("meeting.show-notes", self.header_actions())
 
     def test_show_in_project_notes_opens_the_folder_and_nothing_else(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.window.sidebar.refresh()
         settle()
         self.open(self.alpha)
@@ -297,7 +297,7 @@ class TestInTheWindow(Base):
         opened.assert_called_once_with(self.meetings().resolve())
 
     def test_if_the_pages_have_gone_it_says_so_instead(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.window.sidebar.refresh()
         settle()
         self.open(self.alpha)
@@ -328,7 +328,7 @@ class TestInTheWindow(Base):
         return seen
 
     def test_deleting_takes_the_pages_out_before_the_meeting_goes(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.page.notes.view.get_buffer().set_text("typed just now\n")
         self.assertEqual(self.delete(), [])
@@ -337,14 +337,14 @@ class TestInTheWindow(Base):
         self.assertEqual(self.time.timers, {})  # nothing is waiting to run
 
     def test_a_meeting_that_cannot_be_trashed_is_put_back(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         with mock.patch.object(self.page, "_dialog"):
             self.assertEqual(self.delete("failed"), [])
         self.assertTrue(self.alpha.exists())
         self.assertTrue((self.meetings() / ALPHA_PAGE).is_file())
 
-    def test_deleting_a_meeting_never_published_costs_it_nothing(self):
+    def test_deleting_a_meeting_with_no_pages_costs_it_nothing(self):
         self.open(self.bravo)
         self.delete()
         self.assertFalse(self.bravo.exists())
@@ -353,14 +353,14 @@ class TestInTheWindow(Base):
     def test_a_copy_that_cannot_be_taken_out_keeps_the_meeting(self):
         """Delete anyway and the transcript page stays in the project,
         with the record of where it is gone with the meeting."""
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.page.notes.view.get_buffer().set_text("typed just now\n")
         denied = PermissionError(errno.EACCES, "Permission denied")
         for delete in (self.page._delete, self.page._delete_permanently):
             with self.subTest(delete=delete.__name__):
                 with mock.patch.object(
-                    projectnotes, "unpublish", side_effect=denied
+                    projectnotes, "remove", side_effect=denied
                 ), mock.patch.object(meeting, "forget_asst") as forget, \
                         mock.patch.object(meeting, "delete_session") as gone, \
                         self.assertLogs("steno.projectnotes", "WARNING"):
@@ -391,7 +391,7 @@ class TestInTheWindow(Base):
     # --------------------------------------------------------------- problem
 
     def test_a_page_of_yours_in_the_way_is_left_and_the_window_says_so(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         self.open(self.alpha)
         self.rp._on_problem = self.toasts.append
         (self.meetings() / ALPHA_PAGE).write_text("mine\n")
@@ -441,12 +441,12 @@ class TestInTheApp(Base):
                       page.read_text())
 
     def test_quitting_writes_what_was_waiting_for_a_pause(self):
-        projectnotes.publish(self.alpha)
+        projectnotes.write(self.alpha)
         done = [{"text": "Draft the comparison table", "owner": "you",
                  "done": True}]
         self.alpha.joinpath("todos.json").write_text(json.dumps(done))
-        self.app.republisher = Republisher(**self.time.timing)
-        self.app.republisher.changed(self.alpha)
+        self.app.rewriter = Rewriter(**self.time.timing)
+        self.app.rewriter.changed(self.alpha)
         with mock.patch("steno.gui.app.clear_state"):
             self.app.do_shutdown()
         self.assertIn(DONE_ITEM, (self.meetings() / ALPHA_PAGE).read_text())

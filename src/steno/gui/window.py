@@ -102,7 +102,7 @@ class Window(Adw.ApplicationWindow):
             on_summarize=self._summarize,
             is_recording=self._is_recording,
             recording_dir=self._recording_dir,
-            republisher=app.republisher,
+            rewriter=app.rewriter,
         )
         self.insert_action_group("meeting", self.meeting.actions)
 
@@ -343,7 +343,7 @@ class Window(Adw.ApplicationWindow):
         # A new model closes a menu that is open, and this runs every
         # second: only when the offer changes.
         if isinstance(item, Session) and (
-            key := (item.archived, item.published)
+            key := (item.archived, item.has_notes)
         ) != self._menu_key:
             self._menu_key = key
             self.meeting_menu.set_menu_model(meeting_menu_model(*key))

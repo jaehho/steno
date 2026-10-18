@@ -42,7 +42,7 @@ from ..session import paused_until, set_pause
 from ..state import clear_state, write_state
 from . import words
 from .bridge import EngineBridge
-from .republish import Republisher
+from .rewrite import Rewriter
 from .tray import Tray
 
 log = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ class App(Adw.Application):
         self._todo_workers: list[threading.Thread] = []
         # Keeps the meetings' pages in their projects current as they are
         # edited in the window; lives as long as the app, not the window.
-        self.republisher = Republisher(on_problem=self._notes_problem)
+        self.rewriter = Rewriter(on_problem=self._notes_problem)
         self.tray: Tray | None = None
 
     # ------------------------------------------------------------------ startup
@@ -137,7 +137,7 @@ class App(Adw.Application):
         # What was typed last, and the pages that were waiting for a pause.
         if self._window is not None:
             self._window.meeting.flush_notes()
-        self.republisher.shutdown()
+        self.rewriter.shutdown()
         if self.tray is not None:
             self.tray.stop()
         clear_state()
@@ -316,7 +316,7 @@ class App(Adw.Application):
             finally:
                 # The to-dos are in todos.json by now, and the page lists
                 # them.
-                GLib.idle_add(arrived, self._publish_landed(event.session_dir))
+                GLib.idle_add(arrived, self._write_landed(event.session_dir))
 
         def arrived(problem: str) -> bool:
             if not event.requested:
@@ -330,13 +330,13 @@ class App(Adw.Application):
         self._todo_workers = [w for w in self._todo_workers if w.is_alive()] + [worker]
         worker.start()
 
-    def _publish_landed(self, session_dir: Path) -> str:
+    def _write_landed(self, session_dir: Path) -> str:
         """Put a summary that has just landed into its project, if it has
         one. What to tell the person, if anything. Never raises: the
         notification and the window must hear of the summary whatever
         happened to the copy."""
         try:
-            result = projectnotes.try_publish(session_dir)
+            result = projectnotes.try_write(session_dir)
         except Exception:
             log.exception("project notes: %s", session_dir.name)
             return "Project notes: not written, see the log"

@@ -252,7 +252,7 @@ class TestToolLoop(Keyed):
         self.assertNotIn("hunter2", result)
         self.assertNotIn(".env", result)
 
-    def test_the_tools_skip_a_projects_published_meetings(self):
+    def test_the_tools_skip_a_projects_meeting_notes(self):
         """Steno's copies of earlier meetings are other people's speech,
         unredacted: the model neither lists, reads nor finds them."""
         root = Path(tempfile.mkdtemp())

@@ -57,7 +57,7 @@ class Session:
         self.title = load_title(path)
         self.project = load_project(path)
         self.archived = is_archived(path)
-        self.published = projectnotes.read_record(path) is not None
+        self.has_notes = projectnotes.read_record(path) is not None
         try:
             self.start = datetime.strptime(path.name, "%Y%m%d-%H%M%S")
         except ValueError:
@@ -163,7 +163,7 @@ def row_menu(item: Item | None) -> Gio.Menu | None:
     """
     if not isinstance(item, Session):
         return None
-    return meeting_menu_model(archived=item.archived, published=item.published)
+    return meeting_menu_model(archived=item.archived, has_notes=item.has_notes)
 
 
 class Sidebar(Gtk.Box):
@@ -503,7 +503,7 @@ class Sidebar(Gtk.Box):
         archive flag or project notes in place."""
         was_archived = session.archived
         session.archived = is_archived(session.dir)
-        session.published = projectnotes.read_record(session.dir) is not None
+        session.has_notes = projectnotes.read_record(session.dir) is not None
         session.project = load_project(session.dir)
         session.open_todos = open_count(session.dir)
         session._haystack = None  # search includes project

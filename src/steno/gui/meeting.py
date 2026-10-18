@@ -53,7 +53,7 @@ from ..summarize import (
 )
 from . import words
 from .player import Player
-from .republish import QUIT_WAIT_S, Republisher
+from .rewrite import QUIT_WAIT_S, Rewriter
 from .sidebar import Session
 from .summary import CiteBar, CitedBox, CiteSource, SummaryView, make_citable
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
@@ -97,12 +97,12 @@ class MeetingPage(Gtk.Box):
         on_summarize: Callable[[Path], None] | None = None,
         is_recording: Callable[[], bool] | None = None,
         recording_dir: Callable[[], Path | None] | None = None,
-        republisher: Republisher | None = None,
+        rewriter: Rewriter | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         # What keeps the meeting's pages in its project current; None
         # keeps nothing.
-        self._republisher = republisher
+        self._rewriter = rewriter
         self._on_ask = on_ask
         self._on_summarize = on_summarize
         self._is_recording = is_recording or (lambda: False)
@@ -395,8 +395,8 @@ class MeetingPage(Gtk.Box):
         todos = ensure_todos(s.dir)
         # Saves the notes of the meeting left, which the next line writes up.
         self.notes.bind(s.dir)
-        if left is not None and left.dir != s.dir and self._republisher:
-            self._republisher.leave(left.dir)
+        if left is not None and left.dir != s.dir and self._rewriter:
+            self._rewriter.leave(left.dir)
         self.ask.clear()
         self._load_transcript(s)
         self._show_summary(s, todos)
@@ -599,8 +599,8 @@ class MeetingPage(Gtk.Box):
         rather than in a minute."""
         self.stop_pull()
         self.notes.flush()
-        if self.current is not None and self._republisher is not None:
-            self._republisher.leave(self.current.dir)
+        if self.current is not None and self._rewriter is not None:
+            self._rewriter.leave(self.current.dir)
 
     def close_meeting(self) -> None:
         """No meeting is open any more. The page is out of sight, and its
@@ -686,8 +686,8 @@ class MeetingPage(Gtk.Box):
     def _changed(self, session_dir: Path) -> None:
         """A to-do, a note or the transcript changed: the meeting's pages
         in its project follow, a minute after the last change."""
-        if self._republisher is not None:
-            self._republisher.changed(session_dir)
+        if self._rewriter is not None:
+            self._rewriter.changed(session_dir)
 
     def _load_todos(self, s: Session, todos: list[Todo]) -> None:
         while (child := self.todo_box.get_first_child()) is not None:
@@ -1139,8 +1139,8 @@ class MeetingPage(Gtk.Box):
             self._toast(base)
             # Into the new project's notes and out of the old one's; the
             # menu hears of it when that is done.
-            if self._republisher is not None:
-                self._republisher.publish(
+            if self._rewriter is not None:
+                self._rewriter.write(
                     s.dir, then=lambda _r: self._on_session_changed(s)
                 )
 
@@ -1150,7 +1150,7 @@ class MeetingPage(Gtk.Box):
     def _show_notes(self) -> None:
         """Open the folder in the project that holds this meeting's pages."""
         s = self.current
-        folder = None if s is None else projectnotes.published_folder(s.dir)
+        folder = None if s is None else projectnotes.notes_folder(s.dir)
         if folder is None:
             self._toast("This meeting is not in a project's notes")
             return
@@ -1246,15 +1246,15 @@ class MeetingPage(Gtk.Box):
         the transcript would stay in the project with nothing left to
         say they are there. The dialog tells the person.
         """
-        if self._republisher is not None:
-            self._republisher.forget(s.dir)
+        if self._rewriter is not None:
+            self._rewriter.forget(s.dir)
             # A rewrite that has begun finishes first, or it could put the
             # pages back after they were taken out.
-            self._republisher.wait(QUIT_WAIT_S)
-        gone = projectnotes.try_unpublish(s.dir)
+            self._rewriter.wait(QUIT_WAIT_S)
+        gone = projectnotes.try_remove(s.dir)
         if gone.error:
-            if self._republisher is not None:
-                self._republisher.changed(s.dir)  # the copy stays current
+            if self._rewriter is not None:
+                self._rewriter.changed(s.dir)  # the copy stays current
             self._copy_stays(s, gone)
             return None
         if problem := words.project_notes_problem(gone):
@@ -1284,8 +1284,8 @@ class MeetingPage(Gtk.Box):
         forget_asst(s.dir)
         outcome, where = delete_session(s.dir)
         if outcome == "failed":
-            if gone.altered and self._republisher is not None:
-                self._republisher.publish(s.dir)  # it is still here
+            if gone.altered and self._rewriter is not None:
+                self._rewriter.write(s.dir)  # it is still here
             self._dialog(
                 "Could not move it to the trash",
                 f"{s.dir} is still there. This usually means the trash is on a "
@@ -1307,8 +1307,8 @@ class MeetingPage(Gtk.Box):
         if outcome == "deleted":
             self.current = None
             self._on_deleted(s.dir)
-        elif gone.altered and self._republisher is not None:
-            self._republisher.publish(s.dir)
+        elif gone.altered and self._rewriter is not None:
+            self._rewriter.write(s.dir)
 
     def _confirm_delete_audio(self) -> None:
         s = self.current
