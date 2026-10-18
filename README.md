@@ -82,6 +82,7 @@ steno pause 45m            stop detecting for a while; --off to resume
 steno quit                 stop the listener
 steno bar                  waybar JSON on stdout, one line per change
 steno summarize [NAME]     (re)summarize a session; --all to catch up
+steno summarize --uncited  redo the summaries that have no citations (lists, prices, --yes)
 steno export [NAME] [-o F] print or save a meeting as markdown
 steno realign [NAME]       re-time an old session against its audio (costs a pass)
 steno delete [NAME]        move a meeting to the trash
@@ -112,8 +113,15 @@ the line, `<!--cite 201-221,460-->`. The numbers are seconds into the meeting,
 the ones the transcript's time column shows, so `steno realign` does not
 strand them. GitHub and Obsidian show nothing; `steno export` and Copy meeting
 write it as `[03:21, 07:40]`, which matches the stamps in the transcript
-section. A bullet nothing supports gets none. A meeting summarized before this
-has none until you run `steno summarize NAME` on it.
+section. A bullet nothing supports gets none. A meeting summarized before
+this has none until it is summarized again: `steno summarize NAME --force`
+for one, or `steno summarize --uncited`, which lists every summary without
+citations and what redoing them costs, and does it when you add `--yes`.
+Summarizing again keeps what is yours: your notes, the meeting's project,
+and your ticks. A to-do the new summary words differently (say "Send usage
+figures to Alice by Friday" for "Send the usage figures by Friday") stays
+the same row, with its tick and its task in asst, when the two read alike;
+a differently named person, day or number makes it a new one.
 
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window

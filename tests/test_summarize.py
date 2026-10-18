@@ -20,6 +20,7 @@ from steno.summarize import (
     iter_sessions,
     load_records,
     load_title,
+    needs_citations,
     parse_summary,
     resolve_session,
     save_project,
@@ -132,6 +133,35 @@ class TestHasSummary(unittest.TestCase):
     def test_a_real_summary_counts(self):
         (self.a / "summary.md").write_text("# T\n\n## TL;DR\n- x\n")
         self.assertTrue(has_summary(self.a))
+
+
+class TestNeedsCitations(unittest.TestCase):
+    """`steno summarize --uncited` redoes these and only these."""
+
+    def setUp(self):
+        self.dir = _session(Path(tempfile.mkdtemp()), "20260101-090000")
+
+    def summary(self, text: str, **meta) -> Path:
+        (self.dir / "summary.md").write_text(text)
+        (self.dir / "meta.json").write_text(json.dumps(meta))
+        return self.dir
+
+    def test_a_summary_from_before_citations_does(self):
+        self.assertTrue(needs_citations(self.summary("# T\n\n- x\n")))
+
+    def test_a_cited_summary_does_not(self):
+        self.assertFalse(
+            needs_citations(self.summary("# T\n\n- x <!--cite 5-->\n"))
+        )
+
+    def test_one_that_was_asked_for_citations_and_came_back_bare_does_not(self):
+        """The same cent would buy the same answer."""
+        done = self.summary("# T\n\n- x\n", cites={"items": 1, "cited": 0})
+        self.assertFalse(needs_citations(done))
+
+    def test_no_summary_and_a_title_alone_do_not(self):
+        self.assertFalse(needs_citations(self.dir))
+        self.assertFalse(needs_citations(self.summary("# Only a title\n")))
 
 
 class TestSessionResolution(unittest.TestCase):

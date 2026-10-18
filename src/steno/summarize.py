@@ -408,6 +408,22 @@ def has_summary(session_dir: Path) -> bool:
         return False
 
 
+def needs_citations(session_dir: Path) -> bool:
+    """A summary written before citations existed.
+
+    Not one written with them whose reply came back uncited: meta.json says
+    `cites` then, and asking again would spend the same money on the same
+    answer (`steno summarize NAME --force` still can).
+    """
+    if "cites" in load_meta(session_dir) or not has_summary(session_dir):
+        return False
+    try:
+        text = (session_dir / SUMMARY_FILENAME).read_text(errors="replace")
+    except OSError:
+        return False
+    return citations.coverage(text).cited == 0
+
+
 def sessions_root(root: Path | None = None) -> Path:
     return root if root is not None else data_dir() / "sessions"
 
