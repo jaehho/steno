@@ -178,6 +178,10 @@ class CitedMeeting(unittest.TestCase):
             "the transcript was never laid out",
         )
         self.view = self.page.summary_view
+        self.assertTrue(
+            wait_for(lambda: self.view.sources[0].mark.get_width() > 0),
+            "the summary was never laid out",
+        )
 
     def tearDown(self):
         sys.excepthook = self._hook
@@ -257,6 +261,47 @@ class TestSummaryRows(CitedMeeting):
 
         self.assertEqual(text.get_selection_bounds(), (True, 2, 9))
 
+    def tab_stops(self, root: Gtk.Widget, count: int) -> list[Gtk.Widget]:
+        """The widgets Tab visits inside `root`, from before the first."""
+        self.window.set_focus(None)
+        stops = []
+        for _ in range(count):
+            root.child_focus(Gtk.DirectionType.TAB_FORWARD)
+            stops.append(self.window.get_focus())
+        return stops
+
+    def test_tab_visits_each_cited_item_in_turn_and_moves_on(self):
+        """GtkBox hands focus to its children, which cannot take it; the
+        items would be skipped, and Enter and Space unreachable."""
+        marks = [s.mark for s in self.view.sources]
+        stops = self.tab_stops(self.page, 6)
+        found = [stop for stop in stops if stop in marks]
+        self.assertEqual(found, marks)
+        # Each takes one Tab: the stop after it is not the same widget.
+        for mark in marks:
+            at = stops.index(mark)
+            self.assertIsNot(stops[at + 1], mark)
+
+    def test_enter_on_the_item_tab_reached_lights_its_lines(self):
+        marks = [s.mark for s in self.view.sources]
+        stops = self.tab_stops(self.page, 6)
+        reached = stops[stops.index(marks[1])]
+        self.assertTrue(press(reached, Gdk.KEY_Return))
+        self.assertEqual(self.lit(), DEPOSIT)
+
+    def test_tab_goes_from_a_to_dos_box_to_its_words(self):
+        todo = next(
+            s.mark for s in self.page._todo_sources if "figures" in s.markup
+        )
+        check, _label, target = todo_parts(todo)
+        # Tab goes by where things are, so they have to have been placed.
+        self.assertTrue(wait_for(lambda: target.get_width() > 0))
+        self.window.set_focus(check)
+
+        self.assertTrue(self.page.todo_box.child_focus(Gtk.DirectionType.TAB_FORWARD))
+
+        self.assertIs(self.window.get_focus(), target)
+
     def test_nothing_is_lit_until_an_item_is_chosen(self):
         self.assertEqual(self.lit(), [])
         self.assertIsNone(self.page._active)
@@ -326,6 +371,19 @@ class TestChoosingAnItem(CitedMeeting):
         self.assertFalse(self.item("deposit").mark.has_css_class("item-active"))
         self.assertTrue(self.item("Ship").mark.has_css_class("item-active"))
 
+    def test_a_click_brings_the_focus_into_the_page_so_escape_gets_there(self):
+        """Opening a meeting leaves the focus in the list, where Esc would
+        not reach the page."""
+        self.window.sidebar.list.get_row_at_index(0).grab_focus()
+        settle()
+        self.assertFalse(self.window.get_focus().is_ancestor(self.page))
+
+        mark = self.item("deposit").mark
+        click(mark)
+
+        self.assertIs(self.window.get_focus(), mark)
+        self.assertTrue(self.window.get_focus().is_ancestor(self.page))
+
     def test_choosing_the_same_item_again_puts_the_lines_out(self):
         click(self.item("deposit").mark)
         click(self.item("deposit").mark)
@@ -358,17 +416,43 @@ class TestChoosingAnItem(CitedMeeting):
         # With nothing lit, Escape is left for whoever else wants it.
         self.assertFalse(press(self.page, Gdk.KEY_Escape))
 
+    def after_the_double_click_time(self) -> None:
+        ms = Gtk.Settings.get_default().props.gtk_double_click_time
+        wait_for(lambda: False, ms / 1000 + 0.1)
+
     def test_playing_a_lit_line_leaves_the_others_lit(self):
         click(self.item("deposit").mark)
+        self.after_the_double_click_time()
 
         self.page.transcript_list.emit(
             "row-activated", self.page._rows[DEPOSIT[1]]
         )
 
         self.assertEqual(self.lit(), DEPOSIT)
+        self.assertEqual(self.player.played, [599.6 + 5])
         self.assertTrue(
             self.page._rows[DEPOSIT[1]].has_css_class("line-playing")
         )
+
+    def test_the_second_click_of_a_double_click_does_not_play_the_line_it_lands_on(self):
+        """The first click took the page to the lines, so the second one
+        is on a line, not on the item."""
+        click(self.item("deposit").mark)
+        self.page.transcript_list.emit(
+            "row-activated", self.page._rows[DEPOSIT[0]]
+        )
+        self.assertEqual(self.player.played, [])
+        self.assertEqual(self.page._playing_index, -1)
+
+        self.after_the_double_click_time()
+        self.page.transcript_list.emit(
+            "row-activated", self.page._rows[DEPOSIT[0]]
+        )
+        self.assertEqual(self.player.played, [599.6])
+
+    def test_a_click_on_a_line_with_nothing_lit_plays_at_once(self):
+        self.page.transcript_list.emit("row-activated", self.page._rows[3])
+        self.assertEqual(self.player.played, [14.6])
 
 
 def children(widget: Gtk.Widget) -> list[Gtk.Widget]:
@@ -621,14 +705,15 @@ class TestTheBar(CitedMeeting):
         self.assertEqual(self.page._place, 0)
 
 
-def todo_parts(row: Gtk.Box) -> tuple[Gtk.CheckButton, Gtk.Label]:
-    """A to-do row's box and its words. A to-do that cites keeps the words
-    beside the box; one that does not, inside it."""
+def todo_parts(row: Gtk.Box) -> tuple[Gtk.CheckButton, Gtk.Label, Gtk.Widget]:
+    """A to-do row's box, its words, and what is clicked to see where they
+    were said. A to-do that cites keeps the words beside the box, in
+    something to click; one that does not, inside the box."""
     first = row.get_first_child()
     if isinstance(first, Gtk.CheckButton):
-        return first, first.get_child()
-    check, label = children(first)
-    return check, label
+        return first, first.get_child(), first.get_child()
+    check, target = children(first)
+    return check, target.get_first_child(), target
 
 
 class TestTodos(CitedMeeting):
@@ -643,6 +728,9 @@ class TestTodos(CitedMeeting):
     def words_of(self, text: str) -> Gtk.Label:
         return todo_parts(self.todo_rows()[text])[1]
 
+    def target_of(self, text: str) -> Gtk.Widget:
+        return todo_parts(self.todo_rows()[text])[2]
+
     def check_of(self, text: str) -> Gtk.CheckButton:
         return todo_parts(self.todo_rows()[text])[0]
 
@@ -652,8 +740,9 @@ class TestTodos(CitedMeeting):
             sorted(rows),
             ["Draft the table", "Revised quote next week", "Send the figures"],
         )
-        cited = self.words_of("Send the figures")
+        cited = self.target_of("Send the figures")
         self.assertTrue(cited.has_css_class("cited-item"))
+        self.assertTrue(cited.get_focusable())
         self.assertIsNone(self.check_of("Send the figures").get_child())
         self.assertEqual(
             cited.get_tooltip_text(), "Show where this was said (1 place)"
@@ -669,7 +758,7 @@ class TestTodos(CitedMeeting):
         row = self.todo_rows()["Send the figures"]
         check = self.check_of("Send the figures")
 
-        click(self.words_of("Send the figures"))
+        click(self.target_of("Send the figures"))
 
         self.assertEqual(self.lit(), FIGURES)
         self.assertTrue(row.has_css_class("item-active"))
@@ -685,11 +774,11 @@ class TestTodos(CitedMeeting):
         return bar.get_visible() and bar.title.get_text() == title
 
     def test_what_they_owe_can_be_clicked_too(self):
-        click(self.words_of("Revised quote next week"))
+        click(self.target_of("Revised quote next week"))
         self.assertEqual(self.lit(), QUOTE)
 
     def test_the_box_still_ticks_and_the_tick_leaves_the_lines_lit(self):
-        click(self.words_of("Send the figures"))
+        click(self.target_of("Send the figures"))
         check = self.check_of("Send the figures")
 
         check.set_active(True)
@@ -706,7 +795,7 @@ class TestTodos(CitedMeeting):
 
     def test_one_item_at_a_time_across_the_summary_and_the_to_dos(self):
         click(self.item("deposit").mark)
-        click(self.words_of("Send the figures"))
+        click(self.target_of("Send the figures"))
         self.assertEqual(self.lit(), FIGURES)
         self.assertFalse(self.item("deposit").mark.has_css_class("item-active"))
 
@@ -718,7 +807,7 @@ class TestTodos(CitedMeeting):
 
     def test_rebuilding_the_list_keeps_the_lit_to_do_lit(self):
         """asst answers about once a minute and the list is drawn again."""
-        click(self.words_of("Send the figures"))
+        click(self.target_of("Send the figures"))
         old = self.todo_rows()["Send the figures"]
 
         self.page._load_todos(self.page.current, ensure_todos(self.page.current.dir))
@@ -728,7 +817,7 @@ class TestTodos(CitedMeeting):
         self.assertTrue(new.has_css_class("item-active"))
         self.assertEqual(self.lit(), FIGURES)
         # And clicking the new row puts it out, as the old one would have.
-        click(self.words_of("Send the figures"))
+        click(self.target_of("Send the figures"))
         self.assertEqual(self.lit(), [])
 
     def test_a_lit_summary_item_is_not_touched_by_a_rebuilt_list(self):

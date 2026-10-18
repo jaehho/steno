@@ -41,6 +41,20 @@ class CiteSource:
     ref: tuple[str, object] = field(default=("", None))
 
 
+class CitedBox(Gtk.Box):
+    """A box that is itself what takes the focus.
+
+    GtkBox hands focus to its children, and a cited item's children are
+    labels that cannot have it, so Tab would walk past the item. This one
+    takes it, once, and the next Tab moves on.
+    """
+
+    def do_focus(self, _direction: Gtk.DirectionType) -> bool:
+        if self.is_focus() or self.get_focus_child() is not None:
+            return False
+        return self.grab_focus()
+
+
 def places_word(count: int) -> str:
     return f"{count} place" + ("" if count == 1 else "s")
 
@@ -64,6 +78,9 @@ def make_citable(
     def released(_gesture, presses: int, _x: float, _y: float) -> None:
         # A double click is two presses; only the first one chooses.
         if presses == 1:
+            # Focus comes with the click, so Esc and Enter reach the page from
+            # here and not from wherever the focus was (the meeting list).
+            target.grab_focus()
             on_choose(source)
 
     click.connect("released", released)
@@ -110,7 +127,9 @@ class SummaryView(Gtk.Box):
         return label
 
     def _item(self, block: words.Block) -> Gtk.Widget:
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        cited = bool(block.cites)
+        box = CitedBox if cited else Gtk.Box
+        row = box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         row.add_css_class("summary-item")
         row.set_margin_start(12 * (block.indent // 2))
 
@@ -119,7 +138,6 @@ class SummaryView(Gtk.Box):
         bullet.set_width_chars(1 if block.bullet == "•" else 2)
         row.append(bullet)
 
-        cited = bool(block.cites)
         # A cited item is clicked, so its words are not selectable: a
         # selectable label takes the click and shows a text cursor.
         text = wrapping_label(selectable=not cited)

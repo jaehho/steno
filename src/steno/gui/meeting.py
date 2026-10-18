@@ -51,7 +51,7 @@ from ..summarize import (
 from . import words
 from .player import Player
 from .sidebar import Session
-from .summary import CiteBar, CiteSource, SummaryView, make_citable
+from .summary import CiteBar, CitedBox, CiteSource, SummaryView, make_citable
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
 
 NUDGE_S = 10.0
@@ -117,6 +117,8 @@ class MeetingPage(Gtk.Box):
         self._cited: list[int] = []
         self._places: list[words.Place] = []
         self._place = -1  # the one in `_places` the page was last taken to
+        # When an item last took the page to its lines (GLib monotonic µs).
+        self._jumped_at = 0
         # The to-dos on the page that cite, to find the lit one again when
         # the list is rebuilt.
         self._todo_sources: list[CiteSource] = []
@@ -583,12 +585,15 @@ class MeetingPage(Gtk.Box):
             words_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
             words_row.set_hexpand(True)
             words_row.append(check)
-            words_row.append(label)
+            clickable = CitedBox(orientation=Gtk.Orientation.HORIZONTAL)
+            clickable.set_hexpand(True)
+            clickable.append(label)
+            words_row.append(clickable)
             row.append(words_row)
             source = CiteSource(
                 row, todo.cites, words.escape(todo.text), ("todo", todo.key)
             )
-            make_citable(label, source, self._toggle_cites)
+            make_citable(clickable, source, self._toggle_cites)
             self._todo_sources.append(source)
         else:
             # Clicking the words ticks the box, as it would in any checklist.
@@ -708,6 +713,13 @@ class MeetingPage(Gtk.Box):
         self._highlight(index)
 
     def _on_line_activated(self, _list, row) -> None:
+        # The second click of a double click on an item lands where the
+        # first one took the page: on a transcript line, which would start
+        # playing. A click that soon after is not meant for the line.
+        settings = Gtk.Settings.get_default()
+        window_ms = settings.props.gtk_double_click_time if settings else 400
+        if GLib.get_monotonic_time() - self._jumped_at < window_ms * 1000:
+            return
         self._play_line(row.get_index())
 
     def _on_scrub(self, _scale, _scroll, value: float) -> bool:
@@ -782,6 +794,7 @@ class MeetingPage(Gtk.Box):
             self._clear_cites()
         else:
             self._show_cites(source, scroll=True)
+            self._jumped_at = GLib.get_monotonic_time()
 
     def _show_cites(self, source: CiteSource, scroll: bool) -> None:
         self._clear_cites()
