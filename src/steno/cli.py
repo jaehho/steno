@@ -74,6 +74,10 @@ DEEPGRAM_API_KEY=
 
 # Optional. 0 hides the tray icon, for a bar already running `steno bar`.
 # STENO_TRAY=0
+
+# Optional. Any value stops steno running `asst`: no to-do is filed, ticked
+# or removed in the task app. For scratch runs; "0" does not undo it.
+# STENO_NO_ASST=1
 """
 
 

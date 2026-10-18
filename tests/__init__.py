@@ -14,6 +14,9 @@ from steno import asstlink
 # way), `asst` cannot reach the user's asstd; it fails to connect and exits.
 os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/nonexistent/steno-tests"
 
+# The real `available`, for the test of the STENO_NO_ASST switch itself.
+real_available = asstlink.available
+
 # A test run must never file tasks into the real inbox. Tests that mean to
 # exercise the asst handshake re-enable asstlink under mock; the default is off.
 mock.patch.object(asstlink, "available", lambda: False).start()

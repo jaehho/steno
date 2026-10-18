@@ -63,7 +63,9 @@ OpenAI-style chat-completions request to a model host, MiMo by default, with
 its key in `~/.config/mimo.env` (`MIMO_API_KEY`). `STENO_PROVIDER=openrouter`
 reads `~/.config/openrouter.env` instead; `STENO_MODEL`, `STENO_BASE_URL` and
 `STENO_API_KEY` override the model, endpoint and key (the template `steno init`
-writes lists them). Optionally write `~/.config/steno/brief.md` — a short,
+writes lists them). `STENO_NO_ASST=1` (any non-empty value, `0` included)
+stops Steno running `asst`, the task app your action items are filed in, so
+a scratch run cannot touch your real lists. Optionally write `~/.config/steno/brief.md` — a short,
 curated page about who you are and what you work on, used to resolve names and
 jargon that speech recognition mangles. `steno brief --new` drafts one with
 Claude Code.
