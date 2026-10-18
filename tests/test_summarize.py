@@ -10,10 +10,12 @@ from pathlib import Path
 from unittest import mock
 
 from steno import asstlink, citations, claude
-from steno.notes import load_todos, set_done_local, sync_todos
+from steno.notes import Todo, load_todos, set_done_local, sync_todos
 from steno.speakers import load_names, save_names
 from steno.summarize import (
+    MAX_EARLIER_TODOS,
     duration_minutes,
+    earlier_todos_prompt,
     format_for_model,
     has_body,
     has_summary,
@@ -440,6 +442,31 @@ class TestSummarizeSession(unittest.TestCase):
         self.assertIn("[L0 00:00] them", self.fake.calls[0][0])
 
 
+class TestEarlierTodosPrompt(unittest.TestCase):
+    def test_none_kept_none_said(self):
+        self.assertEqual(earlier_todos_prompt([]), "")
+
+    def test_listed_by_owner_as_the_summary_lists_them(self):
+        out = earlier_todos_prompt([
+            Todo("Ask about the discount", "them"),
+            Todo("Send the figures", "you"),
+            Todo("Book the room", "unassigned"),
+        ])
+        self.assertIn(
+            "**You**\n- Send the figures\n\n"
+            "**Them**\n- Ask about the discount\n\n"
+            "**Unassigned**\n- Book the room",
+            out,
+        )
+
+    def test_a_long_list_is_cut(self):
+        todos = [Todo(f"Task number {n}", "you")
+                 for n in range(MAX_EARLIER_TODOS + 10)]
+        out = earlier_todos_prompt(todos)
+        self.assertIn(f"Task number {MAX_EARLIER_TODOS - 1}\n", out + "\n")
+        self.assertNotIn(f"Task number {MAX_EARLIER_TODOS}\n", out + "\n")
+
+
 # 2001-09-09, long before any session in the tests.
 OLD_NS = 1_000_000_000 * 10**9
 
@@ -474,7 +501,7 @@ class TestResummarize(unittest.TestCase):
             (self.projects / name).mkdir()
 
     def summarize(self, *replies):
-        fake = FakeModel(*replies)
+        fake = self.fake = FakeModel(*replies)
         with mock.patch.object(claude, "run_structured", fake):
             return asyncio.run(
                 summarize_session(self.dir, "m", None, self.projects)
@@ -510,6 +537,15 @@ class TestResummarize(unittest.TestCase):
         )
         self.assertEqual(self.filed, 1)  # asst heard of it once, ever
         self.assertEqual(load_todos(self.dir), todos)
+
+    def test_the_model_is_told_the_wording_it_gave_before(self):
+        """Told, it mostly keeps it: that is what keeps a tick on its row."""
+        self.land(self.summarize(CITED_REPLY))
+        self.assertNotIn("already kept", self.fake.calls[0][1]["system"])
+        self.summarize(CITED_REPLY)
+        system = self.fake.calls[0][1]["system"]
+        self.assertIn("already kept", system)
+        self.assertIn("**You**\n- Send the usage figures by Friday", system)
 
     def test_a_project_set_by_hand_is_not_overwritten(self):
         save_project(self.dir, "thesis")

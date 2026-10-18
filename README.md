@@ -65,10 +65,10 @@ reads `~/.config/openrouter.env` instead; `STENO_MODEL`, `STENO_BASE_URL` and
 `STENO_API_KEY` override the model, endpoint and key (the template `steno init`
 writes lists them). `STENO_NO_ASST=1` (any non-empty value, `0` included)
 stops Steno running `asst`, the task app your action items are filed in, so
-a scratch run cannot touch your real lists. Optionally write `~/.config/steno/brief.md` — a short,
-curated page about who you are and what you work on, used to resolve names and
-jargon that speech recognition mangles. `steno brief --new` drafts one with
-Claude Code.
+a scratch run cannot touch your real lists. Optionally write
+`~/.config/steno/brief.md` — a short, curated page about who you are and what
+you work on, used to resolve names and jargon that speech recognition mangles.
+`steno brief --new` drafts one with Claude Code.
 
 ## Use
 
@@ -120,10 +120,13 @@ this has none until it is summarized again: `steno summarize NAME --force`
 for one, or `steno summarize --uncited`, which lists every summary without
 citations and what redoing them costs, and does it when you add `--yes`.
 Summarizing again keeps what is yours: your notes, the meeting's project,
-and your ticks. A to-do the new summary words differently (say "Send usage
-figures to Alice by Friday" for "Send the usage figures by Friday") stays
-the same row, with its tick and its task in asst, when the two read alike;
-a differently named person, day or number makes it a new one.
+and your ticks. The model is shown the meeting's action items as they stand
+and told to keep their wording where the transcript still supports them, so
+the same promise stays the same row. A to-do the new summary words
+differently anyway (say "Send usage figures to Alice by Friday" for "Send the
+usage figures by Friday") stays the same row, with its tick and its task in
+asst, when the two read alike; a differently named person, day or number makes
+it a new one.
 
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window

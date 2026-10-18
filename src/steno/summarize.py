@@ -4,11 +4,13 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import citations, claude, data_dir
 from .cost import prerecorded_cost, stream_cost
+from .notes import Todo, load_todos
 from .playback import display_offset, format_offset, repair_started_at
 from .redact import redact_text
 from .speakers import label as speaker_label
@@ -86,6 +88,21 @@ implemented, a decision nobody voiced) does not belong in it, not even under Key
 facts. Keep the reading short. If no project clearly fits, set `project` to null \
 and read nothing."""
 
+EARLIER_TODOS_PROMPT = """\
+# Action items already kept for this meeting
+
+An earlier summary of this meeting gave the action items below, and the user \
+may have ticked them or filed them as tasks. A task is matched by its \
+wording: where one is still a commitment the transcript supports, list it \
+under Action items under the same owner with exactly this wording, not a \
+better one, so that it stays the same task. Leave out one the transcript does \
+not support, and add any that are missing. The list is no source of facts; \
+only the transcript is.
+
+{listing}"""
+# More than this and the list is a second transcript.
+MAX_EARLIER_TODOS = 40
+
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -140,6 +157,26 @@ def projects_prompt(root: Path, projects: dict[str, str]) -> str:
     listing = "\n".join(f"- {name}" + (f": {desc}" if desc else "")
                         for name, desc in projects.items())
     return PROJECTS_PROMPT.format(root=root, listing=listing)
+
+
+def earlier_todos_prompt(todos: Sequence[Todo]) -> str:
+    """The to-dos kept for a meeting, for a summary written over them.
+
+    A model asked again words the same promise differently, and a to-do is
+    matched by its wording: the tick and the phone task would stay on the
+    old row beside a new, open one. Told the old wording, it mostly keeps
+    it. Laid out as the summary lays out its action items. "" when there
+    are none.
+    """
+    kept = todos[:MAX_EARLIER_TODOS]
+    groups = []
+    for owner in ("you", "them", "unassigned"):
+        mine = [f"- {t.text}" for t in kept if t.owner == owner]
+        if mine:
+            groups.append("\n".join([f"**{owner.capitalize()}**", *mine]))
+    if not groups:
+        return ""
+    return EARLIER_TODOS_PROMPT.format(listing="\n\n".join(groups))
 
 
 def transcript_path(session_dir: Path) -> Path:
@@ -262,6 +299,8 @@ async def summarize_session(
         )
     if known:
         system += "\n\n" + projects_prompt(root, known)
+    if earlier := earlier_todos_prompt(load_todos(session_dir)):
+        system += "\n\n" + earlier
 
     transcript = format_for_model(records, names=names, offsets=offsets)
     # A heading-only reply is a known flake, not a short meeting: ask again.
