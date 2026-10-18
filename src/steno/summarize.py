@@ -569,6 +569,10 @@ def session_stamp(session_dir: Path) -> tuple:
             marks.append(path.stat().st_mtime_ns)
         except OSError:
             marks.append(0)
+    # Not meta.json's time: the window changes the project there too,
+    # and that is no reason to rebuild the page. Putting a meeting away
+    # is.
+    marks.append(int(is_archived(session_dir)))
     return (session_dir.name, *marks)
 
 

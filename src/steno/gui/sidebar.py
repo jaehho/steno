@@ -26,6 +26,7 @@ from ..notes import ensure_todos, open_count
 from ..summarize import (
     SUMMARY_FILENAME,
     duration_minutes,
+    is_archived,
     iter_sessions,
     load_project,
     load_records,
@@ -37,7 +38,14 @@ from .menu import meeting_menu_model
 from .widgets import hint_label
 
 LIVE = "live"
+# The last row of the list, which shows or hides the archived meetings.
+ARCHIVE = "archive"
 STATES = ("idle", "recording", "finalizing", "paused")
+# Opening the archive scrolls to it once the frame clock has laid the
+# new rows out: asked every SCROLL_POLL_MS, dropped after
+# SCROLL_GIVE_UP_US.
+SCROLL_POLL_MS = 16
+SCROLL_GIVE_UP_US = 2 * GLib.USEC_PER_SEC
 
 
 class Session:
@@ -47,6 +55,7 @@ class Session:
         self.dir = path
         self.title = load_title(path)
         self.project = load_project(path)
+        self.archived = is_archived(path)
         try:
             self.start = datetime.strptime(path.name, "%Y%m%d-%H%M%S")
         except ValueError:
@@ -148,8 +157,11 @@ def row_menu(item: Item | None) -> Gio.Menu | None:
     A past meeting gets what the page header's menu has. The meeting in
     progress gets nothing: it is stopped from the status card, and nothing
     in that menu should be done to a recording that is still being written.
+    The row that shows the archive is not a meeting and gets nothing.
     """
-    return meeting_menu_model() if isinstance(item, Session) else None
+    if not isinstance(item, Session):
+        return None
+    return meeting_menu_model(archived=item.archived)
 
 
 class Sidebar(Gtk.Box):
@@ -167,6 +179,9 @@ class Sidebar(Gtk.Box):
         self.sessions: list[Session] = []
         self.items: list[Item] = []
         self.query = ""
+        # Whether the archived meetings are in the list. Not kept: a
+        # window that opens on its archive every time has no archive.
+        self.show_archived = False
         self.live_dir: Path | None = None
         self.live_app = ""
         self.selected: Item | None = None
@@ -188,14 +203,8 @@ class Sidebar(Gtk.Box):
         self.list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.list.set_header_func(self._header)
         self.list.connect("row-selected", self._on_row_selected)
-        self.list.connect("row-activated", lambda *_a: on_activate())
-        keys = Gtk.ShortcutController()
-        for key in ("Menu", "<Shift>F10"):
-            keys.add_shortcut(Gtk.Shortcut.new(
-                Gtk.ShortcutTrigger.parse_string(key),
-                Gtk.CallbackAction.new(self._on_menu_key),
-            ))
-        self.list.add_controller(keys)
+        self.list.connect("row-activated", self._on_row_activated)
+        self.list.add_controller(self._menu_shortcuts())
         self.placeholder = Gtk.Label(label="", justify=Gtk.Justification.CENTER)
         self.placeholder.add_css_class("empty-hint")
         self.placeholder.set_wrap(True)
@@ -204,11 +213,11 @@ class Sidebar(Gtk.Box):
         self.placeholder.set_margin_end(16)
         self.list.set_placeholder(self.placeholder)
 
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_child(self.list)
-        scroll.set_vexpand(True)
-        self.append(scroll)
+        self.scroll = Gtk.ScrolledWindow()
+        self.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scroll.set_child(self.list)
+        self.scroll.set_vexpand(True)
+        self.append(self.scroll)
 
         self._on_activate = on_activate
         self.append(self._build_owed())
@@ -221,6 +230,15 @@ class Sidebar(Gtk.Box):
         self.footer.set_margin_top(8)
         self.footer.set_margin_bottom(10)
         self.append(self.footer)
+
+    def _menu_shortcuts(self) -> Gtk.ShortcutController:
+        keys = Gtk.ShortcutController()
+        for key in ("Menu", "<Shift>F10"):
+            keys.add_shortcut(Gtk.Shortcut.new(
+                Gtk.ShortcutTrigger.parse_string(key),
+                Gtk.CallbackAction.new(self._on_menu_key),
+            ))
+        return keys
 
     # -------------------------------------------------------------------- owed
 
@@ -266,7 +284,11 @@ class Sidebar(Gtk.Box):
             if not mine:
                 continue
             head = Gtk.Label(
-                label=" · ".join(p for p in (s.title or "Untitled", words.when(s.start, now)) if p),
+                label=" · ".join(p for p in (
+                    s.title or "Untitled",
+                    words.when(s.start, now),
+                    "archived" if s.archived else "",
+                ) if p),
                 xalign=0.0,
             )
             head.add_css_class("sec")
@@ -366,6 +388,8 @@ class Sidebar(Gtk.Box):
                 session = old
             fresh.append(session)
         self.sessions = fresh
+        if select is not None:
+            self._reveal(select)
         self._repopulate(keep)
 
     def refresh_if_stale(self) -> bool:
@@ -382,6 +406,10 @@ class Sidebar(Gtk.Box):
         self.refresh()
         return True
 
+    def archived_count(self) -> int:
+        """How many meetings are put away, shown in the list or not."""
+        return sum(1 for s in self.sessions if s.archived)
+
     def _selected_dir(self) -> Path | None:
         return self.selected.dir if isinstance(self.selected, Session) else None
 
@@ -394,16 +422,24 @@ class Sidebar(Gtk.Box):
         while (row := self.list.get_first_child()) is not None:
             self.list.remove(row)
 
-        shown = [
+        found = [
             s for s in self.sessions
             if s.dir != self.live_dir and s.matches(self.query)
         ]
-        self.items = ([LIVE] if self.live_dir is not None else []) + shown
+        away = [s for s in found if s.archived]
+        self.items = (
+            ([LIVE] if self.live_dir is not None else [])
+            + [s for s in found if not s.archived]
+            + ([ARCHIVE] if away else [])
+            + (away if self.show_archived else [])
+        )
         now = datetime.now()
         for item in self.items:
             if isinstance(item, Session):
                 row = self._session_row(item, now)
                 self._add_menu_triggers(row)
+            elif item == ARCHIVE:
+                row = self._archive_row(len(away))
             else:
                 row = self._live_row()
             self.list.append(row)
@@ -421,17 +457,28 @@ class Sidebar(Gtk.Box):
             ):
                 index = i
                 break
-        if index < 0 and self.items and keep is None and not self.query:
-            index = 0
+        if index < 0 and keep is None and not self.query:
+            index = next(
+                (i for i, it in enumerate(self.items) if it != ARCHIVE), -1
+            )
         row = self.list.get_row_at_index(index) if index >= 0 else None
         if row is not None:
             self.list.select_row(row)
-        elif not self.items and not self.query:
+        elif not self.query and not self._holds_meeting(keep) and all(
+            it == ARCHIVE for it in self.items
+        ):
             self.selected = None
             self._on_select(None)
         # Otherwise the meeting on the page is merely filtered out of the
-        # list. Forgetting it would blank the page header, and clearing the
-        # search would then jump to the newest meeting instead of back here.
+        # list (by the search, or by being archived). Forgetting it
+        # would blank the page header, and clearing the search would
+        # then jump to the newest meeting instead of back here.
+
+    def _holds_meeting(self, key: Path | str | None) -> bool:
+        """Is this a meeting that exists, shown in the list or not?"""
+        return isinstance(key, Path) and any(
+            s.dir == key for s in self.sessions
+        )
 
     def _update_footer(self) -> None:
         total = len(self.sessions)
@@ -444,12 +491,22 @@ class Sidebar(Gtk.Box):
         self.footer.set_text(" · ".join(parts))
         self.owed.set_visible(bool(open_todos))
         self.owed.set_label(words.owed_label(open_todos))
+        # An archived meeting's promises are still yours, and counted.
+        self.owed.set_tooltip_text(words.owed_note(sum(
+            s.open_todos for s in self.sessions if s.archived
+        )) or None)
 
     def update_session(self, session: Session) -> None:
-        """The meeting page changed this session's project or to-dos in place."""
+        """The meeting page changed this session's project, to-dos or
+        archive flag in place."""
+        was_archived = session.archived
+        session.archived = is_archived(session.dir)
         session.project = load_project(session.dir)
         session.open_todos = open_count(session.dir)
         session._haystack = None  # search includes project
+        if session.archived != was_archived:
+            self._move_between(session)
+            return
         self._update_footer()
         index = next((i for i, it in enumerate(self.items) if it is session), -1)
         row = self.list.get_row_at_index(index) if index >= 0 else None
@@ -459,17 +516,26 @@ class Sidebar(Gtk.Box):
     def _header(self, row: Gtk.ListBoxRow, before: Gtk.ListBoxRow | None) -> None:
         now = datetime.now()
         name = self._section_of(row.get_index(), now)
-        if before is not None and self._section_of(before.get_index(), now) == name:
+        # The row that opens the archive is its heading already.
+        if self._item_at(row.get_index()) == ARCHIVE or (
+            before is not None
+            and self._section_of(before.get_index(), now) == name
+        ):
             row.set_header(None)
             return
         label = Gtk.Label(label=name, xalign=0.0)
         label.add_css_class("list-section")
         row.set_header(label)
 
+    def _item_at(self, index: int) -> Item | None:
+        return self.items[index] if 0 <= index < len(self.items) else None
+
     def _section_of(self, index: int, now: datetime) -> str:
-        if not 0 <= index < len(self.items):
+        item = self._item_at(index)
+        if item is None:
             return ""
-        item = self.items[index]
+        if item == ARCHIVE or (isinstance(item, Session) and item.archived):
+            return "Archived"
         return words.list_section(item.start, now) if isinstance(item, Session) else "Now"
 
     def _live_row(self) -> Gtk.ListBoxRow:
@@ -492,6 +558,33 @@ class Sidebar(Gtk.Box):
         box.append(meta)
         row = Gtk.ListBoxRow()
         row.set_child(box)
+        return row
+
+    def _archive_row(self, count: int) -> Gtk.ListBoxRow:
+        """Shows or hides the archived meetings. Not a meeting: it cannot
+        be selected, so the page never mistakes it for one."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+        label = Gtk.Label(label=f"Archived ({count})", xalign=0.0)
+        label.add_css_class("sec")
+        label.set_hexpand(True)
+        box.append(label)
+        open_ = "pan-down-symbolic"
+        shut = "pan-end-symbolic"
+        box.append(Gtk.Image.new_from_icon_name(
+            open_ if self.show_archived else shut
+        ))
+        row = Gtk.ListBoxRow()
+        row.add_css_class("archive-toggle")
+        row.set_selectable(False)
+        row.set_child(box)
+        row.set_tooltip_text(
+            "Meetings you put away. Their open to-dos still count."
+        )
+        row.update_state(
+            [Gtk.AccessibleState.EXPANDED], [self.show_archived]
+        )
         return row
 
     def _session_row(self, s: Session, now: datetime) -> Gtk.ListBoxRow:
@@ -527,11 +620,19 @@ class Sidebar(Gtk.Box):
 
         row = Gtk.ListBoxRow()
         row.set_child(box)
+        if s.archived:
+            row.add_css_class("session-archived")
         return row
 
     def _on_search(self, entry) -> None:
         self.query = entry.get_text().strip()
         self._repopulate(self._selected_key())
+
+    def _on_row_activated(self, _list, row: Gtk.ListBoxRow) -> None:
+        if self._item_at(row.get_index()) == ARCHIVE:
+            self.toggle_archived()
+        else:
+            self._on_activate()
 
     def _on_row_selected(self, _list, row) -> None:
         if row is None:
@@ -615,19 +716,89 @@ class Sidebar(Gtk.Box):
         return GLib.SOURCE_REMOVE
 
     def select(self, key: Path | str | None) -> None:
+        self._reveal(key)
         self._repopulate(key)
+
+    def _reveal(self, key: Path | str | None) -> None:
+        """Asked for by name, an archived meeting opens the archive: the
+        to-do list and a notification's Open lead here."""
+        if isinstance(key, Path) and any(
+            s.dir == key and s.archived for s in self.sessions
+        ):
+            self.show_archived = True
+
+    def toggle_archived(self) -> None:
+        """Show the archived meetings, or hide them again."""
+        self.show_archived = not self.show_archived
+        self._repopulate(self._selected_key())
+        row = self._archive_row_widget()
+        if row is not None:
+            row.grab_focus()
+            if self.show_archived:
+                give_up = GLib.get_monotonic_time() + SCROLL_GIVE_UP_US
+                GLib.timeout_add(
+                    SCROLL_POLL_MS, self._scroll_to, row, give_up
+                )
+
+    def _archive_row_widget(self) -> Gtk.ListBoxRow | None:
+        index = next(
+            (i for i, it in enumerate(self.items) if it == ARCHIVE), -1
+        )
+        return self.list.get_row_at_index(index) if index >= 0 else None
+
+    def _scroll_to(self, row: Gtk.ListBoxRow, give_up: int) -> bool:
+        """Put the row at the top, so that what opened under it is seen.
+
+        The rows were only just made, and the frame clock lays them out
+        when it next runs: until then the list has no extent to scroll
+        in. So ask until it has one; True means ask again.
+        """
+        if row.get_parent() is None:  # the list was rebuilt meanwhile
+            return GLib.SOURCE_REMOVE
+        point = row.translate_coordinates(self.list, 0, 0)
+        if point is None or not row.get_height():
+            return GLib.get_monotonic_time() < give_up
+        adj = self.scroll.get_vadjustment()
+        top = max(0.0, min(point[1], adj.get_upper() - adj.get_page_size()))
+        adj.set_value(top)
+        return GLib.SOURCE_REMOVE
 
     def forget(self, session_dir: Path) -> None:
         """Drop a deleted meeting and move to its neighbour."""
-        index = next((i for i, it in enumerate(self.items)
-                      if isinstance(it, Session) and it.dir == session_dir), -1)
         self.sessions = [s for s in self.sessions if s.dir != session_dir]
+        self._step_off(session_dir)
+
+    def _move_between(self, session: Session) -> None:
+        """A meeting was put away or brought back: its row changes
+        section.
+
+        Put away with the archive closed, it leaves the list and the
+        page goes to its neighbour. Otherwise it is still in the list,
+        so the page stays where it is: a meeting just brought back is
+        the one being looked at, and so is one put away in the open
+        archive.
+        """
+        if session.archived and not self.show_archived:
+            self._step_off(session.dir)
+        else:
+            self._repopulate(session.dir)
+
+    def _step_off(self, session_dir: Path) -> None:
+        """Move the page to the meeting next to one that has left the
+        list, or to the empty page when there is none."""
+        meetings = [it for it in self.items if it != ARCHIVE]
+
+        def is_it(item: Item) -> bool:
+            return isinstance(item, Session) and item.dir == session_dir
+
+        index = next((i for i, it in enumerate(meetings) if is_it(it)), -1)
         self.selected = None
-        remaining = [it for it in self.items if not (isinstance(it, Session) and it.dir == session_dir)]
+        remaining = [it for it in meetings if not is_it(it)]
         neighbour = remaining[min(index, len(remaining) - 1)] if remaining and index >= 0 else None
         key = LIVE if neighbour == LIVE else (neighbour.dir if isinstance(neighbour, Session) else None)
         self._repopulate(key)
         if self.selected is None:
-            # Nothing to move to (the search left no neighbour): the page must
-            # not keep showing, and editing, a meeting that is in the trash.
+            # Nothing to move to (the search left no neighbour): the page
+            # must not keep showing, and editing, a meeting that is in
+            # the trash or has been put away.
             self._on_select(None)

@@ -58,6 +58,37 @@ class TestListing(unittest.TestCase):
         self.assertEqual(words.todo_count(0), "")
         self.assertEqual(words.todo_count(3), "3 to do")
 
+    def test_a_put_away_meeting_says_so_on_its_page(self):
+        start = datetime(2026, 9, 10, 14, 2)
+        self.assertNotIn("Archived", words.page_subtitle(start, 42.4, None))
+        self.assertIn(
+            "Archived", words.page_subtitle(start, 42.4, None, archived=True)
+        )
+
+
+class TestArchiveWording(unittest.TestCase):
+    """What it says about the promises left in a meeting put away."""
+
+    def test_archiving_says_how_many_to_dos_stay_open(self):
+        self.assertNotIn("stay", words.archived_toast("Sync", 0))
+        said = words.archived_toast("Sync", 3)
+        self.assertIn("Sync", said)
+        self.assertIn("3 to-dos stay open", said)
+        self.assertIn("1 to-do stay open", words.archived_toast("Sync", 1))
+
+    def test_the_count_of_open_to_dos_explains_the_archived_part(self):
+        self.assertEqual(words.owed_note(0), "")
+        self.assertIn("2 of them are", words.owed_note(2))
+        self.assertIn("1 of them is", words.owed_note(1))
+
+    def test_the_empty_page_counts_the_meetings_put_away(self):
+        title, description = words.nothing_open(0)
+        self.assertEqual(title, "No meetings yet")
+        title, description = words.nothing_open(4)
+        self.assertNotEqual(title, "No meetings yet")
+        self.assertIn("4 archived meetings", description)
+        self.assertIn("1 archived meeting.", words.nothing_open(1)[1])
+
 
 class TestStatusCard(unittest.TestCase):
     def test_idle_explains_itself_and_offers_record(self):

@@ -38,6 +38,7 @@ EXPECTED = [
     "meeting.project",
     "meeting.summarize",
     "meeting.realign",
+    "meeting.archive",
     "meeting.delete-audio",
     "meeting.delete",
 ]

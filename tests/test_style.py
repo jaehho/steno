@@ -52,3 +52,7 @@ class TestStylesheet(unittest.TestCase):
             "cite-bar", "place-current",
         ):
             self.assertIn(f".{name}", self.css)
+
+    def test_the_classes_that_set_an_archived_meeting_apart_are_styled(self):
+        for name in ("session-archived", "archive-toggle"):
+            self.assertIn(f".{name}", self.css)

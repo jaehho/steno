@@ -49,6 +49,7 @@ from ..summarize import (
     load_records,
     projects_root,
     save_project,
+    set_archived,
 )
 from . import words
 from .player import Player
@@ -91,14 +92,18 @@ class MeetingPage(Gtk.Box):
         on_realign: Callable[..., None] | None,
         on_deleted: Callable[[Path], None],
         on_session_changed: Callable[[Session], None],
-        on_toast: Callable[[str], None],
+        on_toast: Callable[..., None],
         on_summarize: Callable[[Path], None] | None = None,
         is_recording: Callable[[], bool] | None = None,
+        recording_dir: Callable[[], Path | None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._on_ask = on_ask
         self._on_summarize = on_summarize
         self._is_recording = is_recording or (lambda: False)
+        # The folder being recorded into, if any: the one meeting that
+        # cannot be put away.
+        self._recording_dir = recording_dir or (lambda: None)
         # session dir -> what is being done to it ("Writing the summary…").
         self._working: dict[Path, str] = {}
         self._on_realign = on_realign
@@ -162,6 +167,8 @@ class MeetingPage(Gtk.Box):
             ("project", self._set_project),
             ("summarize", self._confirm_summarize),
             ("realign", self._confirm_realign),
+            ("archive", self._archive),
+            ("unarchive", self._unarchive),
             ("delete-audio", self._confirm_delete_audio),
             ("delete", self._confirm_delete),
         ):
@@ -437,10 +444,26 @@ class MeetingPage(Gtk.Box):
             and s.dir not in self._working
         )
 
+    def _can_archive(self) -> bool:
+        """Not the meeting being recorded (its folder is still being
+        written), and not one that is put away already."""
+        s = self.current
+        return (
+            s is not None
+            and not s.archived
+            and s.dir != self._recording_dir()
+        )
+
     def _update_actions(self) -> None:
         """Switch off what the open meeting cannot do right now."""
         self.actions.lookup_action("summarize").set_enabled(
             self._can_summarize()
+        )
+        self.actions.lookup_action("archive").set_enabled(
+            self._can_archive()
+        )
+        self.actions.lookup_action("unarchive").set_enabled(
+            self.current is not None and self.current.archived
         )
 
     def show_summary(self, s: Session) -> None:
@@ -1103,6 +1126,32 @@ class MeetingPage(Gtk.Box):
                 f"{s.open_todos} open to-do{'s' if s.open_todos != 1 else ''}"
             )
         return " · ".join(parts)
+
+    def _archive(self) -> None:
+        """Put the open meeting away. No question: nothing is lost, and
+        the toast takes it back."""
+        s = self.current
+        if s is None or not self._can_archive():
+            return
+        self.flush_notes()
+        set_archived(s.dir, True)
+        # The list takes the page to the next meeting, or keeps it here
+        # when the archive is open.
+        self._on_session_changed(s)
+        self._update_actions()
+        self._toast(
+            words.archived_toast(s.title or s.dir.name, s.open_todos),
+            undo=lambda: self._bring_back(s),
+        )
+
+    def _unarchive(self) -> None:
+        if self.current is not None and self.current.archived:
+            self._bring_back(self.current)
+
+    def _bring_back(self, s: Session) -> None:
+        set_archived(s.dir, False)
+        self._on_session_changed(s)
+        self._update_actions()
 
     def _confirm_delete(self) -> None:
         s = self.current
