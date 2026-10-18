@@ -723,6 +723,7 @@ class MeetingPage(Gtk.Box):
             for line in words.put_away_notes(
                 closed=any(t.dropped and not t.uid for t in todos),
                 unclosed=any(t.unclosed for t in todos),
+                name=s.dir.name,
             ):
                 note = hint_label(line)
                 note.set_wrap(True)

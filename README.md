@@ -97,6 +97,7 @@ steno project-notes [NAME]  copy a meeting into its project's notes/meetings
 steno project-notes --all   ... every meeting filed under a project (--dry-run first)
 steno project-notes --remove NAME...  take a meeting's pages out again
 steno todos                what you owe, across every meeting not put away
+steno todos --all          ... and the ones you ticked
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context
@@ -120,17 +121,27 @@ markdown, put it away (Archive, below), or delete it. Right-clicking a meeting i
 to your desktop trash, all of it together, recoverable from there.
 
 The Ask box answers with the model named under it, the summary's model until
-you choose another. Click the name for the choices: the default, the
-provider's presets, the models it lists at its `/models` endpoint, and
-**Custom…** for an id you type. The list is fetched once per run, the first time
-the menu is opened and off the window's thread; if the provider will not give
-it, the presets are all there is and nothing says why. Speech models (`tts`,
-`asr`) are left out of it. The choice is kept in `gui.json` under
+you choose another. Click the name for the choices, a row for each model: the
+summary's model, tagged *default*, then the provider's presets, the models it
+lists at its `/models` endpoint, and **Custom…** for an id you type. The
+*default* row follows the summary's model: choose it and the Ask box changes
+with it when `STENO_MODEL` or the provider's default does. Any other row, or an
+id you type, pins that model: it answers every question until you choose again,
+whatever the default becomes. (Pinning the model that is the default today is
+typing its id under Custom…; the menu shows that as the default row, because
+the two answer alike.) The list is fetched once per run, the first time the
+menu is opened and off the window's thread; if the provider will not give it,
+the presets are all there is and nothing says why. Speech models (`tts`, `asr`)
+are left out of it. The choice is kept in `gui.json` under
 `$XDG_STATE_HOME/steno` (`~/.local/state/steno`) and applies from the next
 question; summaries do not change. `STENO_ASK_MODEL` overrides it, and the menu
 then says that instead of offering a choice that would be ignored. Each answer
 says under it which model gave it (*answered by …*), so a surprising one can be
-explained; a question already on its way keeps the model it was sent with.
+explained; a question already on its way keeps the model it was sent with. A
+question that got no answer (an id the provider does not know, say) goes back
+into the box and the message names the model, so you can pick another and press
+Enter. An answer that stops partway keeps the text that came and says *Cut off*
+under it, not *answered by …*.
 
 A summary says where each point was said. The model ends every bullet with
 the transcript lines that support it; Steno checks those against the
@@ -224,6 +235,16 @@ to-do that never reached asst is closed here alone, so a meeting needs no
 asst to be put away. Archiving does not rewrite the pages the meeting has
 in a project (below).
 
+**Retrying asst.** Unarchive reopens what archiving closed and files it;
+it never takes a task out of asst, so it does not retry a removal asst
+refused. Archiving again does, and in the window that is Unarchive and then
+Archive (the toast and the meeting's page say so; the page also names the
+`steno archive` command, which needs only the one step). The other way
+round, when asst would not take a task Unarchive reopened (it is open here
+only, and the toast and `steno unarchive` say so), unarchiving again does
+nothing, since there is nothing left to reopen: archive it and unarchive it
+once more.
+
 A meeting put away before to-dos were closed with it keeps its open
 to-dos, and their tasks in asst: nothing closes them on its own, since
 that takes tasks out of asst. Its page says "Some are still open".
@@ -262,7 +283,10 @@ opens with a front matter block (title, date, time, length, project, the
 session it came from) and a line saying Steno generated it. The summary page
 is what `steno export` makes without the words: the summary with its
 citations written as `[03:21, 07:40]`, your to-dos as a checklist in the
-state they are in now, your notes, and a link to the transcript page. The
+state they are in now, your notes, and a link to the transcript page. A
+to-do closed because the meeting was put away is not on the checklist as an
+empty box: it follows it under *Closed when the meeting was put away*, as it
+does in `steno export`. The
 transcript page is `[mm:ss] who: text` for each line, with the far side's
 names where Steno has them, as the export has it. `README.md` is the index, a
 line per meeting (date, title, length, open to-dos) under a note on what the

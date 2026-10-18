@@ -2,9 +2,9 @@
 
 The pick is a window preference (`prefs.ask_model`) and `STENO_ASK_MODEL`
 overrides it; with neither, asking uses the summary's model. The control
-names the one in force and opens a popover with the choices: the default,
-the provider's presets, its own model list when that can be fetched, and
-a model typed by hand.
+names the one in force and opens a popover with the choices, one row per
+model: the default (tagged as such), the provider's presets, its own
+model list when that can be fetched, and a model typed by hand.
 
 The list is a plain GET to the provider, made once per run, on a thread,
 when the popover is first opened. Until it arrives (or if it never does)
@@ -34,18 +34,28 @@ FILTER_AFTER = 10
 def choice_rows(
     pick: str, default: str, presets: list[str], listed: list[str]
 ) -> list[tuple[str, str]]:
-    """(value, label) for each choice. The value saved for the default is "".
+    """(value, label) for each choice, one row per model.
+
+    The default model's row comes first and its value is "", which is what
+    is saved for it: the Ask box then follows the default wherever it
+    moves. Every other row pins the model it names.
 
     The pick is always among them, even when nothing else lists it, so the
     row that is in force can be seen.
     """
-    rows = [("", f"Default · {default}")]
-    seen = {""}
+    rows = [("", default or "Default")]
+    seen = {"", default}
     for model in [pick, *presets, *listed]:
         if model not in seen:
             seen.add(model)
             rows.append((model, model))
     return rows
+
+
+def row_in_force(pick: str, default: str) -> str:
+    """The value of the row that carries the tick. A pick of the default
+    model is on that row: the two answer alike, and there is no other."""
+    return "" if pick in ("", default) else pick
 
 
 def fetch_models() -> list[str]:
@@ -94,9 +104,13 @@ MODELS = ModelList()
 
 
 class _ChoiceRow(Gtk.ListBoxRow):
-    """One model in the list. A value of None is the "Custom…" row."""
+    """One model in the list. A value of None is the "Custom…" row, and
+    one of "" the model that follows the default (`follows`)."""
 
-    def __init__(self, value: str | None, label: str, current: bool = False) -> None:
+    def __init__(
+        self, value: str | None, label: str, current: bool = False,
+        follows: bool = False,
+    ) -> None:
         super().__init__()
         self.value = value
         self.label = label
@@ -106,10 +120,18 @@ class _ChoiceRow(Gtk.ListBoxRow):
         text.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
         text.set_max_width_chars(36)
         box.append(text)
+        if follows:
+            tag = Gtk.Label(label="default")
+            tag.add_css_class("hint")
+            box.append(tag)
         if current:
             box.append(Gtk.Image.new_from_icon_name("object-select-symbolic"))
         self.set_child(box)
-        self.set_tooltip_text(label)
+        tip = label
+        if follows:
+            tip = (f"{label}, the default. Choosing it follows the "
+                   "default if that changes.")
+        self.set_tooltip_text(tip)
 
 
 class AskModelButton(Gtk.MenuButton):
@@ -223,8 +245,12 @@ class AskModelButton(Gtk.MenuButton):
             presets, default = [], ""
         pick = prefs.ask_model()
         rows = choice_rows(pick, default, presets, MODELS.models)
+        in_force = row_in_force(pick, default)
         for value, label in rows:
-            self.choices.append(_ChoiceRow(value, label, current=value == pick))
+            self.choices.append(_ChoiceRow(
+                value, label, current=value == in_force,
+                follows=value == "" and bool(default),
+            ))
         self.choices.append(_ChoiceRow(None, "Custom…"))
         self.filter_entry.set_visible(len(rows) > FILTER_AFTER)
 

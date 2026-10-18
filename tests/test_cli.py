@@ -115,6 +115,32 @@ class TestMainDispatch(unittest.TestCase):
         args = self.run_main("--brief", "show", "--any-app")
         self.assertEqual(args.brief, Path("show"))
 
+    def test_the_retired_commands_say_where_they_went(self):
+        """One line and a failure, whatever follows the word: it used to
+        fall through to the window's parser and complain about --allow."""
+        for argv, said in (
+            (["publish"], "steno publish was renamed: "
+                          "use steno project-notes\n"),
+            (["publish", "--all"], "steno publish was renamed: "
+                                   "use steno project-notes\n"),
+            (["unpublish", "20260928-143000"],
+             "steno unpublish was renamed: "
+             "use steno project-notes --remove NAME\n"),
+        ):
+            with self.subTest(argv=argv), \
+                 mock.patch.object(sys, "argv", ["steno", *argv]), \
+                 mock.patch.object(cli, "cmd_gui") as window, \
+                 redirect_stderr(io.StringIO()) as err, \
+                 self.assertRaises(SystemExit) as raised:
+                cli.main()
+            self.assertEqual(err.getvalue(), said)
+            self.assertNotEqual(raised.exception.code, 0)
+            window.assert_not_called()
+
+    def test_an_app_called_publish_is_still_an_app(self):
+        args = self.run_main("--allow", "publish")
+        self.assertEqual(args.allow, "publish")
+
     def test_unknown_flag_after_a_subcommand_is_an_error(self):
         with mock.patch.object(sys, "argv", ["steno", "status", "--bogus"]), \
              redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -684,6 +710,40 @@ class TestArchiveClosesTodos(ArchiveCase):
         self.assertIn("asst did not take 2 open tasks", self.err)
         self.assertEqual(self.code, 1)
 
+    def test_archiving_and_unarchiving_again_files_what_asst_refused(self):
+        """What the message above tells you to do. Unarchiving twice
+        does nothing: it reopens what archiving closed, and no more."""
+        self.archive()
+        self.asst.down = True
+        self.archive(unarchive=True)
+        self.assertIn("Archive and unarchive it again to retry", self.err)
+        self.asst.down = False
+        self.archive(unarchive=True)
+        self.assertIn("already unarchived", self.out)
+        self.assertEqual(self.asst.tasks(), [])
+
+        self.archive()
+        self.archive(unarchive=True)
+        self.assertIn("  filed 2 open tasks in asst again", self.out)
+        self.assertEqual(len(self.asst.tasks()), 2)
+        self.assertIsNone(self.code)
+
+    def test_unarchive_does_not_retry_a_removal_asst_refused(self):
+        """It leaves those rows open and their tasks where they are;
+        archiving again is what removes them (above)."""
+        self.asst.down = True
+        self.archive()
+        self.asst.down = False
+        kept = self.asst.tasks()
+        self.assertEqual(len(kept), 2)
+
+        self.archive(unarchive=True)
+        self.assertEqual(self.asst.tasks(), kept)
+        self.assertNotIn("removed", self.out)
+        self.assertNotIn("filed", self.out)
+        self.assertTrue(all(t.open for t in load_todos(self.old)))
+        self.assertIsNone(self.code)
+
 
 class TestNamedCommandsStillReachIt(ArchiveCase):
     def test_export_by_name_writes_the_meeting(self):
@@ -704,6 +764,46 @@ class TestNamedCommandsStillReachIt(ArchiveCase):
         self.assertNotIn("Standup", self.out)
         self.assertNotIn("Send the report", self.out)
         self.assertIn("1 archived meeting left out", self.out)
+
+    def test_summarizing_it_counts_none_of_its_closed_to_dos(self):
+        save_todos(self.away, [
+            Todo(text="Send the report", owner="you", dropped=True),
+        ])
+        body = "## Action items\n**You**\n- Send the report\n"
+
+        async def fake(session_dir, _model, _brief):
+            (session_dir / "summary.md").write_text(f"# Standup\n\n{body}")
+            return Summary("Standup", body)
+
+        out = io.StringIO()
+        with mock.patch.object(cli, "summarize_session", fake), \
+             redirect_stdout(out):
+            cli._summarize_one(self.away, "m", None)
+        self.assertIn("summary.md", out.getvalue())
+        self.assertNotIn("todo", out.getvalue())
+        self.assertTrue(load_todos(self.away)[0].dropped)
+
+    def test_todos_never_lists_a_row_closed_with_a_meeting(self):
+        """Not by default, and not with --all, which adds the ticked."""
+        save_todos(self.new, [
+            Todo(text="Send the report", owner="you", dropped=True),
+            Todo(text="Book the room", owner="you", done=True),
+            Todo(text="Draft the table", owner="you"),
+        ])
+        with mock.patch.object(asstlink, "available", lambda: False):
+            self.run_cmd(cli.cmd_todos, argparse.Namespace(
+                dir=self.root, all=False
+            ))
+            plain = self.out
+            self.run_cmd(cli.cmd_todos, argparse.Namespace(
+                dir=self.root, all=True
+            ))
+        self.assertIn("[ ] Draft the table", plain)
+        self.assertNotIn("Book the room", plain)
+        self.assertNotIn("Send the report", plain)
+        self.assertIn("[ ] Draft the table", self.out)
+        self.assertIn("[x] Book the room", self.out)
+        self.assertNotIn("Send the report", self.out)
 
     def test_todos_lists_it_again_once_it_is_back(self):
         save_todos(self.away, [Todo(text="Send the report", owner="you")])

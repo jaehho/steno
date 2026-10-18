@@ -138,11 +138,18 @@ def _summary_body(md: str, drop_action_items: bool) -> str:
 
 
 def _action_items(todos: list[Todo]) -> str:
+    """The to-dos as a checklist per owner. A to-do closed with the
+    meeting is not on it: an unticked box says "to do", and it is not.
+    Those follow under a line that says what happened to them."""
     if not todos:
         return ""
     groups: dict[str, list[Todo]] = {}
+    closed: list[Todo] = []
     for t in todos:
-        groups.setdefault(t.owner, []).append(t)
+        if t.dropped and not t.done:
+            closed.append(t)
+        else:
+            groups.setdefault(t.owner, []).append(t)
     lines: list[str] = ["## Action items"]
     for owner, label in (("you", "You"), ("them", "Them"), ("unassigned", "Unassigned")):
         items = groups.get(owner)
@@ -153,6 +160,15 @@ def _action_items(todos: list[Todo]) -> str:
             mark = "x" if t.done else " "
             ref = citations.refs(t.cites)
             lines.append(f"- [{mark}] {t.text}" + (f" {ref}" if ref else ""))
+    if closed:
+        if len(lines) > 1:
+            lines.append("")
+        lines.append("*Closed when the meeting was put away:*")
+        for t in closed:
+            ref = citations.refs(t.cites)
+            lines.append(
+                f"- {t.text}" + (f" {ref}" if ref else "") + f" ({t.owner})"
+            )
     return "\n".join(lines)
 
 

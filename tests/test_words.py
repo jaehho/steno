@@ -77,21 +77,25 @@ class TestArchiveWording(unittest.TestCase):
         )
         self.assertIn("1 open task from", words.archived_toast("Sync", 1))
 
-    def test_a_task_asst_kept_is_said_and_stays_open_there(self):
+    def test_a_task_asst_kept_is_said_with_the_way_to_try_again(self):
+        """Unarchive does not take a task out of asst, so it is not the
+        retry; archiving again is, and for a window that is two steps."""
         self.assertEqual(
             words.archived_toast("Sync", 0, 2),
-            "Archived “Sync”. Could not remove 2 open tasks from asst; "
-            "they stay open there.",
+            "Archived “Sync”. Could not remove 2 open tasks from asst. "
+            "Unarchive and archive again to retry.",
         )
         self.assertIn(
-            "1 open task from asst; it stays",
+            "1 open task from asst. Unarchive",
             words.archived_toast("Sync", 0, 1),
         )
         self.assertEqual(
             words.archived_toast("Sync", 3, 1),
             "Archived “Sync”. Removed 3 open tasks from asst; "
-            "could not remove 1.",
+            "could not remove 1. Unarchive and archive again to retry.",
         )
+        # Nothing to try again, nothing said about it.
+        self.assertNotIn("retry", words.archived_toast("Sync", 3))
 
     def test_bringing_it_back_says_only_what_it_filed_again(self):
         self.assertEqual(words.unarchived_toast("Sync", 0), "")
@@ -102,11 +106,23 @@ class TestArchiveWording(unittest.TestCase):
         self.assertEqual(
             words.unarchived_toast("Sync", 0, 1),
             "Unarchived “Sync”. asst did not take 1 open task; "
-            "it is open here only.",
+            "it is open here only. Archive and unarchive again to retry.",
         )
         self.assertIn(
-            "asst did not take 2.", words.unarchived_toast("Sync", 1, 2)
+            "asst did not take 2. Archive and unarchive again",
+            words.unarchived_toast("Sync", 1, 2),
         )
+
+    def test_a_meeting_put_away_with_tasks_left_says_what_closes_them(self):
+        (line,) = words.put_away_notes(False, True, "20260801-090000")
+        self.assertTrue(line.startswith("Some are still open"))
+        self.assertIn("Unarchive it and archive it again", line)
+        self.assertIn("steno archive 20260801-090000", line)
+        (bare,) = words.put_away_notes(False, True)
+        self.assertNotIn("steno archive", bare)
+        (closed,) = words.put_away_notes(True, False, "20260801-090000")
+        self.assertTrue(closed.startswith("Closed when"))
+        self.assertEqual(words.put_away_notes(False, False), [])
 
     def test_the_empty_page_counts_the_meetings_put_away(self):
         title, description = words.nothing_open(0)

@@ -64,6 +64,9 @@ class AdviceDone:
     # False when `text` is the engine's own word (nothing to ask about yet),
     # not an answer: no model wrote it, so none should be named under it.
     by_model: bool = True
+    # The answer stopped on an error. Text that came before it is only the
+    # start of one, and is not signed as the model's answer.
+    failed: bool = False
 
 
 @dataclass(frozen=True)

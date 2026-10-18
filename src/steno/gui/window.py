@@ -374,7 +374,9 @@ class Window(Adw.ApplicationWindow):
                 self._asker.delta(event.text)
         elif isinstance(event, AdviceDone):
             if self._asker is not None:
-                self._asker.done(event.text, by_model=event.by_model)
+                self._asker.done(
+                    event.text, by_model=event.by_model, failed=event.failed
+                )
             self._asker = None
         else:
             self._on_finishing_event(event)

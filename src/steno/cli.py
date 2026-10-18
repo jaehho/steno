@@ -359,7 +359,7 @@ def _summarize_one(
         _replace_line(f"  {session_dir.name}: failed - {e}", progress)
         return False
     todos = sync_todos(session_dir, summary.body)
-    open_n = sum(1 for t in todos if not t.done)
+    open_n = sum(1 for t in todos if t.open)
     project = f"  ({summary.project})" if summary.project else ""
     _replace_line(f"  {session_dir.name}: {summary.title}{project}", progress)
     print(f"    -> {session_dir / 'summary.md'}"
@@ -615,7 +615,8 @@ def _say_restored(restored: Restored) -> bool:
         print(f"  filed {_open_tasks(restored.filed)} in asst again")
     if restored.failed:
         print(f"  asst did not take {_open_tasks(restored.failed)}; "
-              "they are open here only", file=sys.stderr)
+              "they are open here only. Archive and unarchive it again "
+              "to retry", file=sys.stderr)
     return bool(restored.failed)
 
 
@@ -937,11 +938,15 @@ def cmd_todos(args: argparse.Namespace) -> None:
     """Everything still open, newest meeting first.
 
     A meeting put away is left out, and says so: its to-dos were closed
-    with it.
+    with it. A row closed that way is never listed, `--all` or not; that
+    flag adds the ticked ones.
     """
     any_open = False
     for session_dir in _leave_out_archived(iter_sessions(args.dir)):
-        todos = [t for t in pull_todos(session_dir) if not t.done or args.all]
+        todos = [
+            t for t in pull_todos(session_dir)
+            if t.open or (args.all and t.done)
+        ]
         if not todos:
             continue
         any_open = True
@@ -1096,8 +1101,19 @@ def _preflight() -> None:
 _VALUE_FLAGS = {"--brief", "--allow", "--deny", "--dir", "--start-hold", "--end-grace"}
 
 
-def _names_a_command(argv: list[str], commands: set[str]) -> bool:
-    """Is the first positional word a subcommand? Option values are skipped."""
+# Commands that were renamed. Not aliases: they only say where it went.
+_RETIRED = {
+    "publish": "steno publish was renamed: use steno project-notes",
+    "unpublish": (
+        "steno unpublish was renamed: "
+        "use steno project-notes --remove NAME"
+    ),
+}
+
+
+def _first_word(argv: list[str]) -> str | None:
+    """The first positional word on the command line. Option values are
+    skipped."""
     skip = False
     for token in argv:
         if skip:
@@ -1105,8 +1121,22 @@ def _names_a_command(argv: list[str], commands: set[str]) -> bool:
         elif token in _VALUE_FLAGS:
             skip = True
         elif not token.startswith("-"):
-            return token in commands
-    return False
+            return token
+    return None
+
+
+def _names_a_command(argv: list[str], commands: set[str]) -> bool:
+    """Is the first positional word a subcommand?"""
+    return _first_word(argv) in commands
+
+
+def _refuse_retired(argv: list[str]) -> None:
+    """Say where a renamed command went and stop. Without this the word
+    fell through to the window's parser, which complained about
+    `--allow` for `steno publish --all`."""
+    if (said := _RETIRED.get(_first_word(argv) or "")) is not None:
+        print(said, file=sys.stderr)
+        sys.exit(2)
 
 
 def _add_detection_flags(parser: argparse.ArgumentParser) -> None:
@@ -1142,6 +1172,7 @@ def _add_detection_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand declared inline
+    _refuse_retired(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="steno",
         description="Steno: listens, keeps up, and turns calls into notes.",
@@ -1299,8 +1330,12 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
                          help="Sessions directory")
     p_notes.set_defaults(func=cmd_project_notes)
 
-    p_todos = sub.add_parser("todos", help="What you owe, across every meeting")
-    p_todos.add_argument("--all", action="store_true", help="Include finished items")
+    p_todos = sub.add_parser(
+        "todos", help="What you owe, across every meeting not put away"
+    )
+    p_todos.add_argument("--all", action="store_true",
+                         help="Include the ticked ones too (a meeting put "
+                              "away stays out)")
     p_todos.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_todos.set_defaults(func=cmd_todos)
 
