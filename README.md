@@ -128,8 +128,10 @@ meeting's action items as they stand and told to keep their wording where the
 transcript still supports them, so the same promise stays the same row. A
 to-do the new summary words differently anyway (say "Send usage figures to
 Alice by Friday" for "Send the usage figures by Friday") stays the same row,
-with its tick and its task in asst, when the two read alike; a differently
-named person, day or number makes it a new one.
+with its tick and its task in asst, when the two read alike and differ only
+in small words ("the", "to") or in a name, day or number one of them adds.
+Any other word swapped (the "final" draft for the "first", the team for the
+client) makes it a new one, so a new promise never arrives already ticked.
 
 In the window a point that has citations ends in a small underlined number,
 the count of places it was said. Click it (or press `Enter` on it) and the

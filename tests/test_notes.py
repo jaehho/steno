@@ -366,6 +366,48 @@ class TestResummarizeRewording(unittest.TestCase):
         )
         self.assertEqual(self.add.call_count, 1)
 
+    def test_a_word_swapped_for_another_is_a_different_promise(self):
+        """Each pair reads at least 80% alike. A new promise that took
+        the ticked row of the old would show as done and never be filed."""
+        for old, new in (
+            ("Review the first draft", "Review the final draft"),
+            ("Send the draft to the client", "Send the draft to the team"),
+            ("Pay the first installment", "Pay the second installment"),
+            ("Call the landlord about the leak",
+             "Call the landlord about the heating"),
+            ("Cancel the old subscription", "Cancel the new subscription"),
+            ("Send the draft", "Do not send the draft"),
+        ):
+            with self.subTest(new=new):
+                self.old.text = old
+                merged = self.resync("**You**", f"- {new}")
+                by_text = {t.text: t for t in merged}
+                self.assertEqual(sorted(by_text), sorted([old, new]))
+                self.assertEqual(
+                    (by_text[old].done, by_text[old].uid), (True, "0F27")
+                )
+                self.assertEqual(
+                    (by_text[new].done, by_text[new].uid), (False, "BEEF")
+                )
+                self.add.assert_called_once()
+
+    def test_small_words_and_a_plural_do_not_make_a_new_promise(self):
+        for old, new in (
+            ("Send the usage figures by Friday",
+             "Send usage figure by Friday"),
+            ("Book the venue for the offsite", "Book a venue for the offsite"),
+            ("Share the slides before the meeting",
+             "Share slides before the meeting"),
+            ("Call the landlord about the leak",
+             "Call the landlord regarding the leak"),
+        ):
+            with self.subTest(new=new):
+                self.old.text = old
+                row, = self.resync("**You**", f"- {new}")
+                self.assertEqual(row.text, new)
+                self.assertEqual((row.done, row.uid), (True, "0F27"))
+                self.add.assert_not_called()
+
     def test_a_different_name_or_day_is_a_different_promise(self):
         for old, new in (
             ("Send the report to Alice", "Send the report to Bob"),

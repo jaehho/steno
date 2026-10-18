@@ -36,12 +36,15 @@ _OWNER_RE = re.compile(
 _ACTION_HEADING_RE = re.compile(r"^\s*#+\s*action\s+items?\s*$", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s*#+\s+")
 
-# A re-summarize can word one promise differently. An item that matches no
-# row by source or text is still taken for an old row of the same owner
-# when the two read this alike (difflib's ratio on the normalized text)
-# and neither names a person, day or number the other lacks. Below it a
-# pair stays two promises: a duplicate row is a nuisance, but a new
-# promise that comes up already ticked is a lost one.
+# A re-summarize can word one promise differently. An item that matches
+# no row by source or text is still taken for an old row of the same
+# owner when the two read this alike (difflib's ratio on the normalized
+# text) and say the same thing: apart from small words (`_FILLER`) and a
+# plural s they use the same words, or one adds only a name, day, month
+# or number to the other. A word swapped for another ("first" for
+# "final", "client" for "team") makes a different promise. Below all
+# that a pair stays two promises: a duplicate row is a nuisance, but a
+# new promise that comes up already ticked is a lost one.
 SAME_ITEM_RATIO = 0.8
 _WORD_RE = re.compile(r"[\w'\u2019-]+")
 _CALENDAR = frozenset((
@@ -49,6 +52,16 @@ _CALENDAR = frozenset((
     "sunday", "january", "february", "march", "april", "may", "june",
     "july", "august", "september", "october", "november", "december",
 ))
+# Words a model adds, drops or trades when it rewords a promise, and
+# that do not change which promise it is. Not "by", "before", "from" or
+# "up": those do.
+_FILLER = frozenset((
+    "a", "an", "the", "to", "of", "for", "on", "in", "at", "with",
+    "about", "regarding", "please", "also", "will", "would", "shall",
+    "should", "can", "could", "must", "need", "needs",
+))
+# A word this long or longer loses a plural s ("was" and "bus" keep it).
+_PLURAL_FROM = 4
 
 
 @dataclass
@@ -198,26 +211,54 @@ def _with_src(session_dir: Path, todo: Todo) -> None:
         todo.src = asstlink.source_key(session_dir, todo.key)
 
 
-def _facts(text: str) -> set[str]:
-    """What tells two promises apart that otherwise read the same: numbers,
+def _singular(word: str) -> str:
+    """Plural s off a lower-case word: "figures" is "figure"."""
+    if (
+        len(word) >= _PLURAL_FROM
+        and word.endswith("s")
+        and not word.endswith("ss")
+    ):
+        return word[:-1]
+    return word
+
+
+def _words(text: str) -> tuple[set[str], set[str]]:
+    """The words of an item that make it the promise it is, and which of
+    them are facts.
+
+    Facts tell two promises apart that otherwise read the same: numbers,
     days and months, and names (a capitalized word that does not open the
-    line)."""
-    words = _WORD_RE.findall(text)
-    return {
-        w.lower() for i, w in enumerate(words)
-        if any(c.isdigit() for c in w)
-        or w.lower() in _CALENDAR
-        or (i > 0 and len(w) > 1 and w[0].isupper())
-    }
+    line). Small words are left out and a plural s is folded, so "Send
+    the usage figures" and "Send usage figure" come out alike.
+    """
+    words: set[str] = set()
+    facts: set[str] = set()
+    for i, raw in enumerate(_WORD_RE.findall(text)):
+        low = raw.lower()
+        if low in _FILLER:
+            continue
+        word = _singular(low)
+        words.add(word)
+        if (
+            any(c.isdigit() for c in raw)
+            or low in _CALENDAR
+            or (i > 0 and len(raw) > 1 and raw[0].isupper())
+        ):
+            facts.add(word)
+    return words, facts
 
 
 def _likeness(a: Todo, b: Todo) -> float:
     """How alike two action items read, 0.0 when they cannot be one."""
     if a.owner != b.owner:
         return 0.0
-    facts_a, facts_b = _facts(a.text), _facts(b.text)
-    if not (facts_a <= facts_b or facts_b <= facts_a):
-        return 0.0
+    words_a, facts_a = _words(a.text)
+    words_b, facts_b = _words(b.text)
+    only_a, only_b = words_a - words_b, words_b - words_a
+    if not (words_a and words_b) or (only_a and only_b):
+        return 0.0  # nothing to compare, or a word was swapped for another
+    if not (only_a | only_b) <= (facts_a | facts_b):
+        return 0.0  # one adds more than a name, day or number
     return SequenceMatcher(None, a.key, b.key).ratio()
 
 
@@ -265,14 +306,14 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
     """Reconcile the summary's action items with what's already on disk.
 
     Checked-off state is preserved by source, then by text, then by likeness:
-    an item the summary now words differently (`SAME_ITEM_RATIO`) is the
-    same row, with the new wording and the old state, uid and source, so
-    the task asst holds is neither duplicated nor orphaned. Items the user
-    has completed are kept even if a re-summarize drops them — deleting the
-    record of finished work would be the one unrecoverable thing this file
-    could do. An open item already on the phone is kept too: the model must
-    not orphan a task asst is holding. An item that matches nothing becomes
-    a new row (new source).
+    an item the summary now words differently (`SAME_ITEM_RATIO`, and no
+    word swapped for another) is the same row, with the new wording and
+    the old state, uid and source, so the task asst holds is neither
+    duplicated nor orphaned. Items the user has completed are kept even if
+    a re-summarize drops them — deleting the record of finished work would
+    be the one unrecoverable thing this file could do. An open item already
+    on the phone is kept too: the model must not orphan a task asst is
+    holding. An item that matches nothing becomes a new row (new source).
 
     `file=False` only writes the local list: listing meetings must not push
     anything into a task app.
