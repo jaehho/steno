@@ -333,6 +333,25 @@ class TestTheList(unittest.TestCase):
         self.assertEqual(toggle_label(self.sidebar), "Archived (3)")
         self.assertFalse(self.sidebar.refresh_if_stale())
 
+    def test_a_terminal_undoing_the_windows_own_change_shows_too(self):
+        for title, archived in (("Bravo", True), ("Delta", False)):
+            with self.subTest(title=title):
+                s = self.archive(title, archived)
+                # The window's own change is not news to it.
+                self.assertFalse(self.sidebar.refresh_if_stale())
+                set_archived(s.dir, not archived)
+                self.assertTrue(self.sidebar.refresh_if_stale())
+                self.assertEqual(
+                    session_of(self.sidebar, title).archived, not archived
+                )
+                self.assertFalse(self.sidebar.refresh_if_stale())
+
+    def test_a_summary_rewritten_meanwhile_is_still_news_after_it(self):
+        bravo = session_of(self.sidebar, "Bravo")
+        (bravo.dir / "summary.md").write_text("# Bravo\n\nRewritten.\n")
+        self.archive("Bravo")
+        self.assertTrue(self.sidebar.refresh_if_stale())
+
     def test_the_open_to_dos_of_a_meeting_put_away_are_still_counted(self):
         alpha = session_of(self.sidebar, "Alpha")
         self.assertEqual(len(ensure_todos(alpha.dir)), 1)

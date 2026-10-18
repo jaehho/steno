@@ -576,6 +576,17 @@ def session_stamp(session_dir: Path) -> tuple:
     return (session_dir.name, *marks)
 
 
+def stamp_with_archived(stamp: tuple, archived: bool) -> tuple:
+    """`stamp` with the archive flag as the view now knows it.
+
+    For a view that changed the flag itself and read nothing else again:
+    a terminal putting the flag back is then a change, and the file
+    times stay those of what the view shows, so a summary rewritten
+    meanwhile is still news. The flag is the last mark.
+    """
+    return (*stamp[:-1], int(archived))
+
+
 def resolve_session(spec: str | None, root: Path | None = None) -> Path:
     """Resolve a session name, a path, or None (latest). Raises FileNotFoundError."""
     if spec is None:

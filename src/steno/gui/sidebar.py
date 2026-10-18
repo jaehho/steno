@@ -32,6 +32,7 @@ from ..summarize import (
     load_records,
     load_title,
     session_stamp,
+    stamp_with_archived,
 )
 from . import words
 from .menu import meeting_menu_model
@@ -504,6 +505,8 @@ class Sidebar(Gtk.Box):
         session.project = load_project(session.dir)
         session.open_todos = open_count(session.dir)
         session._haystack = None  # search includes project
+        # The flag is part of the stamp, and was just read again.
+        session.stamp = stamp_with_archived(session.stamp, session.archived)
         if session.archived != was_archived:
             self._move_between(session)
             return

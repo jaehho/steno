@@ -232,6 +232,17 @@ class TestStaleness(unittest.TestCase):
         summarize.set_archived(self.session, False)
         self.assertEqual(before, self.stamp())
 
+    def test_the_flag_a_view_set_itself_leaves_the_file_times_alone(self):
+        before = self.stamp()
+        summarize.set_archived(self.session, True)
+        self.assertEqual(
+            summarize.stamp_with_archived(before, True), self.stamp()
+        )
+        os.utime(self.session / "summary.md", (1, 1))
+        self.assertNotEqual(
+            summarize.stamp_with_archived(before, True), self.stamp()
+        )
+
     def test_a_project_change_does_not(self):
         before = self.stamp()
         summarize.save_project(self.session, "thesis")
