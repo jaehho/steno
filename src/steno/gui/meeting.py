@@ -108,7 +108,8 @@ class MeetingPage(Gtk.Box):
         self._asst_bus = None
         self.current: Session | None = None
         self._records: list[dict] = []
-        # How much of the summary on the page cites, for the note by its heading.
+        # How much of the summary on the page cites, for the note by its
+        # heading.
         self._seen = citations.Coverage()
         self._offsets: list[float] = []
         # Each record's second on the gutter's clock, which is the clock a
@@ -245,7 +246,9 @@ class MeetingPage(Gtk.Box):
         self.summarize_button = Gtk.Button(label="Summarize now")
         self.summarize_button.set_halign(Gtk.Align.START)
         self.summarize_button.set_visible(False)
-        self.summarize_button.connect("clicked", lambda _b: self._summarize_now())
+        self.summarize_button.connect(
+            "clicked", lambda _b: self._summarize_now()
+        )
         summary = section(
             "Summary", self.summary_view, self.summary_label,
             self.summarize_button, beside=self.summary_hint,
@@ -397,8 +400,8 @@ class MeetingPage(Gtk.Box):
     def _show_note(self, s: Session) -> None:
         """The line by the Summary heading, for the summary on the page.
 
-        A meeting with no summary says what is happening in the slot below
-        instead, so the heading has nothing to add.
+        A meeting with no summary says what is happening in the slot
+        below instead, so the heading has nothing to add.
         """
         has_summary = s.summary_path.is_file()
         note = words.summary_note(
@@ -408,8 +411,9 @@ class MeetingPage(Gtk.Box):
         self.summary_hint.set_visible(bool(note))
 
     def _can_summarize(self) -> bool:
-        """Not while it is being written (a second ask would only be told
-        it is already running), and not with nothing to write it from."""
+        """Not while it is being written (a second ask would only be
+        told it is already running), and not with nothing to write it
+        from."""
         s = self.current
         return (
             s is not None
@@ -462,8 +466,8 @@ class MeetingPage(Gtk.Box):
         if current is None or current.dir != session_dir:
             return
         if current.summary_path.is_file():
-            # The summary being written over stays up, and whatever is lit in
-            # it: the note by its heading is all that changes.
+            # The summary being written over stays up, and whatever is
+            # lit in it: the note by its heading is all that changes.
             self._show_note(current)
             self._update_actions()
         else:
@@ -492,16 +496,18 @@ class MeetingPage(Gtk.Box):
     def _on_hint_link(self, _label: Gtk.Label, href: str) -> bool:
         if href != words.SUMMARIZE_AGAIN:
             return False
-        # Through the action, so that it is as switched off as the menu is.
+        # Through the action, so that it is as switched off as the menu
+        # is.
         self.actions.activate_action("summarize", None)
         return True
 
     def _summary_cost(self, s: Session) -> float:
-        """What writing the summary will cost, in dollars: the model, and
-        your side's transcription too when the engine has to do that first
-        (a meeting quit before its mic was transcribed)."""
+        """What writing the summary will cost, in dollars: the model,
+        and your side's transcription too when the engine has to do
+        that first (a meeting quit before its mic was transcribed)."""
         cost = SUMMARY_GUESS
-        if load_meta(s.dir).get("mic_pending") and (s.dir / "you.wav").is_file():
+        pending = load_meta(s.dir).get("mic_pending")
+        if pending and (s.dir / "you.wav").is_file():
             cost += prerecorded_cost(s.minutes)
         return cost
 

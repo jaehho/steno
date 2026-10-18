@@ -313,8 +313,8 @@ class TestSummaryNote(unittest.TestCase):
         )
         self.assertEqual(note, "Writing the summary…")
         self.assertEqual(
-            words.summary_note(citations.Coverage(3, 3), "Writing the summary…"),
-            "Writing the summary…",
+            words.summary_note(citations.Coverage(3, 3), "Writing…"),
+            "Writing…",
         )
 
     def test_what_is_said_is_escaped_for_markup(self):

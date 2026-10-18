@@ -201,12 +201,14 @@ class TestRefsFindTheirLines(unittest.TestCase):
             root, transcript_jsonl=_rows(*rows),
             meta_json=json.dumps({"started_at": 1000.0}),
         )
-        with mock.patch.object(claude, "run_structured", FakeModel(CITED_REPLY)):
+        model = FakeModel(CITED_REPLY)
+        with mock.patch.object(claude, "run_structured", model):
             asyncio.run(summarize_session(folder, "m", None, root / "none"))
         return meeting_markdown(folder)
 
     def check(self, rows: list[dict]) -> None:
-        summary, _, transcript = self.export_of(rows).partition("## Transcript")
+        page = self.export_of(rows)
+        summary, _, transcript = page.partition("## Transcript")
         refs = [
             stamp
             for found in self.REF_RE.findall(summary)
@@ -220,7 +222,9 @@ class TestRefsFindTheirLines(unittest.TestCase):
         self.check(SESSION_ROWS)
 
     def test_when_the_transcriber_reported_where_each_line_starts(self):
-        self.check([dict(r, offset=r["ts"] - 1000.0 - 1.7) for r in SESSION_ROWS])
+        self.check(
+            [dict(r, offset=r["ts"] - 1000.0 - 1.7) for r in SESSION_ROWS]
+        )
 
 
 class TestDefaultFilename(unittest.TestCase):

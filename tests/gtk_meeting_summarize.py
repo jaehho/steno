@@ -46,7 +46,7 @@ def setUpModule():
 
 
 class SummarizeAgain(CitedMeeting):
-    """A window on the Cited meeting (open) and the Plain one (below it)."""
+    """A window on the Cited meeting (open) and the Plain one below."""
 
     def setUp(self):
         super().setUp()
@@ -133,8 +133,8 @@ class TestAsking(SummarizeAgain):
         self.assertEqual(self.page._working, {self.cited: WRITING})
 
     def test_it_costs_more_when_your_side_was_never_transcribed(self):
-        """The engine transcribes the mic first then; the price shown has
-        to include it."""
+        """The engine transcribes the mic first then; the price shown
+        has to include it."""
         meta = self.cited / "meta.json"
         meta.write_text(json.dumps({
             **json.loads(meta.read_text()), "mic_pending": True,
@@ -359,7 +359,7 @@ class TestTheNoteBesideTheHeading(SummarizeAgain):
 
 
 class TestTheWindowsOwnCallback(CitedMeeting):
-    """What `Summarize` reaches in the window, with a stand-in engine."""
+    """What Summarize reaches in the window, with a stand-in engine."""
 
     def setUp(self):
         super().setUp()

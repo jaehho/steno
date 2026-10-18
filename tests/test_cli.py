@@ -315,7 +315,7 @@ class TestSummarizeUncited(unittest.TestCase):
 
 
 class TestExportCommand(unittest.TestCase):
-    """`steno export` is a copy that leaves the app: citations are stamps."""
+    """`steno export` leaves the app: a citation becomes a stamp."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
