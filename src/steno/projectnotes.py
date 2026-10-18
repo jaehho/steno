@@ -71,6 +71,18 @@ GITIGNORE = """\
 # other people's speech, so nothing here is committed. Delete this file to
 # make the meetings committable; steno will not write it again.
 *
+"""
+
+# What steno wrote before: the same, with `!.gitignore` after the `*`.
+# That kept the file itself visible, so `git status` listed the folder
+# as untracked. A `*` ignores its own file too and leaves nothing to
+# list. A file of exactly this text is steno's, and is replaced by
+# GITIGNORE on the next write; any other text is the user's.
+GITIGNORE_EARLIER = """\
+# Written by steno when it made this folder. The transcripts in it are
+# other people's speech, so nothing here is committed. Delete this file to
+# make the meetings committable; steno will not write it again.
+*
 !.gitignore
 """
 
@@ -630,12 +642,31 @@ class _Folder:
 
         It ignores everything in a folder steno made. Where the user's
         own files are already, it ignores only the transcripts, so that
-        git still shows the rest.
+        git still shows the rest. One an earlier steno wrote is brought
+        up to date; any other that is here is the user's.
         """
-        if GITIGNORE_NAME in self.names or self._holds_index():
+        if GITIGNORE_NAME in self.names:
+            self._update_gitignore()
+            return
+        if self._holds_index():
             return
         text = GITIGNORE_BESIDE if self._holds_others() else GITIGNORE
         self.put(GITIGNORE_NAME, text, None)
+
+    def _update_gitignore(self) -> None:
+        """Replace a `.gitignore` of the text steno used to write. Only
+        that text, to the byte: a file with a line of the user's added,
+        or one steno never wrote, is not touched."""
+        path = self.dir / GITIGNORE_NAME
+        try:
+            old = _read(path)
+        except _RefusedError:
+            return
+        if old != GITIGNORE_EARLIER.encode():
+            return
+        if not self.dry_run:
+            _write_whole(path, GITIGNORE.encode())
+        self._note(Change("update", path))
 
     def stem_for(self, meeting: Meeting) -> str:
         """The file name stem for a meeting. Its minute and title, or
@@ -668,7 +699,9 @@ class _Folder:
         path = self.dir / GITIGNORE_NAME
         try:
             if _read(path) not in (
-                GITIGNORE.encode(), GITIGNORE_BESIDE.encode()
+                GITIGNORE.encode(),
+                GITIGNORE_EARLIER.encode(),
+                GITIGNORE_BESIDE.encode(),
             ):
                 return
             if not self.dry_run:

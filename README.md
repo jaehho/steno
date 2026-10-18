@@ -256,10 +256,14 @@ has pages in one.
   are made from files Steno already has.
 
 **Git.** Transcripts are other people's speech, and project repositories get
-pushed. So the folder is made with a `.gitignore` of `*` and `!.gitignore`:
-git sees that one file and none of the meetings. Steno stages and commits
-nothing. To keep the meetings in the repository, delete the `.gitignore`;
-Steno writes it once, with the folder, and does not write it back.
+pushed. So the folder is made with a `.gitignore` of `*`, which ignores the
+meetings and itself: git sees nothing in the folder, and `git status` stays
+clean. Steno stages and commits nothing. To keep the meetings in the
+repository, delete the `.gitignore`; Steno writes it once, with the folder,
+and does not write it back. (An earlier Steno also wrote `!.gitignore`
+there, which left the folder showing in `git status` as untracked. That
+file is rewritten, once, the next time Steno writes in the folder; a
+`.gitignore` you have changed is left as it is.)
 
 If `notes/meetings` already holds files of yours when Steno first writes in
 it, a `*` would hide them from git too, and `git add` would refuse the next one

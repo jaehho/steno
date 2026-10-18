@@ -40,6 +40,14 @@ TODOS = [
      "done": True},
     {"text": "Draft the comparison table", "owner": "you"},
 ]
+# The .gitignore steno wrote before it was `*` alone, as it was written.
+EARLIER_GITIGNORE = """\
+# Written by steno when it made this folder. The transcripts in it are
+# other people's speech, so nothing here is committed. Delete this file to
+# make the meetings committable; steno will not write it again.
+*
+!.gitignore
+"""
 SUMMARY_NAME = "2026-09-28-1430-vendor-pricing-call.md"
 TRANSCRIPT_NAME = "2026-09-28-1430-vendor-pricing-call.transcript.md"
 
@@ -690,7 +698,7 @@ class TestGitignore(Base):
         self.write(self.session())
         text = self.read(".gitignore")
         lines = [x for x in text.splitlines() if not x.startswith("#")]
-        self.assertEqual(lines, ["*", "!.gitignore"])
+        self.assertEqual(lines, ["*"])
         self.assertIn("other people's speech", text)
         self.assertIn("Delete this file", text)
 
@@ -720,9 +728,98 @@ class TestGitignore(Base):
         self.assertEqual(
             self.git_ignores([".gitignore", SUMMARY_NAME, TRANSCRIPT_NAME,
                               "README.md"]),
-            {".gitignore": False, SUMMARY_NAME: True,
+            {".gitignore": True, SUMMARY_NAME: True,
              TRANSCRIPT_NAME: True, "README.md": True},
         )
+
+    def test_a_folder_steno_made_leaves_git_status_clean(self):
+        """A `.gitignore` that kept itself visible left the folder in
+        `git status` as untracked, for good, with nothing to commit."""
+        d = self.session()
+        self.write(d)
+        self.assertEqual(self.git_status(), "")
+        d.joinpath("todos.json").write_text(json.dumps(TODOS[:1]))
+        self.write(d)  # the file is there now, and the pages change
+        self.write(self.session("20261006-161200", title="Bravo"))
+        self.assertEqual(self.git_status(), "")
+
+    def test_a_gitignore_an_earlier_steno_wrote_is_brought_up_to_date(self):
+        d = self.session()
+        self.write(d)
+        path = self.meetings() / ".gitignore"
+        path.write_text(EARLIER_GITIGNORE)
+        self.assertEqual(self.git_status(), "?? notes/\n")  # the old way
+        result = self.write(d)
+        self.assertEqual(path.read_text(), projectnotes.GITIGNORE)
+        self.assertEqual(self.git_status(), "")
+        self.assertEqual(
+            [(c.action, c.path.name) for c in result.altered],
+            [("update", ".gitignore")],
+        )
+
+    def test_it_is_brought_up_to_date_once(self):
+        d = self.session()
+        self.write(d)
+        path = self.meetings() / ".gitignore"
+        path.write_text(EARLIER_GITIGNORE)
+        self.write(d)
+        os.utime(path, ns=(10**9, 10**9))
+        d.joinpath("todos.json").write_text(json.dumps(TODOS[:1]))
+        self.write(d)
+        self.assertEqual(path.stat().st_mtime_ns, 10**9)
+        self.assertEqual(self.write(d).altered, [])
+
+    def test_a_dry_run_says_it_would_and_does_not(self):
+        d = self.session()
+        self.write(d)
+        path = self.meetings() / ".gitignore"
+        path.write_text(EARLIER_GITIGNORE)
+        before = snapshot(self.base)
+        result = self.write(d, dry_run=True)
+        self.assertEqual(snapshot(self.base), before)
+        self.assertIn(("update", ".gitignore"),
+                      [(c.action, c.path.name) for c in result.altered])
+
+    def test_a_gitignore_with_a_line_of_yours_added_is_left_alone(self):
+        d = self.session()
+        self.write(d)
+        path = self.meetings() / ".gitignore"
+        mine = EARLIER_GITIGNORE + "!keep.md\n"
+        path.write_text(mine)
+        self.write(d)
+        self.assertEqual(path.read_text(), mine)
+
+    def test_a_gitignore_that_is_not_steno_s_is_left_alone(self):
+        """The patterns alone, without the comment steno writes, are a
+        file of the user's that happens to say the same."""
+        d = self.session()
+        self.write(d)
+        path = self.meetings() / ".gitignore"
+        mine = "*\n!.gitignore\n"
+        path.write_text(mine)
+        self.write(d)
+        self.assertEqual(path.read_text(), mine)
+
+    def test_a_link_in_its_place_is_left_alone(self):
+        d = self.session()
+        self.write(d)
+        path = self.meetings() / ".gitignore"
+        other = self.base / "elsewhere"
+        other.write_text(EARLIER_GITIGNORE)
+        path.unlink()
+        path.symlink_to(other)
+        self.write(d)
+        self.assertTrue(path.is_symlink())
+        self.assertEqual(other.read_text(), EARLIER_GITIGNORE)
+
+    def test_the_last_meeting_takes_an_earlier_gitignore_with_the_folder(
+        self,
+    ):
+        d = self.session()
+        self.write(d)
+        (self.meetings() / ".gitignore").write_text(EARLIER_GITIGNORE)
+        self.remove(d)
+        self.assertFalse(self.meetings().exists())
 
     def test_a_folder_with_files_of_yours_hides_none_of_them(self):
         """A `*` there would leave a note written tomorrow out of
@@ -755,26 +852,36 @@ class TestGitignore(Base):
         self.remove(d)
         self.assertFalse(self.meetings().exists())
 
-    def git_ignores(self, names: list[str]) -> dict[str, bool]:
-        """Which of these paths in the meetings folder git would ignore,
-        by `git check-ignore` in a repository made around the project."""
+    def git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """git in a repository made around the project, which the
+        user's own git configuration cannot reach."""
         git = shutil.which("git")
         if git is None:
             self.skipTest("no git to ask")
         project = self.projects / "demo"
         env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull,
                    GIT_CONFIG_SYSTEM=os.devnull)
+        if not (project / ".git").exists():
+            subprocess.run([git, "-C", str(project), "init", "-q"],
+                           env=env, check=True, capture_output=True)
+        return subprocess.run(
+            [git, "-C", str(project), *args], env=env, check=False,
+            capture_output=True, text=True,
+        )
 
-        def run(*args: str) -> int:
-            return subprocess.run(
-                [git, "-C", str(project), *args], env=env, check=False,
-                capture_output=True,
-            ).returncode
+    def git_status(self) -> str:
+        """What `git status` lists, one line to a path."""
+        status = self.git("status", "--porcelain")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        return status.stdout
 
-        self.assertEqual(run("init", "-q"), 0)
+    def git_ignores(self, names: list[str]) -> dict[str, bool]:
+        """Which of these paths in the meetings folder git would ignore,
+        by `git check-ignore`."""
         found = {}
         for name in names:
-            status = run("check-ignore", "-q", f"notes/meetings/{name}")
+            status = self.git("check-ignore", "-q",
+                              f"notes/meetings/{name}").returncode
             self.assertIn(status, (0, 1), name)  # 128 is an error
             found[name] = status == 0
         return found
