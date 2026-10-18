@@ -571,6 +571,7 @@ class Engine:
         if self._asking:
             return
         self._asking = True
+        asked = model or self.model
         try:
             lines = (
                 load_records(session_dir) if session_dir is not None
@@ -595,13 +596,15 @@ class Engine:
             answer = await claude.stream_text(
                 content,
                 system=system,
-                model=model or self.model,
+                model=asked,
                 on_delta=lambda d: self.emit(AdviceDelta(d)),
             )
             self.emit(AdviceDone(answer))
         except Exception as e:
-            self.emit(EngineError("advisor", str(e)))
-            self.emit(AdviceDone(""))
+            # Name the model: a mistyped id comes back as the provider's
+            # words about it, which may not say which one it was.
+            self.emit(EngineError("advisor", f"{asked} did not answer: {e}"))
+            self.emit(AdviceDone("", failed=True))
         finally:
             self._asking = False
 

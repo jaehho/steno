@@ -156,6 +156,7 @@ class AskBox(Gtk.Box):
         self._busy = False
         self._ignore = False
         self.asked_with = ""
+        self._question = ""
 
         self.question = hint_label()
         self.question.set_wrap(True)
@@ -206,6 +207,7 @@ class AskBox(Gtk.Box):
         self.answer_scroll.set_visible(True)
         self.byline.set_visible(False)
         self._buf = ""
+        self._question = question
         self.asked_with = self.model_button.model
         self._on_ask(question)
 
@@ -222,9 +224,13 @@ class AskBox(Gtk.Box):
         self._buf += text
         self.answer.set_text(self._buf)
 
-    def done(self, text: str, *, by_model: bool = True) -> None:
+    def done(
+        self, text: str, *, by_model: bool = True, failed: bool = False
+    ) -> None:
         """The answer is over. `by_model` is False for a message from the
-        window itself, which no model wrote."""
+        window itself, which no model wrote. `failed` is True when it
+        stopped on an error: what arrived is kept and said to be cut off,
+        and is not signed as an answer."""
         was_ignored = self._ignore
         self._finish()
         if was_ignored:
@@ -236,13 +242,23 @@ class AskBox(Gtk.Box):
         elif not self._buf:
             self.answer_scroll.set_visible(False)
             self.question.set_visible(False)
+            # Nothing came back: the question goes back where it can be
+            # asked again, unless something newer is being typed.
+            if not self.entry.get_text():
+                self.entry.set_text(self._question)
         if by_model and self._buf and self.asked_with:
-            self.byline.set_text(f"answered by {self.asked_with}")
+            if failed:
+                self.byline.set_text(
+                    f"Cut off: {self.asked_with} stopped before it finished."
+                )
+            else:
+                self.byline.set_text(f"answered by {self.asked_with}")
             self.byline.set_visible(True)
 
     def clear(self) -> None:
         self._ignore = self._busy
         self._buf = ""
+        self._question = ""
         self.answer.set_text("")
         self.answer_scroll.set_visible(False)
         self.question.set_visible(False)

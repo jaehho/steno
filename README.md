@@ -137,7 +137,11 @@ are left out of it. The choice is kept in `gui.json` under
 question; summaries do not change. `STENO_ASK_MODEL` overrides it, and the menu
 then says that instead of offering a choice that would be ignored. Each answer
 says under it which model gave it (*answered by …*), so a surprising one can be
-explained; a question already on its way keeps the model it was sent with.
+explained; a question already on its way keeps the model it was sent with. A
+question that got no answer (an id the provider does not know, say) goes back
+into the box and the message names the model, so you can pick another and press
+Enter. An answer that stops partway keeps the text that came and says *Cut off*
+under it, not *answered by …*.
 
 A summary says where each point was said. The model ends every bullet with
 the transcript lines that support it; Steno checks those against the

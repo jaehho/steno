@@ -394,6 +394,51 @@ class AskModel(unittest.TestCase):
         self.assertFalse(self.box.byline.get_visible())
         self.assertFalse(self.box.answer_scroll.get_visible())
 
+    def test_a_question_nothing_answered_goes_back_into_the_box(self):
+        """A model id the provider would not take used to cost the
+        question: the box emptied and only a toast said so."""
+        self.ask("what was decided?")
+        self.assertEqual(self.box.entry.get_text(), "")
+        self.window.on_event(AdviceDone("", failed=True))
+        settle()
+        self.assertEqual(self.box.entry.get_text(), "what was decided?")
+        self.assertFalse(self.box.answer_scroll.get_visible())
+        self.assertFalse(self.box.byline.get_visible())
+
+        self.box.entry.emit("activate")   # asked again, with another pick
+        settle()
+        self.assertEqual([job[1] for job in self.sent],
+                         ["what was decided?"] * 2)
+
+    def test_a_question_typed_since_is_not_written_over(self):
+        self.ask("first?")
+        self.box.entry.set_text("second?")
+        self.window.on_event(AdviceDone("", failed=True))
+        settle()
+        self.assertEqual(self.box.entry.get_text(), "second?")
+
+    def test_an_answer_that_died_midway_is_kept_and_not_signed(self):
+        self.ask()
+        self.window.on_event(AdviceDelta("Sign on"))
+        self.window.on_event(AdviceDone("", failed=True))
+        settle()
+        self.assertEqual(self.box.answer.get_text(), "Sign on")
+        self.assertTrue(self.box.byline.get_visible())
+        said = self.box.byline.get_text()
+        self.assertNotIn("answered by", said)
+        self.assertIn("Cut off", said)
+        self.assertIn(DEFAULT, said)
+        # It did answer something, so the question is not put back.
+        self.assertEqual(self.box.entry.get_text(), "")
+
+    def test_the_next_question_after_a_cut_off_one_is_signed_again(self):
+        self.ask()
+        self.window.on_event(AdviceDelta("Sign on"))
+        self.window.on_event(AdviceDone("", failed=True))
+        self.ask("and then?")
+        self.answer()
+        self.assertEqual(self.box.byline.get_text(), f"answered by {DEFAULT}")
+
     def test_the_live_box_shares_the_pick(self):
         prefs.save_ask_model("beta-2")
         self.window.stack.set_visible_child_name("live")

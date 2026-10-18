@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+import httpx
 
 from steno import session
 from steno.events import (
@@ -298,6 +301,46 @@ class TestAsking(unittest.TestCase):
         self.ask(model="picked")
         (done,) = [e for e in self.events if isinstance(e, AdviceDone)]
         self.assertFalse(done.by_model)
+
+    def fail(self, **kw) -> None:
+        stream = mock.AsyncMock(
+            side_effect=session.claude.ClaudeError("no route")
+        )
+        with mock.patch.object(session.claude, "stream_text", stream):
+            asyncio.run(self.engine.ask("what?", **kw))
+
+    def test_a_failure_names_the_model_that_was_asked(self):
+        """A mistyped id comes back as the provider's words, which may
+        not say which model it was."""
+        self.fail(model="mimo-typo")
+        (error,) = [e for e in self.events if isinstance(e, EngineError)]
+        self.assertEqual(error.where, "advisor")
+        self.assertEqual(error.message, "mimo-typo did not answer: no route")
+
+    def test_a_failure_of_the_default_names_it_too(self):
+        self.fail()
+        (error,) = [e for e in self.events if isinstance(e, EngineError)]
+        self.assertIn("m did not answer", error.message)
+
+    def test_a_stream_that_dies_mid_answer_ends_as_failed_after_its_text(self):
+        """Through the real client: some text arrives, then no [DONE]."""
+        body = 'data: {"choices": [{"delta": {"content": "Sign on"}}]}\n\n'
+        transport = httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=body.encode())
+        )
+        with mock.patch.object(session.claude, "_transport", transport), \
+             mock.patch.dict(os.environ, {"STENO_API_KEY": "sk-test"}):
+            asyncio.run(self.engine.ask("what?", model="picked"))
+        kinds = [type(e).__name__ for e in self.events]
+        self.assertEqual(kinds, ["AdviceDelta", "EngineError", "AdviceDone"])
+        self.assertEqual(self.events[0].text, "Sign on")
+        self.assertIn("picked did not answer", self.events[1].message)
+        self.assertEqual(self.events[2], AdviceDone("", failed=True))
+
+    def test_a_failed_answer_is_ended_as_failed(self):
+        self.fail(model="picked")
+        self.assertEqual(self.events[-1], AdviceDone("", failed=True))
+        self.assertFalse(AdviceDone("an answer").failed)
 
 
 if __name__ == "__main__":
