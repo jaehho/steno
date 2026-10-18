@@ -16,7 +16,9 @@ import json
 import sys
 import tempfile
 import unittest
+import wave
 from pathlib import Path
+from unittest import mock
 
 import gi
 
@@ -57,6 +59,32 @@ SHIP = [20, 160]
 MEETINGS = {"20260110-090000": "Plain", "20260111-090000": "Cited"}
 
 
+GONE = "The audio for this meeting is gone"
+RECORDING = "Playback is off while recording; it would be recorded as them"
+
+
+class FakePlayer:
+    """Stands in for the GStreamer player: nothing here makes a sound."""
+
+    def __init__(self, on_tick=None) -> None:
+        self.on_tick = on_tick
+        self.tracks: dict = {}
+        self.played: list[float] = []
+
+    def available(self) -> bool:
+        return True
+
+    def play(self, tracks, seconds: float = 0.0) -> None:
+        self.tracks = dict(tracks)
+        self.played.append(seconds)
+
+    def set_levels(self, levels) -> None:
+        pass
+
+    def stop(self) -> None:
+        self.tracks = {}
+
+
 def setUpModule():
     display = Gdk.Display.get_default()
     name = None if display is None else display.__gtype__.name
@@ -73,6 +101,7 @@ def make_meetings(root: Path) -> None:
                 "speaker": "you" if n % 2 else "them",
                 "text": f"line {n} of the meeting, long enough to wrap " * 2,
                 "ts": STARTED + STEP_S * n,
+                "offset": float(STEP_S * n),
             }
             for n in range(count)
         ]
@@ -84,6 +113,17 @@ def make_meetings(root: Path) -> None:
         )
         summary = SUMMARY if title == "Cited" else PLAIN_SUMMARY
         (folder / "summary.md").write_text(summary)
+        if title == "Cited":
+            for name in ("you.wav", "them.wav"):
+                silence(folder / name)
+
+
+def silence(path: Path) -> None:
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(8000)
+        out.writeframes(bytes(2 * 8000))
 
 
 def click(widget: Gtk.Widget) -> None:
@@ -112,11 +152,20 @@ class CitedMeeting(unittest.TestCase):
         make_meetings(self.root)
         self.app = StubApp()
         self.app.register(None)
+        # The page is built with this in place of the real player, so no
+        # test can open an audio device.
+        patch = mock.patch("steno.gui.meeting.Player", FakePlayer)
+        patch.start()
+        self.addCleanup(patch.stop)
         self.window = Window(self.app, self.root)
         self.window.present()
         settle()
         self.page: MeetingPage = self.window.meeting
         self.assertEqual(self.page.current.title, "Cited")
+        self.player = self.page.player
+        self.toasts: list[str] = []
+        self.page._toast = lambda text, **_kw: self.toasts.append(text)
+        self.assertTrue(self.page.player_bar.get_visible())
         self.assertTrue(
             wait_for(lambda: self.page._rows[LINES - 1].get_height() > 0),
             "the transcript was never laid out",
@@ -313,6 +362,256 @@ class TestChoosingAnItem(CitedMeeting):
         self.assertTrue(
             self.page._rows[DEPOSIT[1]].has_css_class("line-playing")
         )
+
+
+def children(widget: Gtk.Widget) -> list[Gtk.Widget]:
+    found = []
+    child = widget.get_first_child()
+    while child is not None:
+        found.append(child)
+        child = child.get_next_sibling()
+    return found
+
+
+def texts(button: Gtk.Button) -> list[str]:
+    """The words on a place row, left to right."""
+    return [
+        c.get_label() for c in children(button.get_child())
+        if isinstance(c, Gtk.Label)
+    ]
+
+
+class TestTheBar(CitedMeeting):
+    def setUp(self):
+        super().setUp()
+        self.bar = self.page.cite_bar
+
+    def buttons(self) -> list[Gtk.Button]:
+        return list(self.bar._buttons)
+
+    def press_place(self, index: int) -> None:
+        self.buttons()[index].emit("clicked")
+
+    def test_nothing_is_shown_until_an_item_is_chosen(self):
+        self.assertFalse(self.bar.get_visible())
+
+    def test_a_place_is_listed_with_its_time_speaker_and_words(self):
+        click(self.item("deposit").mark)
+
+        self.assertTrue(self.bar.get_visible())
+        self.assertEqual(self.bar.count.get_text(), "1 place")
+        (button,) = self.buttons()
+        stamp, who, quote, more = texts(button)
+        self.assertEqual((stamp, who, more), ("10:00", "Them", "+2 more lines"))
+        self.assertTrue(quote.startswith("“line 120 of the meeting"), quote)
+        self.assertTrue(quote.endswith("”"))
+        # A single place has nothing to step to.
+        self.assertFalse(self.bar.up.get_visible())
+        self.assertFalse(self.bar.down.get_visible())
+
+    def test_it_names_the_item_it_is_for(self):
+        click(self.item("deposit").mark)
+        self.assertEqual(self.bar.title.get_text(), "Pay the deposit by Friday")
+
+    def test_it_sits_outside_the_scrolling_page(self):
+        """In the scroller it would go off screen with the jump it is for."""
+        click(self.item("Ship").mark)
+        self.assertIsNone(self.bar.get_ancestor(Gtk.ScrolledWindow))
+        self.assertIs(self.bar.get_parent(), self.page)
+
+    def test_the_transcript_gives_it_room_and_takes_it_back(self):
+        adjustment = scroller_of(self.page.transcript_list).get_vadjustment()
+        before = adjustment.get_page_size()
+
+        def taken() -> float:
+            # The border box: get_height() leaves out the bar's padding.
+            return before - adjustment.get_page_size()
+
+        click(self.item("Ship").mark)
+        bar = self.bar.get_allocation().height
+        self.assertTrue(
+            wait_for(lambda: bar > 0 and taken() == self.bar.get_allocation().height),
+            f"the page gave up {taken()} of {before}, the bar took {bar}",
+        )
+        self.assertLessEqual(self.bar.scroller.get_height(), 120)
+
+        press(self.page, Gdk.KEY_Escape)
+
+        self.assertFalse(self.bar.get_visible())
+        self.assertTrue(wait_for(lambda: taken() == 0))
+
+    def test_two_places_are_listed_in_the_order_of_the_transcript(self):
+        click(self.item("Ship").mark)
+
+        self.assertEqual(self.bar.count.get_text(), "2 places")
+        first, second = (texts(b) for b in self.buttons())
+        self.assertEqual((first[0], second[0]), ("01:40", "13:20"))
+        self.assertEqual(len(first), 3)  # no "+k more lines" on a single line
+        self.assertTrue(self.bar.up.get_visible())
+        self.assertTrue(self.bar.down.get_visible())
+
+    def test_the_steps_walk_the_places_and_scroll_the_transcript(self):
+        scroller = scroller_of(self.page.transcript_list)
+        adjustment = scroller.get_vadjustment()
+        self.scroll_top()
+        click(self.item("Ship").mark)
+        first, second = (self.page._rows[i] for i in SHIP)
+        self.assertEqual(self.page._place, 0)
+        self.assertFalse(self.bar.up.get_sensitive())
+        self.assertTrue(self.bar.down.get_sensitive())
+        self.assertTrue(self.buttons()[0].has_css_class("place-current"))
+
+        self.bar.down.emit("clicked")
+
+        self.assertEqual(self.page._place, 1)
+        self.assertTrue(on_screen(second))
+        self.assertGreater(adjustment.get_value(), 0)
+        self.assertTrue(self.buttons()[1].has_css_class("place-current"))
+        self.assertFalse(self.buttons()[0].has_css_class("place-current"))
+        self.assertTrue(self.bar.up.get_sensitive())
+        self.assertFalse(self.bar.down.get_sensitive())
+        # Past the last place there is nowhere to go.
+        self.bar.down.emit("clicked")
+        self.assertEqual(self.page._place, 1)
+
+        self.bar.up.emit("clicked")
+
+        self.assertEqual(self.page._place, 0)
+        self.assertTrue(on_screen(first))
+        self.assertEqual(self.lit(), SHIP)
+        self.assertEqual(self.player.played, [])
+
+    def test_a_long_list_scrolls_inside_the_bar_and_follows_the_steps(self):
+        folder = self.page.current.dir
+        (folder / "summary.md").write_text(
+            "# T\n\n## Key facts\n- Said often <!--cite 10,50,90,130,170,195-->\n"
+        )
+        self.page.reload()
+        click(self.item("often").mark)
+        adjustment = self.bar.scroller.get_vadjustment()
+        self.assertEqual(self.bar.count.get_text(), "6 places")
+        self.assertTrue(wait_for(lambda: self.bar.scroller.get_height() > 0))
+        self.assertLessEqual(self.bar.scroller.get_height(), 120)
+        self.assertGreater(adjustment.get_upper(), adjustment.get_page_size())
+        self.assertEqual(adjustment.get_value(), 0)
+
+        for _ in range(5):
+            self.bar.down.emit("clicked")
+
+        last = self.buttons()[5]
+        self.assertTrue(last.has_css_class("place-current"))
+        box = last.get_allocation()
+        self.assertGreater(adjustment.get_value(), 0)
+        self.assertLessEqual(adjustment.get_value(), box.y)
+        self.assertGreaterEqual(
+            adjustment.get_value() + adjustment.get_page_size(),
+            box.y + box.height,
+        )
+
+    def test_a_place_plays_from_where_its_first_line_starts(self):
+        click(self.item("deposit").mark)
+
+        self.press_place(0)
+
+        # The line starts at second 600; playback leads in by 0.4 s.
+        self.assertEqual(self.player.played, [599.6])
+        self.assertTrue(self.page._rows[120].has_css_class("line-playing"))
+        self.assertEqual(self.lit(), DEPOSIT)
+        self.assertEqual(self.toasts, [])
+
+    def test_a_far_place_scrolls_and_plays_the_line_it_names(self):
+        click(self.item("Ship").mark)
+        self.scroll_top()
+
+        self.press_place(1)
+
+        self.assertEqual(self.player.played, [799.6])
+        self.assertEqual(self.page._playing_index, SHIP[1])
+        self.assertTrue(on_screen(self.page._rows[SHIP[1]]))
+        self.assertEqual(self.page._place, 1)
+
+    def test_while_recording_it_scrolls_and_says_why_nothing_plays(self):
+        self.page._is_recording = lambda: True
+        click(self.item("Ship").mark)
+        self.scroll_top()
+
+        self.press_place(1)
+
+        self.assertEqual(self.player.played, [])
+        self.assertEqual(self.toasts, [RECORDING])
+        self.assertTrue(on_screen(self.page._rows[SHIP[1]]))
+        self.assertEqual(self.lit(), SHIP)
+
+    def test_when_the_audio_is_gone_it_scrolls_and_says_so(self):
+        click(self.item("Ship").mark)
+        self.scroll_top()
+        for wav in self.page.current.dir.glob("*.wav"):
+            wav.unlink()
+
+        self.press_place(1)
+
+        self.assertEqual(self.player.played, [])
+        self.assertEqual(self.toasts, [GONE])
+        self.assertTrue(on_screen(self.page._rows[SHIP[1]]))
+
+    def test_a_meeting_with_no_audio_still_lights_and_scrolls_without_play(self):
+        for wav in self.page.current.dir.glob("*.wav"):
+            wav.unlink()
+        self.page.reload()
+        self.assertFalse(self.page.player_bar.get_visible())
+        self.scroll_top()
+
+        click(self.item("deposit").mark)
+
+        self.assertEqual(self.lit(), DEPOSIT)
+        self.assertTrue(on_screen(self.page._rows[DEPOSIT[0]]))
+        (button,) = self.buttons()
+        self.assertFalse(
+            [c for c in children(button.get_child()) if isinstance(c, Gtk.Image)]
+        )
+        self.assertEqual(button.get_tooltip_text(), "Show this place")
+
+    def test_with_audio_a_place_has_a_play_icon_and_says_it_plays(self):
+        click(self.item("deposit").mark)
+        (button,) = self.buttons()
+        self.assertEqual(
+            len([c for c in children(button.get_child()) if isinstance(c, Gtk.Image)]),
+            1,
+        )
+        self.assertEqual(button.get_tooltip_text(), "Play from here")
+
+    def test_the_close_button_puts_the_item_out(self):
+        click(self.item("deposit").mark)
+        close = self.bar.get_first_child().get_last_child()
+
+        close.emit("clicked")
+
+        self.assertFalse(self.bar.get_visible())
+        self.assertEqual(self.lit(), [])
+        self.assertIsNone(self.page._active)
+
+    def test_another_meeting_takes_it_away(self):
+        click(self.item("deposit").mark)
+
+        self.window.sidebar.list.select_row(
+            self.window.sidebar.list.get_row_at_index(1)
+        )
+
+        self.assertFalse(self.bar.get_visible())
+        self.assertEqual(self.buttons(), [])
+
+    def test_a_rebuilt_transcript_keeps_the_bar_for_the_same_item(self):
+        click(self.item("Ship").mark)
+        path = self.page.current.dir / "transcript.jsonl"
+        extra = {"speaker": "them", "text": "one more", "ts": STARTED + 2000, "offset": 2000.0}
+        path.write_text(path.read_text() + json.dumps(extra) + "\n")
+
+        self.page.refresh_transcript()
+
+        self.assertTrue(self.bar.get_visible())
+        self.assertEqual(self.bar.count.get_text(), "2 places")
+        self.assertEqual(self.lit(), SHIP)
+        self.assertEqual(self.page._place, 0)
 
 
 class TestStaleState(CitedMeeting):

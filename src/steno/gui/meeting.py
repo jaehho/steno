@@ -51,7 +51,7 @@ from ..summarize import (
 from . import words
 from .player import Player
 from .sidebar import Session
-from .summary import CiteSource, SummaryView
+from .summary import CiteBar, CiteSource, SummaryView
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
 
 NUDGE_S = 10.0
@@ -115,6 +115,8 @@ class MeetingPage(Gtk.Box):
         # What was last asked where it was said, and the lines that answer.
         self._active: CiteSource | None = None
         self._cited: list[int] = []
+        self._places: list[words.Place] = []
+        self._place = -1  # the one in `_places` the page was last taken to
         self._started_at = 0.0
         self.player = Player(on_tick=self._on_tick)
 
@@ -126,6 +128,12 @@ class MeetingPage(Gtk.Box):
             self.layouts.set_child(name, widget)
         self.layouts.set_layout_name("wide")
         self.append(self.layouts)
+        self.cite_bar = CiteBar(
+            on_step=self._step_place,
+            on_pick=self._pick_place,
+            on_close=self._clear_cites,
+        )
+        self.append(self.cite_bar)
         self.append(self._build_player())
 
         # Esc puts the transcript back as it was, from wherever in the page.
@@ -744,8 +752,30 @@ class MeetingPage(Gtk.Box):
         self._cited = sorted({i for place in places for i in place.rows})
         for i in self._cited:
             self._rows[i].add_css_class("line-cited")
+        self._places = places
+        self.cite_bar.show_places(
+            source.markup, places, playable=self.player_bar.get_visible()
+        )
+        self._place = 0
+        self.cite_bar.set_current(0)
         if scroll:
             self._bring_into_view(self._rows[self._cited[0]])
+
+    def _go_to_place(self, index: int) -> None:
+        self._place = index
+        self.cite_bar.set_current(index)
+        self._scroll_to_row(self._rows[self._places[index].rows[0]])
+
+    def _step_place(self, delta: int) -> None:
+        if 0 <= self._place + delta < len(self._places):
+            self._go_to_place(self._place + delta)
+
+    def _pick_place(self, index: int) -> None:
+        """A place was chosen in the bar: take the transcript there and play
+        from it. With no audio, or while recording, `_play_at` says why it
+        did not, and the transcript has moved all the same."""
+        self._go_to_place(index)
+        self._play_line(self._places[index].rows[0])
 
     def _clear_cites(self) -> None:
         if self._active is not None:
@@ -755,6 +785,9 @@ class MeetingPage(Gtk.Box):
                 self._rows[i].remove_css_class("line-cited")
         self._active = None
         self._cited = []
+        self._places = []
+        self._place = -1
+        self.cite_bar.hide()
 
     def _on_page_key(self, _keys, key: int, _code: int, _state) -> bool:
         if key != Gdk.KEY_Escape or self._active is None:

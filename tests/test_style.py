@@ -47,5 +47,8 @@ class TestStylesheet(unittest.TestCase):
     def test_the_classes_that_light_a_cited_item_are_styled(self):
         """The widgets add these by name; a rename would silently drop
         the look."""
-        for name in ("line-cited", "cited-item", "item-active", "summary-item"):
+        for name in (
+            "line-cited", "cited-item", "item-active", "summary-item",
+            "cite-bar", "place-current",
+        ):
             self.assertIn(f".{name}", self.css)

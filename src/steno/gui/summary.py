@@ -17,13 +17,16 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, Gtk, Pango
 
 from .. import citations
 from . import words
 from .widgets import wrapping_label
 
 ACTIVATE_KEYS = (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space)
+# About three places; a longer list scrolls inside the bar, so that the
+# transcript above it keeps most of the window.
+MAX_PLACES_HEIGHT = 120
 
 
 @dataclass(eq=False)
@@ -136,3 +139,137 @@ class SummaryView(Gtk.Box):
             make_citable(row, source, self._on_choose)
             self.sources.append(source)
         return row
+
+
+class CiteBar(Gtk.Box):
+    """The places a lit item points at, docked above the player.
+
+    Not under the item: the summary and the transcript scroll together,
+    so a list placed under the item would be scrolled out of sight by the
+    very jump it is for. Here it stays put while the transcript moves, and
+    its steps and rows are the way along the places.
+    """
+
+    def __init__(
+        self,
+        on_step: Callable[[int], None],
+        on_pick: Callable[[int], None],
+        on_close: Callable[[], None],
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.add_css_class("cite-bar")
+        self.set_visible(False)
+        self._on_pick = on_pick
+        self._buttons: list[Gtk.Button] = []
+
+        self.count = Gtk.Label(xalign=0.0)
+        self.count.add_css_class("sec")
+        self.up = self._tool("go-up-symbolic", "Previous place")
+        self.up.connect("clicked", lambda _b: on_step(-1))
+        self.down = self._tool("go-down-symbolic", "Next place")
+        self.down.connect("clicked", lambda _b: on_step(1))
+        self.title = Gtk.Label(xalign=0.0)
+        self.title.add_css_class("hint")
+        self.title.set_hexpand(True)
+        self.title.set_ellipsize(Pango.EllipsizeMode.END)
+        close = self._tool("window-close-symbolic", "Clear  (Esc)")
+        close.connect("clicked", lambda _b: on_close())
+
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        for widget in (self.count, self.up, self.down, self.title, close):
+            head.append(widget)
+        self.append(head)
+
+        self.places = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.scroller = Gtk.ScrolledWindow()
+        self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scroller.set_propagate_natural_height(True)
+        self.scroller.set_max_content_height(MAX_PLACES_HEIGHT)
+        self.scroller.set_child(self.places)
+        self.append(self.scroller)
+
+    @staticmethod
+    def _tool(icon: str, tip: str) -> Gtk.Button:
+        button = Gtk.Button.new_from_icon_name(icon)
+        button.add_css_class("flat")
+        button.set_tooltip_text(tip)
+        return button
+
+    def show_places(
+        self, title: str, places: list[words.Place], playable: bool
+    ) -> None:
+        """List `places` for the item whose words are `title` (markup).
+        `playable` is whether the meeting still has audio to play from."""
+        self.clear()
+        self.count.set_text(places_word(len(places)))
+        self.title.set_markup(title)
+        for index, place in enumerate(places):
+            button = self._place_row(place, playable)
+            button.connect("clicked", lambda _b, i=index: self._on_pick(i))
+            self.places.append(button)
+            self._buttons.append(button)
+        # One place has nothing to step to.
+        self.up.set_visible(len(places) > 1)
+        self.down.set_visible(len(places) > 1)
+        self.set_visible(True)
+
+    @staticmethod
+    def _place_row(place: words.Place, playable: bool) -> Gtk.Button:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        stamp = Gtk.Label(label=place.stamp, xalign=1.0)
+        stamp.add_css_class("place-stamp")
+        stamp.set_width_chars(5)
+        who = Gtk.Label(label=place.speaker, xalign=0.0)
+        who.add_css_class("place-who")
+        who.set_width_chars(4)
+        quote = Gtk.Label(label=f"“{place.quote}”", xalign=0.0)
+        quote.set_ellipsize(Pango.EllipsizeMode.END)
+        quote.set_hexpand(True)
+        for widget in (stamp, who, quote):
+            row.append(widget)
+        if place.more:
+            more = Gtk.Label(
+                label=f"+{place.more} more line{'' if place.more == 1 else 's'}"
+            )
+            more.add_css_class("hint")
+            row.append(more)
+        if playable:
+            row.append(Gtk.Image.new_from_icon_name("media-playback-start-symbolic"))
+        button = Gtk.Button()
+        button.set_child(row)
+        button.add_css_class("flat")
+        button.add_css_class("place")
+        button.set_tooltip_text("Play from here" if playable else "Show this place")
+        return button
+
+    def set_current(self, index: int) -> None:
+        """Mark one place as the one the transcript was last taken to."""
+        for i, button in enumerate(self._buttons):
+            if i == index:
+                button.add_css_class("place-current")
+            else:
+                button.remove_css_class("place-current")
+        self.up.set_sensitive(index > 0)
+        self.down.set_sensitive(index < len(self._buttons) - 1)
+        if 0 <= index < len(self._buttons):
+            self._reveal(self._buttons[index])
+
+    def _reveal(self, button: Gtk.Button) -> None:
+        """Scroll the list, if it is long enough to scroll, to a row."""
+        # The rows are its direct children, so the allocation is where they
+        # sit in it, padding included.
+        box = button.get_allocation()
+        adjustment = self.scroller.get_vadjustment()
+        if box.y < adjustment.get_value():
+            adjustment.set_value(box.y)
+        elif box.y + box.height > adjustment.get_value() + adjustment.get_page_size():
+            adjustment.set_value(box.y + box.height - adjustment.get_page_size())
+
+    def clear(self) -> None:
+        while (child := self.places.get_first_child()) is not None:
+            self.places.remove(child)
+        self._buttons = []
+
+    def hide(self) -> None:
+        self.set_visible(False)
+        self.clear()

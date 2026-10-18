@@ -216,6 +216,19 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
         background: alpha({colors['yellow']}, 0.14);
         box-shadow: inset 2px 0 0 {colors['yellow']};
     }}
+    /* The places a lit item points at, docked above the player. */
+    .cite-bar {{
+        background: {colors['mantle']};
+        border-top: 1px solid {colors['surface0']};
+        padding: 6px 12px 8px 12px;
+    }}
+    .cite-bar button.place {{ padding: 3px 8px; min-height: 0; border-radius: 8px; }}
+    .cite-bar button.place.place-current {{
+        background: alpha({colors['yellow']}, 0.16);
+        box-shadow: inset 2px 0 0 {colors['yellow']};
+    }}
+    .place-stamp {{ font-family: {DATA}; font-size: 9pt; color: {colors['overlay2']}; }}
+    .place-who {{ font-size: 9pt; color: {colors['overlay2']}; }}
     .todo-done {{ color: {colors['overlay0']}; text-decoration: line-through; }}
     .owner-you  {{ color: {colors['teal']}; }}
     .owner-them {{ color: {colors['overlay2']}; }}
