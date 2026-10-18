@@ -97,6 +97,7 @@ steno project-notes [NAME]  copy a meeting into its project's notes/meetings
 steno project-notes --all   ... every meeting filed under a project (--dry-run first)
 steno project-notes --remove NAME...  take a meeting's pages out again
 steno todos                what you owe, across every meeting not put away
+steno todos --all          ... and the ones you ticked
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context

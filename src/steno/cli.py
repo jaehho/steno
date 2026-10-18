@@ -1303,8 +1303,12 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
                          help="Sessions directory")
     p_notes.set_defaults(func=cmd_project_notes)
 
-    p_todos = sub.add_parser("todos", help="What you owe, across every meeting")
-    p_todos.add_argument("--all", action="store_true", help="Include finished items")
+    p_todos = sub.add_parser(
+        "todos", help="What you owe, across every meeting not put away"
+    )
+    p_todos.add_argument("--all", action="store_true",
+                         help="Include the ticked ones too (a meeting put "
+                              "away stays out)")
     p_todos.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_todos.set_defaults(func=cmd_todos)
 
