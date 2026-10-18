@@ -1,6 +1,7 @@
 """Notes and todos: extraction, and what survives a re-summarize."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +88,105 @@ class TestParseActionItems(unittest.TestCase):
         a, = parse_action_items("## Action items\n- Send   the  figures\n")
         b, = parse_action_items("## Action items\n- send the figures\n")
         self.assertEqual(a.key, b.key)
+
+
+# SUMMARY with citation markers on its action items: with a space, with none,
+# and with trailing spaces after.
+CITED = (
+    SUMMARY
+    .replace("by Friday", "by Friday <!--cite 201-221,460-->")
+    .replace("comparison table", "comparison table<!--cite 33-->")
+    .replace("next week", "next week <!--cite 500-->  ")
+)
+
+
+class TestCitesInTodos(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_the_marker_is_not_part_of_the_wording(self):
+        for todo in parse_action_items(CITED):
+            self.assertNotIn("cite", todo.text)
+            self.assertNotIn("<!--", todo.key)
+
+    def test_text_key_and_owner_are_the_same_with_and_without_markers(self):
+        """The asst `--source` and the tick state are made from these."""
+        def shape(body: str) -> list[tuple[str, str, str]]:
+            return [(t.text, t.key, t.owner) for t in parse_action_items(body)]
+
+        self.assertEqual(shape(CITED), shape(SUMMARY))
+        self.assertEqual(len(shape(CITED)), 3)
+
+    def test_the_cites_ride_along(self):
+        self.assertEqual(
+            [t.cites for t in parse_action_items(CITED)],
+            [[(201, 221), (460, 460)], [(33, 33)], [(500, 500)]],
+        )
+        self.assertEqual(
+            [t.cites for t in parse_action_items(SUMMARY)], [[], [], []]
+        )
+
+    def test_the_same_source_is_filed_with_or_without_markers(self):
+        a = Path(tempfile.mkdtemp()) / "20260101-090000"
+        b = Path(tempfile.mkdtemp()) / "20260101-090000"
+        for folder, body in ((a, CITED), (b, SUMMARY)):
+            folder.mkdir()
+            sync_todos(folder, body)
+        rows = [[(t.text, t.key, t.src) for t in load_todos(f)] for f in (a, b)]
+        self.assertEqual(rows[0], rows[1])
+
+    def test_cites_are_stored_as_pairs(self):
+        sync_todos(self.dir, CITED)
+        raw = json.loads((self.dir / "todos.json").read_text())
+        self.assertEqual(raw[0]["cites"], [[201, 221], [460, 460]])
+        self.assertEqual(
+            load_todos(self.dir)[0].cites, [(201, 221), (460, 460)]
+        )
+
+    def test_a_todos_file_from_before_cites_still_loads(self):
+        (self.dir / "todos.json").write_text(json.dumps([
+            {"text": "Send the report", "owner": "you", "done": True},
+        ]))
+        todo, = load_todos(self.dir)
+        self.assertEqual((todo.text, todo.done, todo.cites), (
+            "Send the report", True, []))
+
+    def test_a_damaged_cites_field_costs_the_cite_not_the_todo(self):
+        (self.dir / "todos.json").write_text(json.dumps([
+            {"text": "One", "cites": "oops"},
+            {"text": "Two", "cites": [[1], [3, 4], [9, 2]]},
+        ]))
+        self.assertEqual([(t.text, t.cites) for t in load_todos(self.dir)],
+                         [("One", []), ("Two", [(3, 4)])])
+
+    def test_a_resync_refreshes_cites_and_keeps_everything_else(self):
+        sync_todos(self.dir, CITED)
+        rows = load_todos(self.dir)
+        rows[0].done, rows[0].uid, rows[0].list_name = True, "AB12", "thesis"
+        rows[0].done_at = 123.0
+        save_todos(self.dir, rows)
+        before = load_todos(self.dir)[0]
+        again = sync_todos(self.dir, CITED.replace("201-221,460", "70-75"))
+        after = again[0]
+        self.assertEqual(after.cites, [(70, 75)])
+        for field in ("text", "owner", "done", "done_at", "uid", "src",
+                      "list_name"):
+            self.assertEqual(getattr(after, field), getattr(before, field))
+
+    def test_a_resync_without_markers_clears_them(self):
+        """summary.md is the source of truth; the summary lost its cites."""
+        sync_todos(self.dir, CITED)
+        again = sync_todos(self.dir, SUMMARY)
+        self.assertEqual([t.cites for t in again], [[], [], []])
+
+    def test_ensure_reads_a_cited_summary(self):
+        (self.dir / "summary.md").write_text(CITED)
+        todos = ensure_todos(self.dir)
+        self.assertEqual(
+            [t.text for t in todos],
+            [t.text for t in parse_action_items(SUMMARY)],
+        )
+        self.assertEqual(todos[0].cites, [(201, 221), (460, 460)])
 
 
 class TestTodoState(unittest.TestCase):

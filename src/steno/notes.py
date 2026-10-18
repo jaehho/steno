@@ -17,18 +17,17 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import asstlink
+from . import asstlink, citations
 
 NOTES_FILENAME = "notes.md"
 TODOS_FILENAME = "todos.json"
 
-# `- [ ] text` / `**You**` headers, as the summary writes them.
-# Models vary: `- x`, `* x`, `1. x`, and an owner as `**You**`, `**You:**`,
-# `**You**:` or a `### You` heading. Dropping any of these loses a promise.
-_BULLET_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.+?)\s*$")
+# Models vary: a bullet as `- x`, `* x` or `1. x` (`citations.BULLET_RE`),
+# and an owner as `**You**`, `**You:**`, `**You**:` or a `### You` heading.
+# Dropping any of these loses a promise.
 _OWNER_RE = re.compile(
     r"^\s*(?:#{3,}\s+)?(?:\*\*)?(You|Them|Unassigned)\s*:?\s*(?:\*\*)?\s*:?\s*$",
     re.IGNORECASE,
@@ -54,6 +53,9 @@ class Todo:
     # A checkbox that did not reach asst (daemon down). Kept until it lands,
     # so a later pull cannot un-tick what the user just ticked.
     dirty: bool = False
+    # Where in the meeting this was said, as seconds on the transcript's
+    # timeline. Comes from the summary's markers, never from the text.
+    cites: list[citations.Cite] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -96,12 +98,15 @@ def parse_action_items(summary_body: str) -> list[Todo]:
     """Pull the Action items section out of a summary into todos.
 
     Owner comes from the `**You**` / `**Them**` sub-headers the summary prompt
-    asks for; bullets before any owner header are unassigned.
+    asks for; bullets before any owner header are unassigned. A citation
+    marker is not part of the wording: it becomes `cites`, so the text, and
+    the key and asst source made from it, are the same with or without one.
     """
     todos: list[Todo] = []
     in_section = False
     owner = "unassigned"
-    for line in summary_body.splitlines():
+    for raw in summary_body.splitlines():
+        line = citations.strip(raw)
         if _ACTION_HEADING_RE.match(line):
             in_section = True
             owner = "unassigned"
@@ -114,11 +119,13 @@ def parse_action_items(summary_body: str) -> list[Todo]:
             continue
         if _HEADING_RE.match(line):
             break  # the next section ends the list
-        m = _BULLET_RE.match(line)
+        m = citations.BULLET_RE.match(line)
         if m:
             text = m.group(1).strip()
             if text:
-                todos.append(Todo(text=text, owner=owner))
+                todos.append(
+                    Todo(text=text, owner=owner, cites=citations.parse(raw))
+                )
     return todos
 
 
@@ -137,6 +144,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             src=str(row.get("src", "") or ""),
             list_name=str(row.get("list_name", "") or ""),
             dirty=bool(row.get("dirty", False)),
+            cites=citations.coerce(row.get("cites")),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
     ]
