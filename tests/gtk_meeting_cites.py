@@ -29,6 +29,7 @@ gi.require_version("Graphene", "1.0")
 from gi.repository import Gdk, Graphene, Gtk
 
 from steno.gui.meeting import MeetingPage
+from steno.gui.style import FALLBACK, stylesheet
 from steno.gui.window import Window
 from steno.notes import ensure_todos, load_todos
 from tests.gtk_meeting_scroll import on_screen, scroller_of, wait_for
@@ -217,6 +218,8 @@ class TestSummaryRows(CitedMeeting):
             self.assertTrue(source.mark.has_css_class("cited-item"))
             self.assertTrue(source.mark.get_focusable())
             self.assertEqual(source.mark.get_cursor().get_name(), "pointer")
+            # A selectable label takes the click and shows a text cursor.
+            self.assertFalse(source.mark.get_last_child().get_selectable())
 
     def test_a_cited_item_says_how_many_places_in_its_tooltip(self):
         self.assertEqual(
@@ -845,6 +848,22 @@ class TestTodos(CitedMeeting):
         cited, plain = inset("Send the figures"), inset("Draft the table")
         self.assertAlmostEqual(cited[0], plain[0], delta=1.5)
         self.assertAlmostEqual(cited[1], plain[1], delta=1.5)
+
+
+class TestStylesheet(unittest.TestCase):
+    def test_gtk_reads_every_rule_of_it(self):
+        """A mistyped property is only a warning on stderr and the look
+        silently missing."""
+        errors: list[str] = []
+        provider = Gtk.CssProvider()
+        provider.connect(
+            "parsing-error",
+            lambda _p, section, error: errors.append(
+                f"{section.to_string()}: {error.message}"
+            ),
+        )
+        provider.load_from_string(stylesheet(FALLBACK))
+        self.assertEqual(errors, [])
 
 
 class TestWithoutCitations(CitedMeeting):
