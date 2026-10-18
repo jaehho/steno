@@ -101,7 +101,22 @@ class TestGrammar(unittest.TestCase):
     def test_only_the_last_of_two_markers_counts(self):
         line = "x <!--cite 1--> <!--cite 2-->"
         self.assertEqual(parse(line), [(2, 2)])
-        self.assertEqual(strip(line), "x <!--cite 1-->")
+
+    def test_a_pile_of_markers_is_stripped_whole(self):
+        """Else one is left behind, and read as a cite."""
+        for pile in (
+            " <!--cite 1--> <!--cite 2-->",
+            "<!--cite 1--><!--cite 2--><!--cite 3-->",
+            " <!--cite 1-->  \t<!--cite 2-->  ",
+        ):
+            with self.subTest(pile=pile):
+                self.assertEqual(strip("- x" + pile).rstrip(), "- x")
+                self.assertEqual(strip(strip("- x" + pile)), strip("- x" + pile))
+                self.assertEqual(items("- x" + pile)[0].text, "x")
+
+    def test_a_marker_in_the_middle_of_the_line_is_not_the_end(self):
+        line = "x <!--cite 1--> y <!--cite 2-->"
+        self.assertEqual(strip(line), "x <!--cite 1--> y")
 
     def test_a_reversed_range_is_read_in_order(self):
         self.assertEqual(parse("x <!--cite 9-3-->"), [(3, 9)])
@@ -194,6 +209,12 @@ class TestApply(unittest.TestCase):
         self.assertEqual(
             apply(md, {1: [(2, 2)]}), "- a <!--cite 1-->\n- b <!--cite 2-->\n"
         )
+
+    def test_a_pile_is_replaced_by_one_marker(self):
+        out = apply("- a <!--cite 1--> <!--cite 2-->\n", {0: [(7, 8)]})
+        self.assertEqual(out, "- a <!--cite 7-8-->\n")
+        self.assertEqual(apply("- a <!--cite 1--><!--cite 2-->\n", {0: []}),
+                         "- a\n")
 
     def test_an_item_that_is_not_there_is_an_error(self):
         with self.assertRaises(ValueError):
@@ -379,6 +400,42 @@ class TestFromModel(unittest.TestCase):
     def test_a_marker_the_model_wrote_is_not_trusted(self):
         out = from_model("- a <!--cite 1-9999-->\n- b [L2]\n", self.OFFSETS)
         self.assertEqual(out, "- a\n- b <!--cite 9-->\n")
+
+    def test_markers_the_model_piled_up_are_all_gone(self):
+        md = "- a <!--cite 1--> <!--cite 2-->\n- b [L2]<!--cite 3-->\n"
+        out = from_model(md, self.OFFSETS)
+        self.assertEqual(out, "- a\n- b <!--cite 9-->\n")
+
+    def test_a_timestamp_the_marker_cannot_hold_is_no_cite(self):
+        """One wild row must not make the whole summary raise."""
+        offsets = [3, 10**9, 12, 20]
+        for md, expected in (
+            ("- a [L1]\n", "- a\n"),
+            ("- a [L0-1]\n", "- a <!--cite 3-->\n"),
+            ("- a [L0, L1, L2]\n", "- a <!--cite 3,12-->\n"),
+            ("- a [L2-3]\n", "- a <!--cite 12-20-->\n"),
+        ):
+            with self.subTest(md=md):
+                self.assertEqual(from_model(md, offsets), expected)
+        self.assertEqual(from_model("- a [L0]\n", [-5]), "- a\n")
+
+    def test_whatever_the_tags_say_the_result_is_clean(self):
+        """Random ids, offsets and layouts: no error, no tag left, and
+        the words are the model's."""
+        rng = random.Random(11)
+        pool = ["[L0]", "[L1-2]", "[L99]", "[L3, L1]", "[L2-1]", "[L0-9]",
+                "[x]", ""]
+        for _ in range(300):
+            offsets = [rng.choice([0, 3, 40, 41, 10**9]) for _ in range(5)]
+            body = [" ".join(rng.choices(pool, k=rng.randrange(4)))
+                    for _ in range(4)]
+            md = "".join(f"- item {n} {tags}\n" for n, tags in enumerate(body))
+            with self.subTest(md=md, offsets=offsets):
+                out = from_model(md, offsets)
+                self.assertNotRegex(out, r"\[L\d")
+                self.assertEqual(len(items(out)), 4)
+                for n, item in enumerate(items(out)):
+                    self.assertTrue(item.text.startswith(f"item {n}"))
 
     def test_spellings_models_use(self):
         dash = "\N{EN DASH}"

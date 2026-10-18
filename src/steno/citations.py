@@ -43,10 +43,14 @@ MAX_SECOND = 9_999_999
 _MARK = "<!--cite"
 # Digits are bounded so that int() is never handed a number it refuses.
 _SPAN = r"\d{1,7}(?:-\d{1,7})?"
+_SPANS = rf"{_SPAN}(?:,{_SPAN})*"
 # One per line, at the end of it. The single space before it (`gap`)
-# goes with it. Two markers on a line leave the first one alone.
+# goes with it. Markers piled up at the end of a line (a hand edit, a
+# model copying the format) are one marker to remove and to replace, so
+# none is left to be read as a cite after `strip`; `spans` is the last.
 _MARKER_RE = re.compile(
-    rf"(?P<gap> ?)<!--cite (?P<spans>{_SPAN}(?:,{_SPAN})*)-->(?=[ \t]*\Z)"
+    rf"(?P<gap> ?)(?:<!--cite {_SPANS}-->[ \t]*)*"
+    rf"<!--cite (?P<spans>{_SPANS})-->(?=[ \t]*\Z)"
 )
 
 # `- [ ] text`, `* text`, `1. text`, `2) text`: the shapes a model
@@ -77,8 +81,8 @@ class Item:
 
 
 class Coverage(NamedTuple):
-    items: int
-    cited: int
+    items: int = 0
+    cited: int = 0
 
 
 def _lines(md: str) -> list[tuple[str, str]]:
@@ -223,11 +227,17 @@ def validate(raw_lines: Iterable[Run], offsets: Sequence[int]) -> list[Run]:
 
 
 def _in_seconds(runs: Iterable[Run], offsets: Sequence[int]) -> list[Cite]:
-    """Runs of record indices as cites: sorted, without repeats."""
+    """Runs of record indices as cites: sorted, without repeats.
+
+    A run the marker cannot hold (a record with a wild timestamp) is no
+    cite: one bad row must not cost the summary it came with.
+    """
     cites = set()
     for first, final in runs:
         span = offsets[first:final + 1]
-        cites.add((min(span), max(span)))
+        low, high = min(span), max(span)
+        if 0 <= low <= high <= MAX_SECOND:
+            cites.add((low, high))
     return sorted(cites)
 
 
