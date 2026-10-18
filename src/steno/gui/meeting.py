@@ -51,7 +51,7 @@ from ..summarize import (
 from . import words
 from .player import Player
 from .sidebar import Session
-from .summary import CiteBar, CiteSource, SummaryView
+from .summary import CiteBar, CiteSource, SummaryView, make_citable
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
 
 NUDGE_S = 10.0
@@ -117,6 +117,9 @@ class MeetingPage(Gtk.Box):
         self._cited: list[int] = []
         self._places: list[words.Place] = []
         self._place = -1  # the one in `_places` the page was last taken to
+        # The to-dos on the page that cite, to find the lit one again when
+        # the list is rebuilt.
+        self._todo_sources: list[CiteSource] = []
         self._started_at = 0.0
         self.player = Player(on_tick=self._on_tick)
 
@@ -509,6 +512,7 @@ class MeetingPage(Gtk.Box):
     def _load_todos(self, s: Session, todos: list[Todo]) -> None:
         while (child := self.todo_box.get_first_child()) is not None:
             self.todo_box.remove(child)
+        self._todo_sources = []
         yours = [t for t in todos if t.owner != "them"]
         theirs = [t for t in todos if t.owner == "them"]
         self.todo_count.set_text(words.todo_count(sum(not t.done for t in yours)))
@@ -517,6 +521,7 @@ class MeetingPage(Gtk.Box):
                 "Nothing to do out of this one." if s.summary_path.is_file()
                 else "To-dos come with the summary."
             ))
+            self._keep_todo_cite()
             return
         # Two groups, not one list with a tiny owner tag. Your work is the
         # to-do; what they owe is a reminder, so it sits under its own head.
@@ -528,6 +533,20 @@ class MeetingPage(Gtk.Box):
             self.todo_box.append(self._group_label("They owe"))
             for todo in theirs:
                 self.todo_box.append(self._todo_row(s, todo))
+        self._keep_todo_cite()
+
+    def _keep_todo_cite(self) -> None:
+        """The to-do list was rebuilt (asst answered, a project moved the
+        tasks): a to-do that was lit is still the one lit."""
+        active = self._active
+        if active is None or active.ref[0] != "todo":
+            return
+        for source in self._todo_sources:
+            if source.ref == active.ref:
+                source.mark.add_css_class("item-active")
+                self._active = source
+                return
+        self._clear_cites()
 
     def _group_label(self, text: str) -> Gtk.Widget:
         label = Gtk.Label(label=text, xalign=0.0)
@@ -548,10 +567,28 @@ class MeetingPage(Gtk.Box):
         label.set_hexpand(True)
         if todo.done:
             label.add_css_class("todo-done")
-        # Clicking the words ticks the box, as it would in any checklist.
-        check.set_child(label)
-
-        row.append(check)
+        if todo.cites:
+            # Clicking these words shows where they were said, so they stand
+            # beside the box, which still ticks.
+            check.set_hexpand(False)
+            label.set_valign(Gtk.Align.START)
+            # Where the box's own label would sit, in its padding, so the
+            # words stay in line with those of a to-do that cites nothing.
+            label.set_margin_top(3)
+            words_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
+            words_row.set_hexpand(True)
+            words_row.append(check)
+            words_row.append(label)
+            row.append(words_row)
+            source = CiteSource(
+                row, todo.cites, words.escape(todo.text), ("todo", todo.key)
+            )
+            make_citable(label, source, self._toggle_cites)
+            self._todo_sources.append(source)
+        else:
+            # Clicking the words ticks the box, as it would in any checklist.
+            check.set_child(label)
+            row.append(check)
         # asst list, right-aligned. The group header already says whose it is.
         if todo.list_name:
             where = Gtk.Label(label=todo.list_name, xalign=1.0)

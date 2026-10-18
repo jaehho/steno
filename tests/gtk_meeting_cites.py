@@ -26,10 +26,11 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Graphene", "1.0")
 
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, Graphene, Gtk
 
 from steno.gui.meeting import MeetingPage
 from steno.gui.window import Window
+from steno.notes import ensure_todos, load_todos
 from tests.gtk_meeting_scroll import on_screen, scroller_of, wait_for
 from tests.gtk_sidebar_menu import StubApp, controllers, settle
 
@@ -50,9 +51,15 @@ Planning went fine.
 ## Action items
 **You**
 - Send the figures <!--cite 400-->
+- Draft the table
+
+**Them**
+- Revised quote next week <!--cite 300-->
 """
 PLAIN_SUMMARY = "# Plain call\n\n## Decisions\n- Nothing is cited here\n"
 # The lines each item points at: line n is said at second 5 * n.
+FIGURES = [80]  # the to-do "Send the figures"
+QUOTE = [60]  # what they owe: "Revised quote next week"
 OPENING = [1]
 DEPOSIT = [120, 121, 122]
 SHIP = [20, 160]
@@ -612,6 +619,143 @@ class TestTheBar(CitedMeeting):
         self.assertEqual(self.bar.count.get_text(), "2 places")
         self.assertEqual(self.lit(), SHIP)
         self.assertEqual(self.page._place, 0)
+
+
+def todo_parts(row: Gtk.Box) -> tuple[Gtk.CheckButton, Gtk.Label]:
+    """A to-do row's box and its words. A to-do that cites keeps the words
+    beside the box; one that does not, inside it."""
+    first = row.get_first_child()
+    if isinstance(first, Gtk.CheckButton):
+        return first, first.get_child()
+    check, label = children(first)
+    return check, label
+
+
+class TestTodos(CitedMeeting):
+    def todo_rows(self) -> dict[str, Gtk.Box]:
+        """The to-do rows by their words."""
+        return {
+            todo_parts(row)[1].get_label(): row
+            for row in children(self.page.todo_box)
+            if isinstance(row, Gtk.Box)
+        }
+
+    def words_of(self, text: str) -> Gtk.Label:
+        return todo_parts(self.todo_rows()[text])[1]
+
+    def check_of(self, text: str) -> Gtk.CheckButton:
+        return todo_parts(self.todo_rows()[text])[0]
+
+    def test_a_to_do_that_cites_has_words_to_click_beside_its_box(self):
+        rows = self.todo_rows()
+        self.assertEqual(
+            sorted(rows),
+            ["Draft the table", "Revised quote next week", "Send the figures"],
+        )
+        cited = self.words_of("Send the figures")
+        self.assertTrue(cited.has_css_class("cited-item"))
+        self.assertIsNone(self.check_of("Send the figures").get_child())
+        self.assertEqual(
+            cited.get_tooltip_text(), "Show where this was said (1 place)"
+        )
+        self.assertEqual(cited.get_cursor().get_name(), "pointer")
+        # One that cites nothing is as it was: the words are the box's label.
+        plain = self.words_of("Draft the table")
+        self.assertFalse(plain.has_css_class("cited-item"))
+        self.assertIs(plain.get_parent(), self.check_of("Draft the table"))
+
+    def test_clicking_the_words_lights_the_lines_and_leaves_the_box_alone(self):
+        self.scroll_top()
+        row = self.todo_rows()["Send the figures"]
+        check = self.check_of("Send the figures")
+
+        click(self.words_of("Send the figures"))
+
+        self.assertEqual(self.lit(), FIGURES)
+        self.assertTrue(row.has_css_class("item-active"))
+        self.assertFalse(check.get_active())
+        self.assertFalse(
+            next(t for t in load_todos(self.page.current.dir) if "figures" in t.text).done
+        )
+        self.assertTrue(self.bar_shows("Send the figures"))
+        self.assertTrue(on_screen(self.page._rows[FIGURES[0]]))
+
+    def bar_shows(self, title: str) -> bool:
+        bar = self.page.cite_bar
+        return bar.get_visible() and bar.title.get_text() == title
+
+    def test_what_they_owe_can_be_clicked_too(self):
+        click(self.words_of("Revised quote next week"))
+        self.assertEqual(self.lit(), QUOTE)
+
+    def test_the_box_still_ticks_and_the_tick_leaves_the_lines_lit(self):
+        click(self.words_of("Send the figures"))
+        check = self.check_of("Send the figures")
+
+        check.set_active(True)
+
+        todo = next(t for t in load_todos(self.page.current.dir) if "figures" in t.text)
+        self.assertTrue(todo.done)
+        self.assertTrue(self.words_of("Send the figures").has_css_class("todo-done"))
+        self.assertEqual(self.lit(), FIGURES)
+
+    def test_the_words_of_a_plain_to_do_still_tick_its_box(self):
+        check = self.check_of("Draft the table")
+        self.assertIs(self.words_of("Draft the table").get_parent(), check)
+        self.assertFalse(check.get_active())
+
+    def test_one_item_at_a_time_across_the_summary_and_the_to_dos(self):
+        click(self.item("deposit").mark)
+        click(self.words_of("Send the figures"))
+        self.assertEqual(self.lit(), FIGURES)
+        self.assertFalse(self.item("deposit").mark.has_css_class("item-active"))
+
+        click(self.item("deposit").mark)
+        self.assertEqual(self.lit(), DEPOSIT)
+        self.assertFalse(
+            self.todo_rows()["Send the figures"].has_css_class("item-active")
+        )
+
+    def test_rebuilding_the_list_keeps_the_lit_to_do_lit(self):
+        """asst answers about once a minute and the list is drawn again."""
+        click(self.words_of("Send the figures"))
+        old = self.todo_rows()["Send the figures"]
+
+        self.page._load_todos(self.page.current, ensure_todos(self.page.current.dir))
+
+        new = self.todo_rows()["Send the figures"]
+        self.assertIsNot(new, old)
+        self.assertTrue(new.has_css_class("item-active"))
+        self.assertEqual(self.lit(), FIGURES)
+        # And clicking the new row puts it out, as the old one would have.
+        click(self.words_of("Send the figures"))
+        self.assertEqual(self.lit(), [])
+
+    def test_a_lit_summary_item_is_not_touched_by_a_rebuilt_list(self):
+        click(self.item("deposit").mark)
+
+        self.page._load_todos(self.page.current, ensure_todos(self.page.current.dir))
+
+        self.assertEqual(self.lit(), DEPOSIT)
+        self.assertTrue(self.item("deposit").mark.has_css_class("item-active"))
+
+    def test_the_words_sit_where_they_would_in_the_box(self):
+        """The same left edge and the same first line, cited or not."""
+        def inset(text: str) -> tuple[float, float]:
+            """Where the words start inside their own row."""
+            label = self.words_of(text)
+            ok, point = label.compute_point(
+                self.todo_rows()[text], Graphene.Point().init(0, 0)
+            )
+            assert ok
+            return point.x, point.y
+
+        self.assertTrue(
+            wait_for(lambda: self.words_of("Send the figures").get_height() > 0)
+        )
+        cited, plain = inset("Send the figures"), inset("Draft the table")
+        self.assertAlmostEqual(cited[0], plain[0], delta=1.5)
+        self.assertAlmostEqual(cited[1], plain[1], delta=1.5)
 
 
 class TestStaleState(CitedMeeting):
