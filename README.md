@@ -105,6 +105,16 @@ the list (or `Menu` / `Shift+F10` on it) opens that meeting and shows the same
 menu. Deleting goes to your desktop trash, all of it together, recoverable from
 there.
 
+A summary says where each point was said. The model ends every bullet with
+the transcript lines that support it; Steno checks those against the
+transcript and keeps them in `summary.md` as a hidden comment at the end of
+the line, `<!--cite 201-221,460-->`. The numbers are seconds into the meeting,
+the ones the transcript's time column shows, so `steno realign` does not
+strand them. GitHub and Obsidian show nothing; `steno export` and Copy meeting
+write it as `[03:21, 07:40]`, which matches the stamps in the transcript
+section. A bullet nothing supports gets none. A meeting summarized before this
+has none until you run `steno summarize NAME` on it.
+
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window
 parked beside the call works.
@@ -184,8 +194,9 @@ reconnect.
 ## Layout
 
 - **engine** — `detect.py` (who's holding the mic), `audio.py`, `transcribe.py`
-  (Deepgram, streaming and batch), `summarize.py`, `notes.py`, `retention.py`,
-  `playback.py`, `session.py` (the lifecycle that drives them). No GUI
+  (Deepgram, streaming and batch), `summarize.py`, `citations.py` (the
+  markers above), `notes.py`, `retention.py`, `playback.py`, `session.py`
+  (the lifecycle that drives them). No GUI
   dependency, so `make test` runs headless.
 - **`gui/`** — GTK4. `app.py` is the long-running listener and owns the engine;
   `window.py` is a view it can live without. `bridge.py` is the only place the

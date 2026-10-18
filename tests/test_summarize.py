@@ -1,11 +1,15 @@
 """Transcript handling and session resolution — everything up to the API call."""
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from steno import citations, claude
+from steno.notes import sync_todos
 from steno.summarize import (
     duration_minutes,
     format_for_model,
@@ -16,6 +20,7 @@ from steno.summarize import (
     load_title,
     parse_summary,
     resolve_session,
+    summarize_session,
 )
 
 ROWS = [
@@ -211,3 +216,192 @@ class TestFormatForModel(unittest.TestCase):
             [{"ts": 0.0, "speaker": "them", "text": "a@b.com"}], redact=False
         )
         self.assertIn("a@b.com", out)
+
+    def test_cited_lines_carry_an_id_and_the_gutters_time(self):
+        out = format_for_model(ROWS, offsets=[5, 80])
+        self.assertEqual(
+            out, "[L0 00:05] you: morning\n[L1 01:20] them: shall we start"
+        )
+
+    def test_cited_lines_count_hours_like_the_gutter(self):
+        out = format_for_model(ROWS[:1], offsets=[3725])
+        self.assertEqual(out, "[L0 1:02:05] you: morning")
+
+
+SESSION_ROWS = [
+    {"ts": 1005.0, "speaker": "them", "text": "shall we start"},
+    {"ts": 1009.0, "speaker": "you", "text": "sure"},
+    {"ts": 1021.0, "speaker": "them",
+     "text": "can you send the usage figures by Friday"},
+    {"ts": 1024.0, "speaker": "you", "text": "yes, I will send them Thursday"},
+    {"ts": 1090.0, "speaker": "them",
+     "text": "the discount may be retroactive"},
+]
+
+CITED_REPLY = """\
+# Vendor Pricing Call
+
+## TL;DR
+- They want the usage figures by Friday. [L2-3]
+- Nothing else was settled.
+
+## Action items
+**You**
+- Send the usage figures by Friday [L2-3]
+
+## Open questions
+- Whether the discount is retroactive [L4]
+"""
+
+
+class FakeModel:
+    """A stand-in for claude.run_structured: replies in order, the last one
+    for every call after, and a record of what it was asked."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    async def __call__(self, prompt, **kwargs):
+        self.calls.append((prompt, kwargs))
+        last = len(self.replies) == 1
+        reply = self.replies[0] if last else self.replies.pop(0)
+        if isinstance(reply, str):
+            reply = {"summary": reply, "project": None}
+        return reply
+
+
+class TestSummarizeSession(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.dir = _session(self.root, "20260101-090000", SESSION_ROWS)
+        (self.dir / "meta.json").write_text(
+            json.dumps({"started_at": 1000.0}) + "\n"
+        )
+        self.projects = Path(tempfile.mkdtemp())
+
+    def run_with(self, *replies):
+        fake = FakeModel(*replies)
+        with mock.patch.object(claude, "run_structured", fake):
+            summary = asyncio.run(
+                summarize_session(self.dir, "m", None, self.projects)
+            )
+        self.fake = fake
+        return summary
+
+    def written(self) -> str:
+        return (self.dir / "summary.md").read_text()
+
+    def test_the_model_sees_line_ids_at_the_gutters_times(self):
+        self.run_with(CITED_REPLY)
+        prompt, kwargs = self.fake.calls[0]
+        self.assertIn("[L0 00:05] them: shall we start", prompt)
+        self.assertIn(
+            "[L4 01:30] them: the discount may be retroactive", prompt
+        )
+        self.assertIn("[L12-15, L40]", kwargs["system"])
+
+    def test_a_recorded_offset_beats_the_timestamp(self):
+        """The number the gutter shows, so a cite lands on the same row."""
+        rows = [dict(r, offset=r["ts"] - 1000.0 + 2.0) for r in SESSION_ROWS]
+        self.dir = _session(self.root, "20260102-090000", rows)
+        self.run_with(CITED_REPLY)
+        self.assertIn("[L0 00:07] them", self.fake.calls[0][0])
+
+    def test_tags_become_markers_in_seconds(self):
+        self.run_with(CITED_REPLY)
+        text = self.written()
+        self.assertNotIn("[L", text)
+        self.assertIn(
+            "- Send the usage figures by Friday <!--cite 21-24-->", text
+        )
+        self.assertIn("retroactive <!--cite 90-->", text)
+        self.assertIn("- Nothing else was settled.\n", text)
+
+    def test_the_body_handed_on_is_what_was_written(self):
+        """to-dos are made from it, so it has to carry the markers."""
+        summary = self.run_with(CITED_REPLY)
+        self.assertEqual(summary.body + "\n", self.written())
+        self.assertEqual(summary.title, "Vendor Pricing Call")
+        self.assertEqual(summary.coverage, citations.Coverage(4, 3))
+
+    def test_meta_says_how_much_is_cited(self):
+        self.run_with(CITED_REPLY)
+        meta = json.loads((self.dir / "meta.json").read_text())
+        self.assertEqual(meta["cites"], {"items": 4, "cited": 3})
+        self.assertEqual(meta["started_at"], 1000.0)
+
+    def test_the_cites_reach_the_todos(self):
+        summary = self.run_with(CITED_REPLY)
+        todos = sync_todos(self.dir, summary.body)
+        self.assertEqual(
+            [(t.text, t.cites) for t in todos],
+            [("Send the usage figures by Friday", [(21, 24)])],
+        )
+        self.assertEqual(
+            json.loads((self.dir / "todos.json").read_text())[0]["cites"],
+            [[21, 24]],
+        )
+
+    def test_no_temp_file_is_left_behind(self):
+        self.run_with(CITED_REPLY)
+        names = sorted(p.name for p in self.dir.iterdir())
+        self.assertFalse([n for n in names if n.endswith(".tmp")], names)
+
+    def test_a_marker_the_model_wrote_itself_is_not_trusted(self):
+        self.run_with(
+            CITED_REPLY.replace("- Nothing else was settled.",
+                                "- Nothing else was settled. <!--cite 1-2-->")
+        )
+        self.assertNotIn("<!--cite 1-2-->", self.written())
+
+    def test_ids_outside_the_transcript_cite_nothing(self):
+        self.run_with("# T\n\n## TL;DR\n- Said nowhere [L90-95]\n")
+        self.assertNotIn("cite", self.written())
+        self.assertNotIn("[L", self.written())
+
+    def test_an_untagged_reply_is_asked_again_once(self):
+        summary = self.run_with("# T\n\n## TL;DR\n- plain\n")
+        self.assertEqual(len(self.fake.calls), 2)
+        self.assertEqual(summary.coverage, citations.Coverage(1, 0))
+        self.assertEqual(self.written(), "# T\n\n## TL;DR\n- plain\n")
+        meta = json.loads((self.dir / "meta.json").read_text())
+        self.assertEqual(meta["cites"], {"items": 1, "cited": 0})
+
+    def test_the_second_ask_can_be_the_cited_one(self):
+        summary = self.run_with("# T\n\n## TL;DR\n- plain\n", CITED_REPLY)
+        self.assertEqual(len(self.fake.calls), 2)
+        self.assertEqual(summary.title, "Vendor Pricing Call")
+        self.assertIn("<!--cite", self.written())
+
+    def test_a_cited_reply_is_not_asked_twice(self):
+        self.run_with(CITED_REPLY)
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_nothing_to_cite_is_not_asked_again(self):
+        """A summary with no bullets cannot have citations."""
+        self.run_with("# T\n\nThey agreed on Thursday.\n")
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_uncited_beats_no_summary(self):
+        """Untagged once, then only titles: the first reply is kept."""
+        summary = self.run_with(
+            "# T\n\n## TL;DR\n- plain\n", "# Only a title"
+        )
+        self.assertEqual(len(self.fake.calls), 3)
+        self.assertEqual(summary.title, "T")
+        self.assertIn("- plain", self.written())
+
+    def test_title_only_three_times_still_raises_without_writing(self):
+        with self.assertRaisesRegex(claude.ClaudeError, "only a title"):
+            self.run_with("# Only a title")
+        self.assertFalse((self.dir / "summary.md").exists())
+
+    def test_the_start_is_kept_so_cites_survive_the_audio_going(self):
+        """With no started_at and no audio the first line is time zero; that
+        must be written down, or deleting the audio later moves every cite."""
+        (self.dir / "meta.json").unlink()
+        self.run_with(CITED_REPLY)
+        meta = json.loads((self.dir / "meta.json").read_text())
+        self.assertEqual(meta["started_at"], 1005.0)
+        self.assertIn("[L0 00:00] them", self.fake.calls[0][0])
