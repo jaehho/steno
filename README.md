@@ -314,19 +314,21 @@ listed as `skip`, with why. `steno project-notes --remove NAME...` takes
 meetings' pages back out (also with `--dry-run`), and the folder with them if
 nothing else is in it. None of this needs the app running.
 
-**For an agent.** Steno never edits a project's own files. To tell the agent
-working in a project that the folder is there, add one line to that project's
-`CLAUDE.md`:
+**For an agent.** Steno never edits a project's own files, so no project
+needs a line about the folder. The pointer is global: one line in your own
+agent instructions (`~/.claude/CLAUDE.md`, for Claude Code) covers every
+project:
 
 ```
-Meetings recorded by steno are in notes/meetings/ (generated; read README.md there).
+- Meetings steno recorded about a project are in its `notes/meetings/` (generated, read-only; start at `README.md` there).
 ```
 
-A clone of the repository has no meetings, since they were never committed, so
-the line is true on the machine that recorded them. An agent that reads the
-pages sends what it reads to its own provider; that is what they are for. The
-model that writes a summary is not shown them (see What it records, below),
-so a summary is not written from another meeting's pages, nor sends them on.
+The line is true of a project on the machine that recorded its meetings; a
+clone elsewhere has none, since they were never committed. An agent that
+reads the pages sends what it reads to its own provider; that is what they
+are for. The model that writes a summary is not shown them (see What it
+records, below), so a summary is not written from another meeting's pages,
+nor sends them on.
 
 ## The bar
 
