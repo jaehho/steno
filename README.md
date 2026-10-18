@@ -101,32 +101,35 @@ ask Claude about what's being said. A past meeting is one page — its summary,
 to-dos, your notes, a question box, and the full transcript, where **clicking
 any line plays that moment back**. A meeting that never got its summary says so
 and has a **Summarize now** button. The sidebar's "N to-dos open" lists what you
-still owe across every meeting; a row opens its meeting. The ⋯ menu acts on the meeting you are
-looking at: re-time it against its audio, drop the audio but keep the words,
-copy or save the meeting as markdown, or delete it. Right-clicking a meeting in
-the list (or `Menu` / `Shift+F10` on it) opens that meeting and shows the same
-menu. Deleting goes to your desktop trash, all of it together, recoverable from
-there.
+still owe across every meeting; a row opens its meeting. The ⋯ menu acts on
+the meeting you are looking at: summarize it again, re-time it against its
+audio, drop the audio but keep the words, copy or save the meeting as
+markdown, or delete it. Right-clicking a meeting in the list (or `Menu` /
+`Shift+F10` on it) opens that meeting and shows the same menu. Deleting goes
+to your desktop trash, all of it together, recoverable from there.
 
 A summary says where each point was said. The model ends every bullet with
 the transcript lines that support it; Steno checks those against the
 transcript and keeps them in `summary.md` as a hidden comment at the end of
 the line, `<!--cite 201-221,460-->`. The numbers are seconds into the meeting,
 the ones the transcript's time column shows, so `steno realign` does not
-strand them. GitHub and Obsidian show nothing; `steno export` and Copy meeting
-write it as `[03:21, 07:40]`, which matches the stamps in the transcript
-section. A bullet nothing supports gets none. A meeting summarized before
-this has none until it is summarized again: `steno summarize NAME --force`
-for one, or `steno summarize --uncited`, which lists every summary without
-citations and what redoing them costs, and does it when you add `--yes`.
-Summarizing again keeps what is yours: your notes, the meeting's project,
-and your ticks. The model is shown the meeting's action items as they stand
-and told to keep their wording where the transcript still supports them, so
-the same promise stays the same row. A to-do the new summary words
-differently anyway (say "Send usage figures to Alice by Friday" for "Send the
-usage figures by Friday") stays the same row, with its tick and its task in
-asst, when the two read alike; a differently named person, day or number makes
-it a new one.
+strand them. GitHub and Obsidian show nothing; `steno export`, Copy meeting and
+Save meeting write it as `[03:21, 07:40]`, which matches the stamps in the
+transcript section. A bullet nothing supports gets none. A meeting summarized
+before this has none until it is summarized again: **Summarize again** in the
+⋯ menu (or in the menu of its row in the list), which asks first and says
+what it costs, about a cent; `steno summarize NAME --force` for one; or
+`steno summarize --uncited`, which lists every summary without citations and
+what redoing them costs, and does it when you add `--yes`. The old summary
+stays on the page, with a note by its heading, until the new one replaces it,
+and stays for good if the model fails. Summarizing again keeps what is yours:
+your notes, the meeting's project, and your ticks. The model is shown the
+meeting's action items as they stand and told to keep their wording where the
+transcript still supports them, so the same promise stays the same row. A
+to-do the new summary words differently anyway (say "Send usage figures to
+Alice by Friday" for "Send the usage figures by Friday") stays the same row,
+with its tick and its task in asst, when the two read alike; a differently
+named person, day or number makes it a new one.
 
 In the window a point that has citations ends in a small underlined number,
 the count of places it was said. Click it (or press `Enter` on it) and the
@@ -139,7 +142,8 @@ recorded, it scrolls and says why it does not play. The words of a to-do that
 cites work the same way (its box still ticks). `Esc`, the bar's close button,
 or clicking the point again puts the marks out; so does opening another
 meeting. Points with no number are plain text you can select, and a summary
-with no citations says so beside its heading.
+with no citations says so beside its heading, with a link to summarize it
+again.
 
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window
