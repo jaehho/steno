@@ -88,8 +88,10 @@ steno summarize --uncited  redo the summaries that have no citations (lists, pri
 steno export [NAME] [-o F] print or save a meeting as markdown
 steno realign [NAME]       re-time an old session against its audio (costs a pass)
 steno delete [NAME]        move a meeting to the trash
+steno archive NAME...      put meetings away: kept whole, left out of every --all
+steno unarchive NAME...    bring them back
 steno todos                what you owe, across every meeting
-steno status               pause state and unsummarized sessions
+steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context
 ```
@@ -146,6 +148,19 @@ or clicking the point again puts the marks out; so does opening another
 meeting. Points with no number are plain text you can select, and a summary
 with no citations says so beside its heading, with a link to summarize it
 again.
+
+A meeting that no longer matters can be put away instead of deleted:
+`steno archive NAME...` sets `archived` in its `meta.json` and touches
+nothing else, so the audio, the words and the to-dos stay as they were.
+Every command that goes through all meetings then leaves it out
+(`steno summarize --all` and `--uncited`, `steno realign --all`,
+`steno clean-echo --all`) and says how many it left; a command given the
+meeting's name (`export`, `summarize NAME`, `delete`) still reaches it.
+Its open to-dos stay open: `steno todos` still lists them, because a
+promise made in a meeting does not lapse when the meeting is put away.
+`STENO_KEEP_AUDIO_DAYS` treats it like any other. The meeting being
+recorded cannot be archived. `steno status` counts the archived ones, and
+`steno unarchive NAME...` brings them back.
 
 The layout follows the window: two columns when wide, one when narrower, and the
 list and the meeting as separate pages when the window is narrow — a tall window

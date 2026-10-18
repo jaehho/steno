@@ -44,12 +44,15 @@ from .session import paused_until, set_pause
 from .state import bar_json, read_state
 from .summarize import (
     has_summary,
+    is_archived,
     iter_sessions,
     load_meta,
     load_title,
     needs_citations,
     resolve_session,
+    set_archived,
     summarize_session,
+    transcript_path,
 )
 
 ENV_TEMPLATE = """\
@@ -228,8 +231,16 @@ def cmd_status(_args: argparse.Namespace) -> None:
     root = data_dir() / "sessions"
 
     sessions = iter_sessions(root)
-    unsummarized = [s for s in sessions if not has_summary(s)]
+    archived = [s for s in sessions if is_archived(s)]
+    # `summarize --all` leaves archived meetings alone, so they are not
+    # what it would catch up.
+    unsummarized = [
+        s for s in sessions if s not in archived and not has_summary(s)
+    ]
     print(f"sessions: {len(sessions)} in {root}")
+    if archived:
+        print(f"  {len(archived)} archived "
+              "(`steno unarchive NAME` brings one back)")
     if unsummarized:
         print(f"  {len(unsummarized)} without a summary "
               f"(`steno summarize --all` to catch up)")
@@ -292,6 +303,20 @@ def _replace_line(text: str, previous: str) -> None:
     print(prefix + text + " " * max(0, len(previous) - len(text)), flush=True)
 
 
+def _leave_out_archived(sessions: list[Path]) -> list[Path]:
+    """The sessions a bulk run (`--all`, `--uncited`) goes through.
+
+    An archived meeting is one the user put away, so a run over everything
+    leaves it alone, and says how many it left. A command given a meeting's
+    name does not come through here: naming one is asking for it.
+    """
+    kept = [s for s in sessions if not is_archived(s)]
+    if left := len(sessions) - len(kept):
+        print(f"{left} archived meeting{'s' if left != 1 else ''} left out "
+              "(`steno unarchive NAME` to include)")
+    return kept
+
+
 def _summarize_one(
     session_dir: Path, model: str, brief: str | None, force: bool = True
 ) -> bool | None:
@@ -322,7 +347,9 @@ def _summarize_uncited(
     args: argparse.Namespace, model: str, brief: str | None
 ) -> None:
     """Redo the summaries that have no citations, after saying what it costs."""
-    targets = [s for s in iter_sessions(args.dir) if needs_citations(s)]
+    targets = _leave_out_archived(
+        [s for s in iter_sessions(args.dir) if needs_citations(s)]
+    )
     if not targets:
         print("every summary already has citations")
         return
@@ -363,7 +390,7 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         _summarize_uncited(args, model, brief)
         return
     if args.all:
-        targets = iter_sessions(args.dir)
+        targets = _leave_out_archived(iter_sessions(args.dir))
         if not targets:
             print("no sessions to summarize")
             return
@@ -391,7 +418,9 @@ def cmd_realign(args: argparse.Namespace) -> None:
         print(f"Missing DEEPGRAM_API_KEY (see {config_dir() / '.env'})", file=sys.stderr)
         sys.exit(1)
     if args.all:
-        targets = [s for s in iter_sessions(args.dir) if has_audio(s)]
+        targets = _leave_out_archived(
+            [s for s in iter_sessions(args.dir) if has_audio(s)]
+        )
     else:
         try:
             targets = [resolve_session(args.session, args.dir)]
@@ -439,6 +468,13 @@ def _confirm(prompt: str) -> bool:
         return False
 
 
+def _being_recorded(session_dir: Path, root: Path | None) -> bool:
+    """Is this the meeting the listener is recording right now?"""
+    newest = iter_sessions(root)
+    return (read_state().get("status") == "recording" and bool(newest)
+            and newest[0].resolve() == session_dir.resolve())
+
+
 def cmd_delete(args: argparse.Namespace) -> None:
     """Move sessions to the trash."""
     try:
@@ -446,9 +482,7 @@ def cmd_delete(args: argparse.Namespace) -> None:
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
-    newest = iter_sessions(args.dir)
-    if (read_state().get("status") == "recording" and newest
-            and newest[0].resolve() == session_dir.resolve()):
+    if _being_recorded(session_dir, args.dir):
         # Bare `steno delete` means "the most recent", which is the meeting
         # being recorded right now; the engine would keep writing into the trash.
         print(f"{session_dir.name} is being recorded; stop it first", file=sys.stderr)
@@ -474,6 +508,45 @@ def cmd_delete(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _archive_each(args: argparse.Namespace, archive: bool) -> None:
+    """Archive or unarchive each named meeting; one that cannot be, says so."""
+    done = "archived" if archive else "unarchived"
+    failed = False
+    for spec in args.session:
+        try:
+            session_dir = resolve_session(spec, args.dir)
+        except FileNotFoundError as e:
+            print(str(e), file=sys.stderr)
+            failed = True
+            continue
+        # Any directory resolves by path, and archiving writes into it.
+        if not transcript_path(session_dir).is_file():
+            print(f"not a meeting, no transcript: {spec}", file=sys.stderr)
+            failed = True
+            continue
+        if archive and _being_recorded(session_dir, args.dir):
+            print(f"{session_dir.name} is being recorded; stop it first",
+                  file=sys.stderr)
+            failed = True
+            continue
+        title = load_title(session_dir) or session_dir.name
+        changed = set_archived(session_dir, archive)
+        print(f"{done if changed else 'already ' + done}: "
+              f"{title}  ({session_dir.name})")
+    if failed:
+        sys.exit(1)
+
+
+def cmd_archive(args: argparse.Namespace) -> None:
+    """Put meetings away: out of the list and out of every --all."""
+    _archive_each(args, archive=True)
+
+
+def cmd_unarchive(args: argparse.Namespace) -> None:
+    """Bring archived meetings back."""
+    _archive_each(args, archive=False)
+
+
 def cmd_clean_echo(args: argparse.Namespace) -> None:
     """Take the speakers back out of the microphone track, after the fact.
 
@@ -481,7 +554,7 @@ def cmd_clean_echo(args: argparse.Namespace) -> None:
     finds nothing to cancel, says so, and writes nothing.
     """
     if args.all:
-        targets = list(iter_sessions(args.dir))
+        targets = _leave_out_archived(iter_sessions(args.dir))
     else:
         try:
             targets = [resolve_session(args.session, args.dir)]
@@ -527,7 +600,11 @@ def cmd_clean_echo(args: argparse.Namespace) -> None:
 
 
 def cmd_todos(args: argparse.Namespace) -> None:
-    """Everything still open, newest meeting first."""
+    """Everything still open, newest meeting first.
+
+    Archived meetings are listed too: putting a meeting away does not
+    keep a promise made in it.
+    """
     any_open = False
     for session_dir in iter_sessions(args.dir):
         todos = [t for t in pull_todos(session_dir) if not t.done or args.all]
@@ -840,6 +917,25 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     p_delete.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_delete.set_defaults(func=cmd_delete)
 
+    p_archive = sub.add_parser(
+        "archive",
+        help="Put meetings away: out of the list and every --all, kept whole",
+    )
+    p_archive.add_argument("session", nargs="+",
+                           help="Session names or paths")
+    p_archive.add_argument("--dir", type=Path, default=None,
+                           help="Sessions directory")
+    p_archive.set_defaults(func=cmd_archive)
+
+    p_unarchive = sub.add_parser(
+        "unarchive", help="Bring archived meetings back"
+    )
+    p_unarchive.add_argument("session", nargs="+",
+                             help="Session names or paths")
+    p_unarchive.add_argument("--dir", type=Path, default=None,
+                             help="Sessions directory")
+    p_unarchive.set_defaults(func=cmd_unarchive)
+
     p_todos = sub.add_parser("todos", help="What you owe, across every meeting")
     p_todos.add_argument("--all", action="store_true", help="Include finished items")
     p_todos.add_argument("--dir", type=Path, default=None, help="Sessions directory")
@@ -860,7 +956,9 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
                          help="Mark every uncorked stream as a meeting")
     p_watch.set_defaults(func=cmd_watch)
 
-    p_status = sub.add_parser("status", help="Pause state and unsummarized sessions")
+    p_status = sub.add_parser(
+        "status", help="Pause state, archived and unsummarized sessions"
+    )
     p_status.set_defaults(func=cmd_status)
 
     p_pause = sub.add_parser("pause", help="Suspend meeting detection for a while")

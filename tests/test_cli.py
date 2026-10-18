@@ -5,6 +5,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,8 @@ from unittest import mock
 from steno import asstlink, cli
 from steno.cli import _parse_duration, _replace_line, _split_csv
 from steno.notes import Todo, save_todos
+from steno.realign import Plan
+from steno.summarize import is_archived, load_meta, set_archived
 
 
 class TestReplaceLine(unittest.TestCase):
@@ -381,3 +384,248 @@ class TestTodosCommand(unittest.TestCase):
         self.assertIn("Send the report", out.getvalue())
         self.assertIn(["ls"], calls)  # it did ask asst
         self.assertEqual([a for a in calls if a[0] == "add"], [])
+
+
+def _meeting(root: Path, name: str, summary: str | None = "- x\n",
+             **meta) -> Path:
+    """A finished meeting: a transcript, a meta.json, maybe a summary."""
+    folder = root / name
+    folder.mkdir()
+    (folder / "transcript.jsonl").write_text(
+        json.dumps({"ts": 1000.0, "speaker": "them", "text": "hi"}) + "\n"
+    )
+    (folder / "meta.json").write_text(json.dumps(meta))
+    if summary is not None:
+        (folder / "summary.md").write_text(f"# T\n\n## TL;DR\n{summary}")
+    return folder
+
+
+class ArchiveCase(unittest.TestCase):
+    """Three meetings, the middle one archived, in a tmp sessions dir."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.old = _meeting(self.root, "20260801-090000", title="Kickoff")
+        self.away = _meeting(self.root, "20260901-090000", summary=None,
+                             title="Standup")
+        self.new = _meeting(self.root, "20261001-090000", summary=None)
+        set_archived(self.away, True)
+
+    def run_cmd(self, command, args, state="idle"):
+        out, err = io.StringIO(), io.StringIO()
+        self.code = None
+        with mock.patch.object(cli, "load_dotenv"), \
+             mock.patch.object(cli, "check_ready", return_value=None), \
+             mock.patch.object(cli, "model_default", return_value="m"), \
+             mock.patch.object(cli, "load_brief", return_value=None), \
+             mock.patch.object(cli, "read_state",
+                               return_value={"status": state}), \
+             redirect_stdout(out), redirect_stderr(err):
+            try:
+                command(args)
+            except SystemExit as e:
+                self.code = e.code
+        self.out, self.err = out.getvalue(), err.getvalue()
+
+
+class TestArchiveCommands(ArchiveCase):
+    def archive(self, *names, unarchive=False):
+        args = argparse.Namespace(session=list(names), dir=self.root)
+        command = cli.cmd_unarchive if unarchive else cli.cmd_archive
+        self.run_cmd(command, args)
+
+    def test_it_puts_a_meeting_away_and_names_it(self):
+        self.archive(self.old.name)
+        self.assertTrue(is_archived(self.old))
+        self.assertIn(f"archived: Kickoff  ({self.old.name})", self.out)
+        self.assertIsNone(self.code)
+
+    def test_several_names_in_one_go(self):
+        self.archive(self.old.name, self.new.name)
+        self.assertTrue(is_archived(self.old))
+        self.assertTrue(is_archived(self.new))
+
+    def test_unarchive_brings_it_back_with_its_meta(self):
+        self.archive(self.away.name, unarchive=True)
+        self.assertFalse(is_archived(self.away))
+        self.assertEqual(load_meta(self.away), {"title": "Standup"})
+        self.assertIn(f"unarchived: Standup  ({self.away.name})", self.out)
+
+    def test_doing_it_again_says_so_and_is_not_an_error(self):
+        self.archive(self.away.name)
+        self.assertIn("already archived: Standup", self.out)
+        self.assertIsNone(self.code)
+        self.archive(self.old.name, unarchive=True)
+        self.assertIn("already unarchived: Kickoff", self.out)
+        self.assertIsNone(self.code)
+
+    def test_an_unknown_name_fails_but_the_others_still_go(self):
+        self.archive("nope", self.old.name)
+        self.assertTrue(is_archived(self.old))
+        self.assertIn("no such session: nope", self.err)
+        self.assertEqual(self.code, 1)
+
+    def test_a_directory_that_is_not_a_meeting_is_left_alone(self):
+        """A path resolves to any directory, and archiving writes into it."""
+        stray = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, stray)
+        self.archive(str(stray))
+        self.assertFalse((stray / "meta.json").exists())
+        self.assertIn("not a meeting", self.err)
+        self.assertEqual(self.code, 1)
+
+    def test_the_meeting_being_recorded_is_not_put_away(self):
+        args = argparse.Namespace(
+            session=[self.new.name, self.old.name], dir=self.root
+        )
+        self.run_cmd(cli.cmd_archive, args, state="recording")
+        self.assertFalse(is_archived(self.new))
+        self.assertIn("is being recorded; stop it first", self.err)
+        self.assertTrue(is_archived(self.old))
+        self.assertEqual(self.code, 1)
+
+    def test_both_take_several_names_from_the_command_line(self):
+        for command in ("archive", "unarchive"):
+            argv = ["steno", command, "a", "b"]
+            with self.subTest(command), \
+                 mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(cli, "migrate_legacy", return_value=[]), \
+                 mock.patch.object(cli, f"cmd_{command}") as run:
+                cli.main()
+            self.assertEqual(run.call_args.args[0].session, ["a", "b"])
+
+
+class TestStatusCountsArchived(ArchiveCase):
+    def status(self):
+        data = self.root.parent / "xdg"
+        sessions = data / "steno" / "sessions"
+        sessions.parent.mkdir(parents=True, exist_ok=True)
+        if not sessions.exists():
+            sessions.symlink_to(self.root, target_is_directory=True)
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(data)}), \
+             mock.patch.object(cli, "paused_until", return_value=None):
+            self.run_cmd(cli.cmd_status, argparse.Namespace())
+        shutil.rmtree(data)
+        return self.out
+
+    def test_it_says_how_many_are_put_away(self):
+        out = self.status()
+        self.assertIn("sessions: 3 in", out)
+        self.assertIn("  1 archived", out)
+
+    def test_an_archived_meeting_is_not_one_to_catch_up(self):
+        """`summarize --all` would not summarize it."""
+        self.assertIn("  1 without a summary", self.status())
+
+    def test_nothing_archived_adds_no_line(self):
+        set_archived(self.away, False)
+        out = self.status()
+        self.assertNotIn("archived", out)
+        self.assertIn("  2 without a summary", out)
+
+
+class TestBulkCommandsSkipArchived(ArchiveCase):
+    def summarize(self, **kw):
+        args = argparse.Namespace(**{
+            "session": None, "all": False, "force": False,
+            "uncited": False, "yes": False, "dir": self.root, **kw,
+        })
+        with mock.patch.object(cli, "_summarize_one",
+                               return_value=True) as one:
+            self.run_cmd(cli.cmd_summarize, args)
+        self.one = one
+        return [c.args[0].name for c in one.call_args_list]
+
+    def test_summarize_all_leaves_it_out_and_says_so(self):
+        self.assertEqual(self.summarize(all=True), [self.new.name,
+                                                    self.old.name])
+        self.assertIn("1 archived meeting left out", self.out)
+        self.assertIn("`steno unarchive NAME`", self.out)
+
+    def test_summarize_all_says_nothing_when_nothing_is_archived(self):
+        set_archived(self.away, False)
+        self.assertEqual(len(self.summarize(all=True)), 3)
+        self.assertNotIn("archived", self.out)
+
+    def test_summarize_all_forced_leaves_it_out_too(self):
+        self.assertNotIn(self.away.name, self.summarize(all=True, force=True))
+
+    def test_naming_it_summarizes_it(self):
+        self.assertEqual(self.summarize(session=self.away.name),
+                         [self.away.name])
+        self.assertNotIn("left out", self.out)
+
+    def test_uncited_neither_lists_nor_prices_it(self):
+        _meeting(self.root, "20260915-090000", summary="- y\n")
+        gone = _meeting(self.root, "20261101-090000", summary="- z\n")
+        set_archived(gone, True)
+        self.summarize(uncited=True)
+        self.one.assert_not_called()
+        self.assertIn("2 summaries without citations", self.out)
+        self.assertNotIn("20261101", self.out)
+        self.assertIn("1 archived meeting left out", self.out)
+
+    def test_uncited_with_only_archived_ones_has_nothing_to_do(self):
+        set_archived(self.old, True)
+        self.summarize(uncited=True, yes=True)
+        self.one.assert_not_called()
+        self.assertIn("every summary already has citations", self.out)
+
+    def test_realign_all_leaves_it_out(self):
+        seen = []
+
+        def plan(session_dir):
+            seen.append(session_dir.name)
+            return Plan(session_dir, 1.0, False)
+
+        args = argparse.Namespace(
+            session=None, all=True, force=True, dry_run=True, yes=False,
+            dir=self.root,
+        )
+        with mock.patch.dict(os.environ, {"DEEPGRAM_API_KEY": "k"}), \
+             mock.patch.object(cli, "load_dotenv"), \
+             mock.patch.object(cli, "has_audio", return_value=True), \
+             mock.patch.object(cli, "plan", side_effect=plan), \
+             mock.patch.object(cli, "format_plan", return_value="plans"):
+            self.run_cmd(cli.cmd_realign, args)
+        self.assertEqual(seen, [self.new.name, self.old.name])
+        self.assertIn("1 archived meeting left out", self.out)
+
+    def test_clean_echo_all_leaves_it_out(self):
+        args = argparse.Namespace(
+            session=None, all=True, force=False, no_suppress=False,
+            dir=self.root,
+        )
+        self.run_cmd(cli.cmd_clean_echo, args)
+        self.assertIn(f"{self.old.name}: no audio", self.out)
+        self.assertNotIn(self.away.name, self.out)
+
+    def test_the_seam_a_later_bulk_command_goes_through(self):
+        """`steno publish --all` takes its sessions from here too."""
+        everything = [self.new, self.away, self.old]
+        with redirect_stdout(io.StringIO()) as out:
+            kept = cli._leave_out_archived(everything)
+        self.assertEqual(kept, [self.new, self.old])
+        self.assertIn("1 archived meeting left out", out.getvalue())
+
+
+class TestNamedCommandsStillReachIt(ArchiveCase):
+    def test_export_by_name_writes_the_meeting(self):
+        args = argparse.Namespace(
+            session=self.away.name, output=None, dir=self.root
+        )
+        self.run_cmd(cli.cmd_export, args)
+        self.assertIsNone(self.code)
+        self.assertIn("# Standup", self.out)
+
+    def test_todos_still_lists_what_you_owe_from_it(self):
+        """Putting a meeting away does not keep a promise made in it."""
+        save_todos(self.away, [Todo(text="Send the report", owner="you")])
+        with mock.patch.object(asstlink, "available", lambda: False):
+            self.run_cmd(cli.cmd_todos, argparse.Namespace(
+                dir=self.root, all=False
+            ))
+        self.assertIn("Standup", self.out)
+        self.assertIn("[ ] Send the report", self.out)
