@@ -1156,6 +1156,8 @@ class MeetingPage(Gtk.Box):
             self._bring_back(self.current)
 
     def _bring_back(self, s: Session) -> None:
+        if not s.dir.is_dir():  # an Undo of a meeting deleted since
+            return
         set_archived(s.dir, False)
         self._on_session_changed(s)
         self._update_actions()

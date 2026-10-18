@@ -550,6 +550,25 @@ class TestInTheWindow(unittest.TestCase):
         self.assertEqual(self.sidebar.selected.title, "Bravo")
         self.assertNotIn("meeting.unarchive", self.model_actions())
 
+    def test_an_undo_for_a_meeting_deleted_since_leaves_the_list_alone(self):
+        self.open("Bravo")
+        self.run_action("archive")
+        undo = self.toasts[-1][1]["undo"]
+        self.open("Bravo")
+        with mock.patch("steno.gui.meeting.forget_asst"):
+            self.page._delete(self.page.current)
+        settle()
+        before = (titles(self.sidebar), self.sidebar.selected)
+
+        undo()
+        settle()
+        self.assertFalse(self.folder("Bravo").exists())
+        self.assertEqual((titles(self.sidebar), self.sidebar.selected), before)
+        self.assertIs(
+            self.sidebar.list.get_selected_row(),
+            row_of(self.sidebar, self.sidebar.selected.title),
+        )
+
     def test_the_toast_the_window_makes_has_a_working_undo_button(self):
         made: list[Adw.Toast] = []
         real = Adw.Toast.new
