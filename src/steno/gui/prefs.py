@@ -39,10 +39,33 @@ def transcript_pt() -> int:
     return max(TRANSCRIPT_PT_MIN, min(TRANSCRIPT_PT_MAX, size))
 
 
-def save_transcript_pt(size: int) -> None:
-    prefs = _read()
-    prefs["transcript_pt"] = int(size)
+def _write(prefs: dict) -> None:
     path = prefs_path()
     with contextlib.suppress(OSError):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(prefs, indent=2) + "\n")
+
+
+def save_transcript_pt(size: int) -> None:
+    prefs = _read()
+    prefs["transcript_pt"] = int(size)
+    _write(prefs)
+
+
+def ask_model() -> str:
+    """The model picked for answering questions about a meeting.
+
+    Empty when none was: asking then follows the summary's model.
+    """
+    value = _read().get("ask_model", "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def save_ask_model(model: str) -> None:
+    """Remember the pick; a blank one forgets it."""
+    prefs = _read()
+    if model.strip():
+        prefs["ask_model"] = model.strip()
+    else:
+        prefs.pop("ask_model", None)
+    _write(prefs)

@@ -206,6 +206,12 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
     }}
     .advice-thinking {{ color: {colors['overlay1']}; font-style: italic; }}
     .stacked entry.ask {{ background: {colors['crust']}; }}
+    .ask-model button {{
+        font-size: 9pt;
+        color: {colors['overlay1']};
+        padding: 2px 6px;
+        min-height: 0;
+    }}
 
     /* ---- a past meeting ---- */
     .summary {{ font-size: 11.5pt; line-height: 1.6; color: {colors['text']}; }}

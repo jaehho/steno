@@ -11,7 +11,7 @@ from gi.repository import Gio
 
 
 def meeting_menu_model(
-    archived: bool = False, published: bool = False
+    archived: bool = False, has_notes: bool = False
 ) -> Gio.Menu:
     """The menu of a meeting. It offers to put the meeting away or to
     bring it back, by whether it is put away: one item, never both. It
@@ -20,7 +20,7 @@ def meeting_menu_model(
     menu.append("Copy this meeting", "meeting.copy")
     menu.append("Save this meeting...", "meeting.save")
     menu.append("Set project...", "meeting.project")
-    if published:
+    if has_notes:
         menu.append("Show in project notes", "meeting.show-notes")
     menu.append("Summarize again...", "meeting.summarize")
     menu.append("Re-time against the audio...", "meeting.realign")

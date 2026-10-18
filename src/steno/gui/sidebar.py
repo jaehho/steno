@@ -57,7 +57,7 @@ class Session:
         self.title = load_title(path)
         self.project = load_project(path)
         self.archived = is_archived(path)
-        self.published = projectnotes.read_record(path) is not None
+        self.has_notes = projectnotes.read_record(path) is not None
         try:
             self.start = datetime.strptime(path.name, "%Y%m%d-%H%M%S")
         except ValueError:
@@ -163,7 +163,7 @@ def row_menu(item: Item | None) -> Gio.Menu | None:
     """
     if not isinstance(item, Session):
         return None
-    return meeting_menu_model(archived=item.archived, published=item.published)
+    return meeting_menu_model(archived=item.archived, has_notes=item.has_notes)
 
 
 class Sidebar(Gtk.Box):
@@ -282,14 +282,19 @@ class Sidebar(Gtk.Box):
             self._owed_box.remove(child)
         now = datetime.now()
         for s in self.sessions:
-            mine = [t for t in ensure_todos(s.dir) if not t.done and t.owner != "them"]
+            # A meeting put away has no open to-dos: they were closed.
+            if s.archived:
+                continue
+            mine = [
+                t for t in ensure_todos(s.dir)
+                if t.open and t.owner != "them"
+            ]
             if not mine:
                 continue
             head = Gtk.Label(
                 label=" · ".join(p for p in (
                     s.title or "Untitled",
                     words.when(s.start, now),
-                    "archived" if s.archived else "",
                 ) if p),
                 xalign=0.0,
             )
@@ -493,17 +498,13 @@ class Sidebar(Gtk.Box):
         self.footer.set_text(" · ".join(parts))
         self.owed.set_visible(bool(open_todos))
         self.owed.set_label(words.owed_label(open_todos))
-        # An archived meeting's promises are still yours, and counted.
-        self.owed.set_tooltip_text(words.owed_note(sum(
-            s.open_todos for s in self.sessions if s.archived
-        )) or None)
 
     def update_session(self, session: Session) -> None:
         """The meeting page changed this session's project, to-dos,
         archive flag or project notes in place."""
         was_archived = session.archived
         session.archived = is_archived(session.dir)
-        session.published = projectnotes.read_record(session.dir) is not None
+        session.has_notes = projectnotes.read_record(session.dir) is not None
         session.project = load_project(session.dir)
         session.open_todos = open_count(session.dir)
         session._haystack = None  # search includes project

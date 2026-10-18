@@ -32,6 +32,7 @@ PROVIDERS: dict[str, dict] = {
         "key_file": "~/.config/mimo.env",
         "key_name": "MIMO_API_KEY",
         "model": "mimo-v2.6-flash",
+        "presets": ("mimo-v2.6-pro[1m]",),
     },
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1/chat/completions",
@@ -115,6 +116,12 @@ def base_url() -> str:
 
 def default_model() -> str:
     return _settings()["model"]
+
+
+def presets() -> list[str]:
+    """Models worth picking by hand on the active provider, default first."""
+    settings = _settings()
+    return list(dict.fromkeys([settings["model"], *settings.get("presets", ())]))
 
 
 def api_key() -> str:
@@ -284,6 +291,61 @@ def _tail(text: str, n: int = 300) -> str:
     return text.strip()[-n:]
 
 
+# --- the provider's model list ---------------------------------------------
+
+def models_url(chat_url: str) -> str:
+    """The OpenAI-style model list that sits beside a chat endpoint.
+
+    Raises ValueError for an endpoint that is not `…/chat/completions`:
+    there is no telling where such a host keeps its list.
+    """
+    root = chat_url.rstrip("/")
+    if not root.endswith("/chat/completions"):
+        msg = f"{chat_url} is not a chat-completions endpoint"
+        raise ValueError(msg)
+    return root.removesuffix("/chat/completions") + "/models"
+
+
+# MiMo lists its speech models beside the chat ones (`mimo-v2.5-tts`,
+# `mimo-v2.5-asr`); the list has no field that says which is which.
+_NOT_CHAT = re.compile(r"(?:^|[-_/.:])(?:tts|asr)(?:$|[-_/.:])")
+
+
+def parse_models(body: object) -> list[str]:
+    """The chat models in a `/models` reply, sorted and without repeats.
+
+    OpenAI-style hosts answer `{"data": [{"id": "..."}, ...]}`. Anything
+    else lists nothing.
+    """
+    rows = body.get("data") if isinstance(body, dict) else None
+    ids = {row["id"].strip() for row in rows or []
+           if isinstance(row, dict) and isinstance(row.get("id"), str)}
+    return sorted(i for i in ids if i and not _NOT_CHAT.search(i))
+
+
+async def list_models(timeout: float = 8.0) -> list[str]:
+    """The active provider's models. Raises ClaudeError if it will not say.
+
+    One try and a short timeout: this fills a menu, and a menu can wait
+    for the next open rather than for a retry.
+    """
+    try:
+        url = models_url(base_url())
+        async with httpx.AsyncClient(transport=_transport,
+                                     timeout=httpx.Timeout(timeout)) as client:
+            resp = await client.get(
+                url, headers={"Authorization": f"Bearer {api_key()}"})
+    except (ValueError, httpx.HTTPError) as e:
+        raise ClaudeError(str(e)) from None
+    if resp.status_code != HTTP_OK:
+        raise ClaudeError(_error_text(resp.status_code, resp.text))
+    try:
+        return parse_models(resp.json())
+    except ValueError:
+        msg = "the model list was not JSON"
+        raise ClaudeError(msg) from None
+
+
 # --- grounding tools ---------------------------------------------------------
 
 _PRUNE = {".git", "node_modules", ".venv", "__pycache__"}
@@ -296,7 +358,7 @@ _WITHHELD = ("notes", "meetings")
 
 
 def _withheld(top: Path, path: Path) -> bool:
-    """True for a resolved `path` in a project's published meetings.
+    """True for a resolved `path` in a project's meeting notes.
 
     Those are where `notes/meetings` leads, not only where it is named:
     steno follows a link to a directory inside the project (`notes ->

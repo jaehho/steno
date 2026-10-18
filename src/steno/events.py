@@ -61,6 +61,9 @@ class AdviceDelta:
 @dataclass(frozen=True)
 class AdviceDone:
     text: str
+    # False when `text` is the engine's own word (nothing to ask about yet),
+    # not an answer: no model wrote it, so none should be named under it.
+    by_model: bool = True
 
 
 @dataclass(frozen=True)

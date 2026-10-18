@@ -119,7 +119,7 @@ class Debounce:
                 log.exception("project notes: %s", key.name)
 
 
-class Republisher:
+class Rewriter:
     """What the window asks of project notes, none of it on the main
     thread.
 
@@ -132,10 +132,10 @@ class Republisher:
         self,
         on_problem: Callable[[str], None] | None = None,
         *,
-        publish: Callable[[Path], projectnotes.Result] = projectnotes.try_publish,
+        write: Callable[[Path], projectnotes.Result] = projectnotes.try_write,
         **timing: Any,
     ) -> None:
-        self._publish = publish
+        self._write = write
         self._on_problem = on_problem
         self._debounce = Debounce(self._start, **timing)
         self._workers: list[threading.Thread] = []
@@ -144,9 +144,10 @@ class Republisher:
         """A to-do, a note or the transcript of this meeting changed: its
         pages are rewritten once things have been quiet for a minute.
 
-        Only for a meeting that is published already. An edit is no
-        reason to put a meeting into a project; that is done by its
-        summary landing, by setting its project, and by `steno publish`.
+        Only for a meeting that has pages in a project already. An edit
+        is no reason to put a meeting into a project; that is done by
+        its summary landing, by setting its project, and by `steno
+        project-notes`.
         """
         if projectnotes.read_record(session_dir) is not None:
             self._debounce.touch(session_dir)
@@ -156,7 +157,7 @@ class Republisher:
         now."""
         self._debounce.flush(session_dir)
 
-    def publish(
+    def write(
         self,
         session_dir: Path,
         then: Callable[[projectnotes.Result], None] | None = None,
@@ -189,7 +190,7 @@ class Republisher:
         then: Callable[[projectnotes.Result], None] | None = None,
     ) -> None:
         def work() -> None:
-            result = self._publish(session_dir)
+            result = self._write(session_dir)
             GLib.idle_add(self._done, result, then)
 
         worker = threading.Thread(target=work, name="steno-notes", daemon=True)

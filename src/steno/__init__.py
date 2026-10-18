@@ -12,6 +12,26 @@ def model_default() -> str:
     return (os.environ.get("STENO_MODEL") or os.environ.get("CLAUDE_MODEL")
             or claude.default_model())
 
+
+ASK_MODEL_ENV = "STENO_ASK_MODEL"
+
+
+def resolve_ask_model(env: str, pref: str, default: str) -> str:
+    """The model that answers a question: the environment's, else the one
+    picked in the window, else `default`. A blank one is not a choice."""
+    return env.strip() or pref.strip() or default
+
+
+def ask_model(pref: str = "") -> str:
+    """The model for a question about a meeting, given the window's pick.
+
+    Summaries keep `model_default()`; this is only for asking, and falls
+    back to it when nobody has chosen.
+    """
+    return resolve_ask_model(
+        os.environ.get(ASK_MODEL_ENV, ""), pref, model_default())
+
+
 LEGACY_NAME = "meeting-copilot"
 APP_NAME = "steno"
 

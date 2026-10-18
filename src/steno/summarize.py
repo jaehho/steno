@@ -499,8 +499,10 @@ def set_archived(session_dir: Path, archived: bool) -> bool:
     """Archive a meeting or bring it back. True if that changed anything.
 
     Two keys in meta.json and nothing else: the audio, the words and the
-    to-dos stay where they are, so the to-dos are still counted. Archiving
-    what is archived keeps its first `archived_at`.
+    to-do file stay where they are. Closing the to-dos, and removing
+    their tasks from asst, is `notes.drop_open_todos`, which the caller
+    runs next (`restore_dropped_todos` after the flag is cleared).
+    Archiving what is archived keeps its first `archived_at`.
     """
     if is_archived(session_dir) == archived:
         return False

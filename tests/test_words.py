@@ -67,19 +67,46 @@ class TestListing(unittest.TestCase):
 
 
 class TestArchiveWording(unittest.TestCase):
-    """What it says about the promises left in a meeting put away."""
+    """What it says about the to-dos of a meeting put away."""
 
-    def test_archiving_says_how_many_to_dos_stay_open(self):
-        self.assertNotIn("stay", words.archived_toast("Sync", 0))
-        said = words.archived_toast("Sync", 3)
-        self.assertIn("Sync", said)
-        self.assertIn("3 to-dos stay open", said)
-        self.assertIn("1 to-do stay open", words.archived_toast("Sync", 1))
+    def test_archiving_says_how_many_tasks_it_removed_from_asst(self):
+        self.assertEqual(words.archived_toast("Sync", 0), "Archived “Sync”")
+        self.assertEqual(
+            words.archived_toast("Sync", 3),
+            "Archived “Sync”. Removed 3 open tasks from asst.",
+        )
+        self.assertIn("1 open task from", words.archived_toast("Sync", 1))
 
-    def test_the_count_of_open_to_dos_explains_the_archived_part(self):
-        self.assertEqual(words.owed_note(0), "")
-        self.assertIn("2 of them are", words.owed_note(2))
-        self.assertIn("1 of them is", words.owed_note(1))
+    def test_a_task_asst_kept_is_said_and_stays_open_there(self):
+        self.assertEqual(
+            words.archived_toast("Sync", 0, 2),
+            "Archived “Sync”. Could not remove 2 open tasks from asst; "
+            "they stay open there.",
+        )
+        self.assertIn(
+            "1 open task from asst; it stays",
+            words.archived_toast("Sync", 0, 1),
+        )
+        self.assertEqual(
+            words.archived_toast("Sync", 3, 1),
+            "Archived “Sync”. Removed 3 open tasks from asst; "
+            "could not remove 1.",
+        )
+
+    def test_bringing_it_back_says_only_what_it_filed_again(self):
+        self.assertEqual(words.unarchived_toast("Sync", 0), "")
+        self.assertEqual(
+            words.unarchived_toast("Sync", 2),
+            "Unarchived “Sync”. Filed 2 open tasks in asst again.",
+        )
+        self.assertEqual(
+            words.unarchived_toast("Sync", 0, 1),
+            "Unarchived “Sync”. asst did not take 1 open task; "
+            "it is open here only.",
+        )
+        self.assertIn(
+            "asst did not take 2.", words.unarchived_toast("Sync", 1, 2)
+        )
 
     def test_the_empty_page_counts_the_meetings_put_away(self):
         title, description = words.nothing_open(0)
@@ -355,7 +382,7 @@ class TestSummaryNote(unittest.TestCase):
 
 class TestProjectNotesProblem(unittest.TestCase):
     """A page left alone, or a write that failed, is told; the rest of
-    what a publish can come to is not worth a toast."""
+    what a write can come to is not worth a toast."""
 
     def change(self, action: str, note: str = "") -> projectnotes.Change:
         return projectnotes.Change(action, Path("/p/notes/meetings/a.md"), note)
@@ -376,7 +403,7 @@ class TestProjectNotesProblem(unittest.TestCase):
         self.assertEqual(said.count("a.md"), words.NAMED_AT_MOST)
         self.assertIn("…", said)
 
-    def test_a_publish_that_went_well_or_nowhere_says_nothing(self):
+    def test_a_write_that_went_well_or_nowhere_says_nothing(self):
         for given in (
             {},
             {"changes": [self.change("create"), self.change("same")]},

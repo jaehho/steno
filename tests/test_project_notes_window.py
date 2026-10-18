@@ -4,7 +4,7 @@ What a tick, a typed note, a project, a delete and a landing summary do
 to the meeting's pages in its project is asked of the real page, so
 tests/gtk_project_notes.py runs on a private Broadway display, with no
 pointer and no screen, the way test_meeting_todos.py does; it is skipped
-without gtk4-broadwayd. The pure parts are in test_republish.py.
+without gtk4-broadwayd. The pure parts are in test_rewrite.py.
 """
 from __future__ import annotations
 

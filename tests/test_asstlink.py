@@ -210,12 +210,31 @@ class TestMove(unittest.TestCase):
 class TestRm(unittest.TestCase):
     def test_removes_only_filed_uids(self):
         with mock.patch.object(asstlink, "available", lambda: True), \
-             mock.patch.object(asstlink, "_run") as run:
-            run.return_value = "{}"
+             mock.patch.object(asstlink, "_exec") as run:
+            run.return_value = ""
             removed = asstlink.rm_todos(["0F27", "", "ABCD"])
         self.assertEqual(removed, 2)
         self.assertEqual([c[0][0] for c in run.call_args_list],
                          [["rm", "0F27"], ["rm", "ABCD"]])
+
+    def test_a_removal_that_prints_nothing_worked(self):
+        """`asst --json rm` says nothing on success; the exit status is
+        the answer. Counting by output reported every removal as a
+        failure."""
+        def proc(code: int) -> mock.Mock:
+            return mock.Mock(returncode=code, stdout="", stderr="")
+
+        with mock.patch.object(asstlink, "available", lambda: True), \
+             mock.patch.object(asstlink.subprocess, "run") as run:
+            run.return_value = proc(0)
+            self.assertTrue(asstlink.rm_todo("0F27"))
+            self.assertEqual(asstlink.rm_todos(["0F27", "ABCD"]), 2)
+            run.return_value = proc(1)
+            self.assertFalse(asstlink.rm_todo("0F27"))
+            self.assertEqual(asstlink.rm_todos(["0F27", "ABCD"]), 0)
+            run.reset_mock()
+            self.assertFalse(asstlink.rm_todo(""))
+            run.assert_not_called()
 
 
 class TestSuiteIsolation(unittest.TestCase):

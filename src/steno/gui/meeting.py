@@ -24,12 +24,17 @@ from .. import asstlink, citations, projectnotes
 from ..cost import SUMMARY_GUESS, format_usd, prerecorded_cost
 from ..export import default_filename, meeting_markdown
 from ..notes import (
+    Dropped,
+    Restored,
     Todo,
     deliver_done,
+    drop_open_todos,
     ensure_todos,
     forget_asst,
+    load_todos,
     move_with_asst,
     pull_todos,
+    restore_dropped_todos,
     set_done_local,
 )
 from ..playback import (
@@ -53,7 +58,7 @@ from ..summarize import (
 )
 from . import words
 from .player import Player
-from .republish import QUIT_WAIT_S, Republisher
+from .rewrite import QUIT_WAIT_S, Rewriter
 from .sidebar import Session
 from .summary import CiteBar, CitedBox, CiteSource, SummaryView, make_citable
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
@@ -97,12 +102,12 @@ class MeetingPage(Gtk.Box):
         on_summarize: Callable[[Path], None] | None = None,
         is_recording: Callable[[], bool] | None = None,
         recording_dir: Callable[[], Path | None] | None = None,
-        republisher: Republisher | None = None,
+        rewriter: Rewriter | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         # What keeps the meeting's pages in its project current; None
         # keeps nothing.
-        self._republisher = republisher
+        self._rewriter = rewriter
         self._on_ask = on_ask
         self._on_summarize = on_summarize
         self._is_recording = is_recording or (lambda: False)
@@ -118,6 +123,9 @@ class MeetingPage(Gtk.Box):
         self._realigning = False
         self._pull_timer = 0
         self._pull_in_flight = False
+        # Threads taking tasks out of asst or putting them back. The app
+        # waits for them when it quits.
+        self.asst_workers: list[threading.Thread] = []
         self._asst_watch: int | None = None
         self._asst_bus = None
         self.current: Session | None = None
@@ -395,8 +403,8 @@ class MeetingPage(Gtk.Box):
         todos = ensure_todos(s.dir)
         # Saves the notes of the meeting left, which the next line writes up.
         self.notes.bind(s.dir)
-        if left is not None and left.dir != s.dir and self._republisher:
-            self._republisher.leave(left.dir)
+        if left is not None and left.dir != s.dir and self._rewriter:
+            self._rewriter.leave(left.dir)
         self.ask.clear()
         self._load_transcript(s)
         self._show_summary(s, todos)
@@ -599,8 +607,8 @@ class MeetingPage(Gtk.Box):
         rather than in a minute."""
         self.stop_pull()
         self.notes.flush()
-        if self.current is not None and self._republisher is not None:
-            self._republisher.leave(self.current.dir)
+        if self.current is not None and self._rewriter is not None:
+            self._rewriter.leave(self.current.dir)
 
     def close_meeting(self) -> None:
         """No meeting is open any more. The page is out of sight, and its
@@ -686,8 +694,8 @@ class MeetingPage(Gtk.Box):
     def _changed(self, session_dir: Path) -> None:
         """A to-do, a note or the transcript changed: the meeting's pages
         in its project follow, a minute after the last change."""
-        if self._republisher is not None:
-            self._republisher.changed(session_dir)
+        if self._rewriter is not None:
+            self._rewriter.changed(session_dir)
 
     def _load_todos(self, s: Session, todos: list[Todo]) -> None:
         while (child := self.todo_box.get_first_child()) is not None:
@@ -696,7 +704,11 @@ class MeetingPage(Gtk.Box):
         self._ticks = _ticks(todos)
         yours = [t for t in todos if t.owner != "them"]
         theirs = [t for t in todos if t.owner == "them"]
-        self.todo_count.set_text(words.todo_count(sum(not t.done for t in yours)))
+        # A meeting put away has nothing to do in it: its to-dos were
+        # closed, and the list is for reading.
+        self.todo_count.set_text(
+            "" if s.archived else words.todo_count(sum(t.open for t in yours))
+        )
         if not todos:
             self.todo_box.append(hint_label(
                 "Nothing to do out of this one." if s.summary_path.is_file()
@@ -705,13 +717,22 @@ class MeetingPage(Gtk.Box):
             self._keep_todo_cite()
             return
         # Two groups, not one list with a tiny owner tag. Your work is the
-        # to-do; what they owe is a reminder, so it sits under its own head.
+        # to-do; what you wait on is a reminder, so it sits under its own
+        # head. An item nobody has claimed is yours until someone does.
+        if s.archived:
+            for line in words.put_away_notes(
+                closed=any(t.dropped and not t.uid for t in todos),
+                unclosed=any(t.unclosed for t in todos),
+            ):
+                note = hint_label(line)
+                note.set_wrap(True)
+                self.todo_box.append(note)
         if yours:
-            self.todo_box.append(self._group_label("Yours"))
+            self.todo_box.append(self._group_label("For you"))
             for todo in yours:
                 self.todo_box.append(self._todo_row(s, todo))
         if theirs:
-            self.todo_box.append(self._group_label("They owe"))
+            self.todo_box.append(self._group_label("Waiting on them"))
             for todo in theirs:
                 self.todo_box.append(self._todo_row(s, todo))
         self._keep_todo_cite()
@@ -739,6 +760,9 @@ class MeetingPage(Gtk.Box):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         check = Gtk.CheckButton()
         check.set_active(todo.done)
+        # A meeting put away is read, not ticked; a cited to-do still
+        # shows where it was said.
+        check.set_sensitive(not s.archived)
         check.set_valign(Gtk.Align.START)
         check.set_hexpand(True)
 
@@ -795,9 +819,9 @@ class MeetingPage(Gtk.Box):
             label.remove_css_class("todo-done")
             if done:
                 label.add_css_class("todo-done")
-            self.todo_count.set_text(
-                words.todo_count(sum(not t.done and t.owner != "them" for t in now))
-            )
+            self.todo_count.set_text(words.todo_count(
+                sum(t.open and t.owner != "them" for t in now)
+            ))
             self._ticks = _ticks(now)
             self._changed(s.dir)
             self._on_session_changed(s)
@@ -1139,8 +1163,8 @@ class MeetingPage(Gtk.Box):
             self._toast(base)
             # Into the new project's notes and out of the old one's; the
             # menu hears of it when that is done.
-            if self._republisher is not None:
-                self._republisher.publish(
+            if self._rewriter is not None:
+                self._rewriter.write(
                     s.dir, then=lambda _r: self._on_session_changed(s)
                 )
 
@@ -1150,7 +1174,7 @@ class MeetingPage(Gtk.Box):
     def _show_notes(self) -> None:
         """Open the folder in the project that holds this meeting's pages."""
         s = self.current
-        folder = None if s is None else projectnotes.published_folder(s.dir)
+        folder = None if s is None else projectnotes.notes_folder(s.dir)
         if folder is None:
             self._toast("This meeting is not in a project's notes")
             return
@@ -1207,10 +1231,36 @@ class MeetingPage(Gtk.Box):
         # when the archive is open.
         self._on_session_changed(s)
         self._update_actions()
+        # Closing its to-dos takes asst calls, which can be slow: the
+        # page has moved on, and the toast comes when they are done.
+        self._in_asst_thread(self._close_todos, s)
+
+    def _in_asst_thread(self, work, s: Session) -> None:
+        worker = threading.Thread(
+            target=work, args=(s,), name="steno-asst", daemon=True
+        )
+        self.asst_workers = [
+            w for w in self.asst_workers if w.is_alive()
+        ] + [worker]
+        worker.start()
+
+    def _close_todos(self, s: Session) -> None:
+        dropped = drop_open_todos(s.dir)
+        GLib.idle_add(self._todos_closed, s, dropped)
+
+    def _todos_closed(self, s: Session, dropped: Dropped) -> bool:
+        # Brought back while asst was answering: nothing was put away.
+        if not s.archived:
+            return GLib.SOURCE_REMOVE
+        if self.current is not None and self.current.dir == s.dir:
+            self._load_todos(s, load_todos(s.dir))
         self._toast(
-            words.archived_toast(s.title or s.dir.name, s.open_todos),
+            words.archived_toast(
+                s.title or s.dir.name, dropped.removed, dropped.stuck
+            ),
             undo=lambda: self._bring_back(s),
         )
+        return GLib.SOURCE_REMOVE
 
     def _unarchive(self) -> None:
         if self.current is not None and self.current.archived:
@@ -1222,6 +1272,23 @@ class MeetingPage(Gtk.Box):
         set_archived(s.dir, False)
         self._on_session_changed(s)
         self._update_actions()
+        self._in_asst_thread(self._reopen_todos, s)
+
+    def _reopen_todos(self, s: Session) -> None:
+        restored = restore_dropped_todos(s.dir)
+        GLib.idle_add(self._todos_reopened, s, restored)
+
+    def _todos_reopened(self, s: Session, restored: Restored) -> bool:
+        if self.current is not None and self.current.dir == s.dir:
+            self._load_todos(s, load_todos(s.dir))
+        # Their count, now they are open again.
+        if s.dir.is_dir():
+            self._on_session_changed(s)
+        if said := words.unarchived_toast(
+            s.title or s.dir.name, restored.filed, restored.failed
+        ):
+            self._toast(said)
+        return GLib.SOURCE_REMOVE
 
     def _confirm_delete(self) -> None:
         s = self.current
@@ -1246,15 +1313,15 @@ class MeetingPage(Gtk.Box):
         the transcript would stay in the project with nothing left to
         say they are there. The dialog tells the person.
         """
-        if self._republisher is not None:
-            self._republisher.forget(s.dir)
+        if self._rewriter is not None:
+            self._rewriter.forget(s.dir)
             # A rewrite that has begun finishes first, or it could put the
             # pages back after they were taken out.
-            self._republisher.wait(QUIT_WAIT_S)
-        gone = projectnotes.try_unpublish(s.dir)
+            self._rewriter.wait(QUIT_WAIT_S)
+        gone = projectnotes.try_remove(s.dir)
         if gone.error:
-            if self._republisher is not None:
-                self._republisher.changed(s.dir)  # the copy stays current
+            if self._rewriter is not None:
+                self._rewriter.changed(s.dir)  # the copy stays current
             self._copy_stays(s, gone)
             return None
         if problem := words.project_notes_problem(gone):
@@ -1284,8 +1351,8 @@ class MeetingPage(Gtk.Box):
         forget_asst(s.dir)
         outcome, where = delete_session(s.dir)
         if outcome == "failed":
-            if gone.altered and self._republisher is not None:
-                self._republisher.publish(s.dir)  # it is still here
+            if gone.altered and self._rewriter is not None:
+                self._rewriter.write(s.dir)  # it is still here
             self._dialog(
                 "Could not move it to the trash",
                 f"{s.dir} is still there. This usually means the trash is on a "
@@ -1307,8 +1374,8 @@ class MeetingPage(Gtk.Box):
         if outcome == "deleted":
             self.current = None
             self._on_deleted(s.dir)
-        elif gone.altered and self._republisher is not None:
-            self._republisher.publish(s.dir)
+        elif gone.altered and self._rewriter is not None:
+            self._rewriter.write(s.dir)
 
     def _confirm_delete_audio(self) -> None:
         s = self.current

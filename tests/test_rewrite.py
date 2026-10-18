@@ -19,7 +19,7 @@ from unittest import mock
 from gi.repository import GLib
 
 from steno import projectnotes
-from steno.gui.republish import DELAY_S, Debounce, Republisher
+from steno.gui.rewrite import DELAY_S, Debounce, Rewriter
 from tests.test_projectnotes import SUMMARY_NAME, TODOS, make_session
 
 
@@ -140,12 +140,12 @@ class TestDebounce(unittest.TestCase):
         self.debounce = Debounce(work, DELAY_S, **self.time.timing)
         self.debounce.touch(self.a)
         self.debounce.touch(self.b)
-        with self.assertLogs("steno.gui.republish", "ERROR"):
+        with self.assertLogs("steno.gui.rewrite", "ERROR"):
             self.time.advance(DELAY_S)
         self.assertEqual(self.ran, [(DELAY_S, "b")])
 
 
-class TestRepublisher(unittest.TestCase):
+class TestRewriter(unittest.TestCase):
     def setUp(self):
         base = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, base, ignore_errors=True)
@@ -159,15 +159,15 @@ class TestRepublisher(unittest.TestCase):
         os.environ.pop(projectnotes.SWITCH_ENV, None)
         self.time = FakeTime()
         self.problems: list[str] = []
-        self.rp = Republisher(
+        self.rp = Rewriter(
             self.problems.append,
-            publish=lambda d: projectnotes.try_publish(d, self.projects),
+            write=lambda d: projectnotes.try_write(d, self.projects),
             **self.time.timing,
         )
         self.d = make_session(self.sessions)
 
-    def publish(self) -> None:
-        projectnotes.publish(self.d, self.projects)
+    def write_pages(self) -> None:
+        projectnotes.write(self.d, self.projects)
 
     def page(self) -> str:
         return (self.projects / "demo" / "notes" / "meetings"
@@ -195,8 +195,8 @@ class TestRepublisher(unittest.TestCase):
         self.settle()
         self.assertFalse((self.projects / "demo" / "notes").exists())
 
-    def test_a_published_meeting_follows_its_edits_after_a_pause(self):
-        self.publish()
+    def test_a_meeting_in_a_project_follows_its_edits_after_a_pause(self):
+        self.write_pages()
         self.assertIn("- [ ] Draft the comparison table", self.page())
         self.tick()
         self.rp.changed(self.d)
@@ -208,7 +208,7 @@ class TestRepublisher(unittest.TestCase):
         self.assertIn("- [x] Draft the comparison table", self.page())
 
     def test_a_change_that_leaves_the_pages_as_they_are_writes_nothing(self):
-        self.publish()
+        self.write_pages()
         folder = self.projects / "demo" / "notes" / "meetings"
         before = {p.name: p.stat().st_mtime_ns for p in folder.iterdir()}
         self.rp.changed(self.d)
@@ -218,7 +218,7 @@ class TestRepublisher(unittest.TestCase):
         self.assertEqual(after, before)
 
     def test_leaving_the_meeting_writes_what_is_waiting_at_once(self):
-        self.publish()
+        self.write_pages()
         self.tick()
         self.rp.changed(self.d)
         self.rp.leave(self.d)
@@ -227,16 +227,16 @@ class TestRepublisher(unittest.TestCase):
         self.assertEqual(self.time.timers, {})
 
     def test_leaving_a_meeting_with_nothing_waiting_does_nothing(self):
-        self.publish()
+        self.write_pages()
         self.tick()  # on disk, but nobody said it changed
         self.rp.leave(self.d)
         self.settle()
         self.assertIn("- [ ] Draft the comparison table", self.page())
 
     def test_quitting_writes_everything_that_is_waiting(self):
-        self.publish()
+        self.write_pages()
         other = make_session(self.sessions, "20261006-161200", title="Other")
-        projectnotes.publish(other, self.projects)
+        projectnotes.write(other, self.projects)
         self.tick()
         other.joinpath("notes.md").write_text("new thoughts\n")
         self.rp.changed(self.d)
@@ -248,7 +248,7 @@ class TestRepublisher(unittest.TestCase):
         self.assertIn("new thoughts", written)
 
     def test_a_meeting_that_is_going_is_not_written_again(self):
-        self.publish()
+        self.write_pages()
         self.tick()
         self.rp.changed(self.d)
         self.rp.forget(self.d)
@@ -256,38 +256,38 @@ class TestRepublisher(unittest.TestCase):
         self.settle()
         self.assertIn("- [ ] Draft the comparison table", self.page())
 
-    def test_publish_now_takes_the_wait_off_and_reports_back(self):
+    def test_write_now_takes_the_wait_off_and_reports_back(self):
         self.tick()
-        self.rp.changed(self.d)  # not published yet: nothing waits
+        self.rp.changed(self.d)  # not in a project yet: nothing waits
         got: list[projectnotes.Result] = []
-        self.rp.publish(self.d, then=got.append)
+        self.rp.write(self.d, then=got.append)
         self.settle()
         self.assertIn("- [x] Draft the comparison table", self.page())
         self.assertEqual([r.project for r in got], ["demo"])
 
-    def test_publish_now_cancels_the_wait_it_replaces(self):
-        self.publish()
+    def test_write_now_cancels_the_wait_it_replaces(self):
+        self.write_pages()
         self.rp.changed(self.d)
-        self.rp.publish(self.d)
+        self.rp.write(self.d)
         self.assertEqual(self.time.timers, {})
         self.settle()
 
     def test_a_page_left_alone_is_reported(self):
-        self.publish()
+        self.write_pages()
         page = (self.projects / "demo" / "notes" / "meetings" / SUMMARY_NAME)
         page.write_text("my own notes\n")
         with self.assertLogs("steno.projectnotes", "WARNING"):
-            self.rp.publish(self.d)
+            self.rp.write(self.d)
             self.settle()
         self.assertEqual(page.read_text(), "my own notes\n")
         self.assertEqual(len(self.problems), 1)
         self.assertIn(SUMMARY_NAME, self.problems[0])
 
     def test_nothing_to_report_when_it_went_well_or_went_nowhere(self):
-        self.rp.publish(self.d)
+        self.rp.write(self.d)
         nowhere = make_session(
             self.sessions, "20261007-090000", project=None)
-        self.rp.publish(nowhere)
+        self.rp.write(nowhere)
         self.settle()
         self.assertEqual(self.problems, [])
 

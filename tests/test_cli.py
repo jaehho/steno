@@ -16,7 +16,7 @@ from unittest import mock
 
 from steno import asstlink, cli, projectnotes
 from steno.cli import _parse_duration, _replace_line, _split_csv
-from steno.notes import Todo, save_todos
+from steno.notes import Todo, load_todos, save_todos, sync_todos
 from steno.realign import Plan
 from steno.summarize import (
     Summary,
@@ -25,6 +25,7 @@ from steno.summarize import (
     set_archived,
     update_meta,
 )
+from tests.fakeasst import FakeAsst
 
 
 class TestReplaceLine(unittest.TestCase):
@@ -612,12 +613,76 @@ class TestBulkCommandsSkipArchived(ArchiveCase):
         self.assertNotIn(self.away.name, self.out)
 
     def test_the_seam_a_later_bulk_command_goes_through(self):
-        """`steno publish --all` takes its sessions from here too."""
+        """`steno project-notes --all` takes its sessions from here too."""
         everything = [self.new, self.away, self.old]
         with redirect_stdout(io.StringIO()) as out:
             kept = cli._leave_out_archived(everything)
         self.assertEqual(kept, [self.new, self.old])
         self.assertIn("1 archived meeting left out", out.getvalue())
+
+
+class TestArchiveClosesTodos(ArchiveCase):
+    """`steno archive` takes the meeting's open tasks out of asst, and
+    `steno unarchive` files them again. The asst here is
+    tests/fakeasst.py."""
+
+    def setUp(self):
+        super().setUp()
+        self.asst = FakeAsst().start()
+        self.addCleanup(self.asst.stop)
+        sync_todos(self.old, "## Action items\n**You**\n"
+                             "- Send the report\n- Draft the table\n")
+
+    def archive(self, unarchive=False):
+        args = argparse.Namespace(session=[self.old.name], dir=self.root)
+        self.run_cmd(cli.cmd_unarchive if unarchive else cli.cmd_archive, args)
+
+    def test_it_says_what_it_took_out_of_asst(self):
+        self.assertEqual(len(self.asst.tasks()), 2)
+        self.archive()
+        self.assertIn(f"archived: Kickoff  ({self.old.name})", self.out)
+        self.assertIn("  removed 2 open tasks from asst", self.out)
+        self.assertEqual(self.asst.tasks(), [])
+        self.assertTrue(all(t.dropped for t in load_todos(self.old)))
+        self.assertIsNone(self.code)
+
+    def test_a_refused_removal_still_archives_and_exits_1(self):
+        self.asst.down = True
+        self.archive()
+        self.assertTrue(is_archived(self.old))
+        self.assertNotIn("removed", self.out)
+        self.assertIn("could not remove 2 open tasks from asst", self.err)
+        self.assertEqual(self.code, 1)
+        self.assertFalse(any(t.dropped for t in load_todos(self.old)))
+
+        # Archiving it again, with asst back, is the retry.
+        self.asst.down = False
+        self.archive()
+        self.assertIn("already archived: Kickoff", self.out)
+        self.assertIn("  removed 2 open tasks from asst", self.out)
+        self.assertIsNone(self.code)
+        self.assertEqual(self.asst.tasks(), [])
+
+    def test_unarchive_files_them_again(self):
+        self.archive()
+        self.archive(unarchive=True)
+        self.assertIn(f"unarchived: Kickoff  ({self.old.name})", self.out)
+        self.assertIn("  filed 2 open tasks in asst again", self.out)
+        self.assertEqual(len(self.asst.tasks()), 2)
+        self.assertTrue(all(t.open for t in load_todos(self.old)))
+
+        self.archive(unarchive=True)
+        self.assertIn("already unarchived", self.out)
+        self.assertNotIn("filed", self.out)
+        self.assertEqual(len(self.asst.tasks()), 2)
+
+    def test_unarchive_says_what_asst_would_not_take(self):
+        self.archive()
+        self.asst.down = True
+        self.archive(unarchive=True)
+        self.assertFalse(is_archived(self.old))
+        self.assertIn("asst did not take 2 open tasks", self.err)
+        self.assertEqual(self.code, 1)
 
 
 class TestNamedCommandsStillReachIt(ArchiveCase):
@@ -629,14 +694,29 @@ class TestNamedCommandsStillReachIt(ArchiveCase):
         self.assertIsNone(self.code)
         self.assertIn("# Standup", self.out)
 
-    def test_todos_still_lists_what_you_owe_from_it(self):
-        """Putting a meeting away does not keep a promise made in it."""
+    def test_todos_leaves_it_out_and_says_so(self):
+        """Its to-dos were closed when it was put away."""
         save_todos(self.away, [Todo(text="Send the report", owner="you")])
         with mock.patch.object(asstlink, "available", lambda: False):
             self.run_cmd(cli.cmd_todos, argparse.Namespace(
                 dir=self.root, all=False
             ))
-        self.assertIn("Standup", self.out)
+        self.assertNotIn("Standup", self.out)
+        self.assertNotIn("Send the report", self.out)
+        self.assertIn("1 archived meeting left out", self.out)
+
+    def test_todos_lists_it_again_once_it_is_back(self):
+        save_todos(self.away, [Todo(text="Send the report", owner="you")])
+        self.run_cmd(cli.cmd_archive, argparse.Namespace(
+            session=[self.away.name], dir=self.root
+        ))
+        self.run_cmd(cli.cmd_unarchive, argparse.Namespace(
+            session=[self.away.name], dir=self.root
+        ))
+        with mock.patch.object(asstlink, "available", lambda: False):
+            self.run_cmd(cli.cmd_todos, argparse.Namespace(
+                dir=self.root, all=False
+            ))
         self.assertIn("[ ] Send the report", self.out)
 
 
@@ -687,8 +767,9 @@ class ProjectNotesCase(unittest.TestCase):
 
     def run_cmd(self, command, **given):
         args = argparse.Namespace(**{
-            "session": None, "all": False, "project": None,
-            "dry_run": False, "force": False, "dir": self.root, **given,
+            "session": [], "all": False, "project": None,
+            "dry_run": False, "force": False, "remove": False,
+            "dir": self.root, **given,
         })
         out, err = io.StringIO(), io.StringIO()
         self.code = None
@@ -702,13 +783,14 @@ class ProjectNotesCase(unittest.TestCase):
                 self.code = e.code
         self.out, self.err = out.getvalue(), err.getvalue()
 
-    def publish(self, **given):
-        self.run_cmd(cli.cmd_publish, **given)
+    def notes(self, *names, **given):
+        """`steno project-notes NAME...` with the options given."""
+        self.run_cmd(cli.cmd_project_notes, session=list(names), **given)
 
 
-class TestPublishCommand(ProjectNotesCase):
+class TestWritingProjectNotes(ProjectNotesCase):
     def test_a_named_meeting_goes_into_its_project(self):
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         self.assertIsNone(self.code)
         self.assertEqual(
             sorted(p.name for p in self.meetings().iterdir()),
@@ -721,32 +803,32 @@ class TestPublishCommand(ProjectNotesCase):
         self.assertFalse(self.meetings("other").exists())
 
     def test_without_a_name_it_is_the_latest_meeting(self):
-        self.publish()
+        self.notes()
         self.assertIn("20261001-090000  Standup", self.out)
 
     def test_a_dry_run_lists_what_it_would_do_and_writes_nothing(self):
         before = _tree(self.projects)
         meta = (self.old / "meta.json").read_text()
-        self.publish(session=self.old.name, dry_run=True)
+        self.notes(self.old.name, dry_run=True)
         self.assertEqual(_tree(self.projects), before)
         self.assertEqual((self.old / "meta.json").read_text(), meta)
         self.assertIn("dry run, nothing written: 4 to create", self.out)
         dry = self.out
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         for line in dry.splitlines():
             if line.startswith("  create"):
                 self.assertIn(line, self.out)
 
     def test_again_it_writes_nothing_and_says_it_is_up_to_date(self):
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         before = _tree(self.projects)
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         self.assertEqual(_tree(self.projects), before)
         self.assertIn("up to date", self.out)
         self.assertIsNone(self.code)
 
     def test_all_goes_through_the_filed_meetings_but_the_archived(self):
-        self.publish(all=True)
+        self.notes(all=True)
         self.assertEqual(
             sorted(p.name for p in self.meetings().glob("*-*.md")
                    if "transcript" not in p.name),
@@ -761,7 +843,7 @@ class TestPublishCommand(ProjectNotesCase):
 
     def test_all_dry_run_shows_the_lot_before_anything_is_written(self):
         before = _tree(self.projects)
-        self.publish(all=True, dry_run=True)
+        self.notes(all=True, dry_run=True)
         self.assertEqual(_tree(self.projects), before)
         self.assertIn("create", self.out)
         self.assertIn("dry run, nothing written", self.out)
@@ -769,9 +851,9 @@ class TestPublishCommand(ProjectNotesCase):
     def test_a_dry_run_over_all_says_what_the_real_run_then_does(self):
         """A project's index and .gitignore are made by its first meeting
         and only added to by the rest: told once, in both runs."""
-        self.publish(all=True, dry_run=True)
+        self.notes(all=True, dry_run=True)
         dry = self.out
-        self.publish(all=True)
+        self.notes(all=True)
         self.assertEqual(dry.splitlines()[:-1], self.out.splitlines()[:-1])
         self.assertIn("10 to create", dry)
         for told in (".gitignore", "README.md"):
@@ -779,51 +861,57 @@ class TestPublishCommand(ProjectNotesCase):
         self.assertIn("10 created", self.out)
 
     def test_a_project_limits_all_to_that_project(self):
-        self.publish(all=True, project="other")
+        self.notes(all=True, project="other")
         self.assertFalse(self.meetings().exists())
         self.assertTrue(self.meetings("other").is_dir())
         self.assertIn("1 meetings looked at", self.out)
 
     def test_a_project_the_named_meeting_is_not_in_does_nothing(self):
-        self.publish(session=self.old.name, project="other")
+        self.notes(self.old.name, project="other")
         self.assertEqual(self.code, 1)
         self.assertIn("filed under demo, not other", self.err)
         self.assertFalse(self.meetings().exists())
 
     def test_a_meeting_with_no_project_has_nowhere_to_go(self):
-        self.publish(session=self.loose.name)
+        self.notes(self.loose.name)
         self.assertEqual(self.code, 1)
         self.assertIn("not filed under a project", self.out)
 
     def test_a_name_and_all_together_are_refused(self):
-        self.publish(session=self.old.name, all=True)
+        self.notes(self.old.name, all=True)
         self.assertEqual(self.code, 1)
+        self.assertFalse(self.meetings().exists())
+
+    def test_two_names_are_refused(self):
+        self.notes(self.old.name, self.new.name)
+        self.assertEqual(self.code, 1)
+        self.assertIn("name one meeting", self.err)
         self.assertFalse(self.meetings().exists())
 
     def test_switched_off_it_refuses_and_force_does_it_by_hand(self):
         os.environ[projectnotes.SWITCH_ENV] = "0"
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         self.assertEqual(self.code, 1)
         self.assertIn("--force", self.err)
         self.assertFalse(self.meetings().exists())
-        self.publish(session=self.old.name, force=True)
+        self.notes(self.old.name, force=True)
         self.assertIsNone(self.code)
         self.assertTrue(self.meetings().is_dir())
 
-    def test_the_meeting_being_recorded_is_not_published(self):
+    def test_the_meeting_being_recorded_is_not_written(self):
         self.state = "recording"
-        self.publish(session=self.new.name)
+        self.notes(self.new.name)
         self.assertEqual(self.code, 1)
         self.assertIn("being recorded", self.err)
         self.assertFalse(self.meetings().exists())
-        self.publish(all=True)
+        self.notes(all=True)
         self.assertNotIn("Standup", self.out)
 
     def test_a_page_that_is_not_steno_s_is_left_and_named(self):
         self.meetings().mkdir(parents=True)
         mine = self.meetings() / "2026-08-01-0900-kickoff.md"
         mine.write_text("my own page\n")
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         self.assertEqual(mine.read_text(), "my own page\n")
         self.assertIn("skip", self.out)
         self.assertIn("not written by steno", self.out)
@@ -832,7 +920,7 @@ class TestPublishCommand(ProjectNotesCase):
         self.meetings().mkdir(parents=True)
         (self.meetings() / "README.md").write_text("my index\n")
         with self.assertNoLogs("steno.projectnotes", "WARNING"):
-            self.publish(all=True)
+            self.notes(all=True)
         self.assertEqual(self.out.count("skip    demo/notes/meetings/README.md"),
                          1)
         self.assertEqual((self.meetings() / "README.md").read_text(),
@@ -840,18 +928,15 @@ class TestPublishCommand(ProjectNotesCase):
 
     def test_a_project_that_is_not_a_directory_is_said_not_made(self):
         shutil.rmtree(self.projects / "demo")
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         self.assertIn("no such project", self.out)
         self.assertFalse((self.projects / "demo").exists())
 
 
-class TestUnpublishCommand(ProjectNotesCase):
-    def unpublish(self, *names, **given):
-        self.run_cmd(cli.cmd_unpublish, session=list(names), **given)
-
+class TestRemovingProjectNotes(ProjectNotesCase):
     def test_it_takes_the_pages_and_their_index_line_away(self):
-        self.publish(all=True)
-        self.unpublish(self.old.name)
+        self.notes(all=True)
+        self.notes(self.old.name, remove=True)
         self.assertIsNone(self.code)
         self.assertEqual(
             [p.name for p in self.meetings().glob("*kickoff*")], []
@@ -862,38 +947,58 @@ class TestUnpublishCommand(ProjectNotesCase):
         self.assertNotIn("Kickoff", index)
         self.assertIn("Standup", index)
 
-    def test_it_works_on_an_archived_meeting_which_a_publish_left_alone(self):
-        self.publish(session=self.away.name)
+    def test_it_works_on_an_archived_meeting_which_all_leaves_alone(self):
+        self.notes(self.away.name)
         self.assertTrue(self.meetings().is_dir())
-        self.unpublish(self.away.name)
+        self.notes(self.away.name, remove=True)
         self.assertFalse(self.meetings().exists())
 
     def test_a_dry_run_removes_nothing(self):
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         before = _tree(self.projects)
-        self.unpublish(self.old.name, dry_run=True)
+        self.notes(self.old.name, remove=True, dry_run=True)
         self.assertEqual(_tree(self.projects), before)
         self.assertIn("remove", self.out)
 
-    def test_a_meeting_that_was_never_published_says_so(self):
-        self.unpublish(self.old.name)
+    def test_a_meeting_with_no_pages_in_a_project_says_so(self):
+        self.notes(self.old.name, remove=True)
         self.assertIsNone(self.code)
-        self.assertIn("not published", self.out)
+        self.assertIn("no pages in a project", self.out)
 
     def test_an_unknown_name_fails_but_the_others_still_go(self):
-        self.publish(session=self.old.name)
-        self.unpublish("nope", self.old.name)
+        self.notes(self.old.name)
+        self.notes("nope", self.old.name, remove=True)
         self.assertEqual(self.code, 1)
         self.assertFalse(self.meetings().exists())
 
+    def test_it_needs_a_name(self):
+        self.notes(remove=True)
+        self.assertEqual(self.code, 1)
+        self.assertIn("--remove needs", self.err)
+
+    def test_the_options_that_choose_what_to_write_are_refused(self):
+        """`--all` ignored would leave the folder as it was while the
+        person thinks it was cleared."""
+        self.notes(all=True)
+        before = _tree(self.projects)
+        for given in ({"all": True}, {"project": "demo"}, {"force": True}):
+            with self.subTest(**given):
+                self.notes(self.old.name, remove=True, **given)
+                self.assertEqual(self.code, 1)
+                self.assertIn("--remove takes meeting names only", self.err)
+                self.assertEqual(_tree(self.projects), before)
+
     def test_it_takes_several_names_from_the_command_line(self):
-        with mock.patch.object(sys, "argv", ["steno", "unpublish", "a", "b"]), \
-             mock.patch.object(cli, "cmd_unpublish") as run:
+        argv = ["steno", "project-notes", "--remove", "a", "b"]
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(cli, "cmd_project_notes") as run:
             cli.main()
-        self.assertEqual(run.call_args.args[0].session, ["a", "b"])
+        args = run.call_args.args[0]
+        self.assertEqual(args.session, ["a", "b"])
+        self.assertTrue(args.remove)
 
 
-class TestPublishFollowsOtherCommands(ProjectNotesCase):
+class TestProjectNotesFollowOtherCommands(ProjectNotesCase):
     def summarize(self, session_dir: Path, project: str | None):
         """`steno summarize` with the model stood in for: what the real
         one leaves on disk is a summary and a title in meta.json."""
@@ -921,7 +1026,7 @@ class TestPublishFollowsOtherCommands(ProjectNotesCase):
         self.assertIn("- [ ] Send it", page.read_text())
 
     def test_summarizing_again_replaces_the_pages_under_its_new_title(self):
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         self.summarize(self.old, "demo")
         self.assertEqual(
             sorted(p.name for p in self.meetings().glob("2026-08-*")),
@@ -930,17 +1035,15 @@ class TestPublishFollowsOtherCommands(ProjectNotesCase):
         self.assertIn("Ship it", (self.meetings() / "2026-08-01-0900-new.md")
                       .read_text())
 
-    def test_realigning_a_published_meeting_republishes_it(self):
-        self.publish(session=self.old.name)
+    def test_realigning_a_meeting_in_a_project_writes_its_pages_again(self):
+        self.notes(self.old.name)
         (self.old / "transcript.jsonl").write_text(json.dumps(
             {"ts": 1000.0, "speaker": "them", "text": "hello again"}) + "\n")
         self.realign(self.old)
         words = next(self.meetings().glob("*kickoff.transcript.md"))
         self.assertIn("hello again", words.read_text())
 
-    def test_realigning_a_meeting_that_was_never_published_publishes_nothing(
-        self,
-    ):
+    def test_realigning_a_meeting_with_no_pages_writes_none(self):
         self.realign(self.old)
         self.assertFalse(self.meetings().exists())
 
@@ -977,7 +1080,7 @@ class TestDeleteTakesTheCopyWithIt(ProjectNotesCase):
         return seen["pages"]
 
     def test_the_pages_are_gone_before_the_meeting_is(self):
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         self.assertEqual(self.delete("trashed"), [])
         self.assertIn("taken out of demo's notes:", self.out)
         self.assertIn("remove", self.out)
@@ -987,12 +1090,12 @@ class TestDeleteTakesTheCopyWithIt(ProjectNotesCase):
         )
 
     def test_a_meeting_that_could_not_be_deleted_is_put_back(self):
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         self.assertEqual(self.delete("failed"), [])
         self.assertEqual(self.code, 1)
         self.assertEqual(len(list(self.meetings().glob("*kickoff*"))), 2)
 
-    def test_a_meeting_that_was_never_published_costs_it_nothing(self):
+    def test_a_meeting_with_no_pages_in_a_project_costs_it_nothing(self):
         self.assertEqual(self.delete("trashed"), [])
         self.assertFalse(self.meetings().exists())
         self.assertNotIn("remove", self.out)
@@ -1001,7 +1104,7 @@ class TestDeleteTakesTheCopyWithIt(ProjectNotesCase):
         """The record of where the copy is lives in meta.json, which goes
         with the meeting: delete anyway and the transcript page is left
         in the project for good."""
-        self.publish(session=self.old.name)
+        self.notes(self.old.name)
         before = (self.old / "meta.json").read_text()
         denied = PermissionError(errno.EACCES, "Permission denied")
         with mock.patch.object(cli, "forget_asst") as forget, \

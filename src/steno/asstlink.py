@@ -52,8 +52,9 @@ def source_prefix(session_dir: Path) -> str:
     return f"steno:{session_dir.name}/"
 
 
-def _run(args: list[str]) -> str | None:
-    """`asst --json …`, or None if asst is missing or refuses.
+def _exec(args: list[str]) -> str | None:
+    """`asst --json …`'s stdout, "" when it printed none, or None if asst
+    is missing or refuses.
 
     `--json` leads, so it cannot fall after a `--` and become title text.
     """
@@ -71,7 +72,13 @@ def _run(args: list[str]) -> str | None:
         return None
     if proc.returncode != 0:
         return None
-    return proc.stdout.strip() or None
+    return proc.stdout.strip()
+
+
+def _run(args: list[str]) -> str | None:
+    """`_exec`, for a command whose answer is its output: no output is no
+    answer."""
+    return _exec(args) or None
 
 
 def _parse_id(raw: str | None) -> str | None:
@@ -149,6 +156,21 @@ def _project_of(session_dir: Path) -> str | None:
     return str(value) if value else None
 
 
+def archived(session_dir: Path) -> bool:
+    """Put away by the user. Its to-dos are closed: nothing is filed for
+    it and nothing counts.
+
+    Read as `summarize.is_archived` reads it, a real `true` and nothing
+    else. That module imports notes, which imports this one, so it
+    cannot be asked here.
+    """
+    try:
+        meta = json.loads((session_dir / "meta.json").read_text())
+        return meta.get("archived") is True
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return False
+
+
 def add_todo(
     session_dir: Path,
     text: str,
@@ -196,17 +218,22 @@ def move_todos(uids: list[str], list_name: str | None) -> int:
     return moved
 
 
+def rm_todo(uid: str) -> bool:
+    """Delete one filed task. False means asst did not delete it.
+
+    `asst --json rm` prints nothing when it works, so the exit status is
+    the answer here, not the output.
+    """
+    return bool(uid) and _exec(["rm", uid]) is not None
+
+
 def rm_todos(uids: list[str]) -> int:
     """Delete filed tasks. Returns how many asst accepted.
 
     Used when the meeting itself goes away. asst is the task store: if the
     meeting is gone, the tasks it filed should not outlive it on the phone.
     """
-    removed = 0
-    for uid in uids:
-        if uid and _run(["rm", uid]) is not None:
-            removed += 1
-    return removed
+    return sum(rm_todo(uid) for uid in uids)
 
 
 def fetch_session(session_dir: Path) -> dict[str, dict] | None:

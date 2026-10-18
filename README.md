@@ -63,7 +63,9 @@ OpenAI-style chat-completions request to a model host, MiMo by default, with
 its key in `~/.config/mimo.env` (`MIMO_API_KEY`). `STENO_PROVIDER=openrouter`
 reads `~/.config/openrouter.env` instead; `STENO_MODEL`, `STENO_BASE_URL` and
 `STENO_API_KEY` override the model, endpoint and key (the template `steno init`
-writes lists them). `STENO_NO_ASST=1` (any non-empty value, `0` included)
+writes lists them). `STENO_ASK_MODEL` does the same for the Ask box alone and
+wins over the model picked in the window (below); summaries keep
+`STENO_MODEL`. `STENO_NO_ASST=1` (any non-empty value, `0` included)
 stops Steno running `asst`, the task app your action items are filed in, so
 a scratch run cannot touch your real lists. Optionally write
 `~/.config/steno/brief.md` — a short, curated page about who you are and what
@@ -88,12 +90,13 @@ steno summarize --uncited  redo the summaries that have no citations (lists, pri
 steno export [NAME] [-o F] print or save a meeting as markdown
 steno realign [NAME]       re-time an old session against its audio (costs a pass)
 steno delete [NAME]        move a meeting to the trash
-steno archive NAME...      put meetings away: kept whole, left out of every --all
-steno unarchive NAME...    bring them back
-steno publish [NAME]       copy a meeting into its project's notes/meetings
-steno publish --all        ... every meeting filed under a project (--dry-run first)
-steno unpublish NAME...    take a meeting's pages out of its project again
-steno todos                what you owe, across every meeting
+steno archive NAME...      put meetings away: kept whole, left out of every --all,
+                           their open to-dos closed
+steno unarchive NAME...    bring them back, to-dos reopened
+steno project-notes [NAME]  copy a meeting into its project's notes/meetings
+steno project-notes --all   ... every meeting filed under a project (--dry-run first)
+steno project-notes --remove NAME...  take a meeting's pages out again
+steno todos                what you owe, across every meeting not put away
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context
@@ -105,13 +108,29 @@ paused) and lists every meeting. A meeting in progress sits at the top under
 ask Claude about what's being said. A past meeting is one page — its summary,
 to-dos, your notes, a question box, and the full transcript, where **clicking
 any line plays that moment back**. A meeting that never got its summary says so
-and has a **Summarize now** button. The sidebar's "N to-dos open" lists what you
+and has a **Summarize now** button. A meeting's to-dos sit in two groups: **For
+you**, which also holds any item nobody has claimed, and **Waiting on them**,
+what someone else promised, kept as a reminder. Only the first is counted, in
+the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
 still owe across every meeting; a row opens its meeting. The ⋯ menu acts on
 the meeting you are looking at: summarize it again, re-time it against its
 audio, drop the audio but keep the words, copy or save the meeting as
 markdown, put it away (Archive, below), or delete it. Right-clicking a meeting in the list (or `Menu` /
 `Shift+F10` on it) opens that meeting and shows the same menu. Deleting goes
 to your desktop trash, all of it together, recoverable from there.
+
+The Ask box answers with the model named under it, the summary's model until
+you choose another. Click the name for the choices: the default, the
+provider's presets, the models it lists at its `/models` endpoint, and
+**Custom…** for an id you type. The list is fetched once per run, the first time
+the menu is opened and off the window's thread; if the provider will not give
+it, the presets are all there is and nothing says why. Speech models (`tts`,
+`asr`) are left out of it. The choice is kept in `gui.json` under
+`$XDG_STATE_HOME/steno` (`~/.local/state/steno`) and applies from the next
+question; summaries do not change. `STENO_ASK_MODEL` overrides it, and the menu
+then says that instead of offering a choice that would be ignored. Each answer
+says under it which model gave it (*answered by …*), so a surprising one can be
+explained; a question already on its way keeps the model it was sent with.
 
 A summary says where each point was said. The model ends every bullet with
 the transcript lines that support it; Steno checks those against the
@@ -154,8 +173,8 @@ again.
 
 A meeting that no longer matters can be put away instead of deleted.
 **Archive** in the ⋯ menu (or in the menu of its row in the list) sets
-`archived` in its `meta.json` and touches nothing else, so the audio, the
-words and the to-dos stay as they were. It asks nothing: the toast that
+`archived` in its `meta.json`, so the audio and the words stay as they
+were, and closes its open to-dos (below). It asks nothing: the toast that
 says so has an **Undo**. The meeting leaves the list and the search, and
 the page moves to the next meeting, or to an empty page that says how many
 are put away. While any meeting is, the last row of the list reads
@@ -173,14 +192,43 @@ follows when it is raised. Every command that goes through all meetings
 then leaves it out (`steno summarize --all` and `--uncited`,
 `steno realign --all`, `steno clean-echo --all`) and says how many it left;
 a command given the meeting's name (`export`, `summarize NAME`, `delete`)
-still reaches it. Its open to-dos stay open: they are counted in the
-list's "N to-dos open" (hover it for how many of those are in archived
-meetings), listed in it under the meeting's name, and listed by
-`steno todos`, because a promise made in a meeting does not lapse when the
-meeting is put away. The meeting count and the cost under the list still
+still reaches it. The meeting count and the cost under the list still
 include it, and `STENO_KEEP_AUDIO_DAYS` treats it like any other.
 `steno status` counts the archived ones, and `steno unarchive NAME...`
 brings them back.
+
+**Its open to-dos are closed.** A meeting put away is one you are done
+with, so what it still held open is not counted in the page's "N to do" or
+the list's "N to-dos open", is not in that list, and is not in
+`steno todos`, which says how many meetings it left out. Archiving takes
+the meeting's open tasks out of asst (`asst rm`; for a list tied to a
+GitHub repo asst closes the issue as not planned) and marks those rows
+`dropped` in `todos.json`, keeping their words and their asst source (a
+row keeps its task id only until asst has let the task go). The
+toast says what happened: "Archived “Sync”. Removed 3 open tasks from
+asst." `steno archive` prints the same. A to-do you had ticked is left
+alone, and so is its finished task. The asst calls run after the meeting
+has left the list, so a slow asst never holds the page. The page of a
+meeting put away still shows its to-dos, greyed, with a line saying they
+were closed. **Unarchive**, `steno unarchive` and the toast's Undo open
+them again and file yours in asst once more. That is by their source, so a
+task asst still holds is found and not doubled; one it had removed comes
+back as a new task (a new issue, on a list tied to a repo). If asst cannot
+be reached or refuses a task, the archive still happens, the toast and
+`steno archive` (which exits 1) say how many tasks are still open there,
+and those rows stay open; `steno archive NAME` again retries them. So
+does a removal cut short (the process killed, a Ctrl-C): a closed row that
+still names its task is what is left to take out, and **Delete** takes
+that task out too. Quitting the window waits for a removal in progress. A
+to-do that never reached asst is closed here alone, so a meeting needs no
+asst to be put away. Archiving does not rewrite the pages the meeting has
+in a project (below).
+
+A meeting put away before to-dos were closed with it keeps its open
+to-dos, and their tasks in asst: nothing closes them on its own, since
+that takes tasks out of asst. Its page says "Some are still open".
+`steno archive NAME` closes them (it says "already archived" first), as
+does Unarchive and then Archive in the window.
 
 A meeting about one of your projects is also kept in that project, as
 pages of its own; see Project notes, below.
@@ -225,13 +273,13 @@ folder is, for an agent that lands in it.
 to a meeting that is already there: a tick, a saved note, a tick made on your
 phone, a re-timing. The wait is so that typing a note does not rewrite a file
 every few seconds; opening another meeting, or quitting, writes what is
-waiting at once. A tick or an edit never publishes a meeting that was not
-there already. `steno summarize` and `steno realign` do the same from a
-terminal. A meeting you delete is taken out of its project first; one you
-archive stays there. If the pages cannot be taken out (the folder is not
-writable, say), the meeting is not deleted, because the transcript would stay
-behind with nothing to say where it is: the window shows why, `steno delete`
-prints it and exits 1, and deleting again after the fix goes through.
+waiting at once. A tick or an edit never puts a meeting into a project that
+was not there already. `steno summarize` and `steno realign` do the same
+from a terminal. A meeting you delete is taken out of its project first;
+one you archive stays there. If the pages cannot be taken out (the folder is
+not writable, say), the meeting is not deleted, because the transcript would
+stay behind with nothing to say where it is: the window shows why, `steno
+delete` prints it and exits 1, and deleting again after the fix goes through.
 **Show in project notes** in the ⋯ menu opens the folder, for a meeting that
 has pages in one.
 
@@ -250,16 +298,20 @@ has pages in one.
   same way.
 - It writes only what changed. A page is compared byte for byte and written
   when it differs, whole: to a hidden temporary file in the same folder, then
-  renamed over the old one. The same meeting published twice leaves every
+  renamed over the old one. Writing the same meeting twice leaves every
   modification time alone, and nobody reads half a page.
 - It runs no git, and sends nothing anywhere: no network, no model. The pages
   are made from files Steno already has.
 
 **Git.** Transcripts are other people's speech, and project repositories get
-pushed. So the folder is made with a `.gitignore` of `*` and `!.gitignore`:
-git sees that one file and none of the meetings. Steno stages and commits
-nothing. To keep the meetings in the repository, delete the `.gitignore`;
-Steno writes it once, with the folder, and does not write it back.
+pushed. So the folder is made with a `.gitignore` of `*`, which ignores the
+meetings and itself: git sees nothing in the folder, and `git status` stays
+clean. Steno stages and commits nothing. To keep the meetings in the
+repository, delete the `.gitignore`; Steno writes it once, with the folder,
+and does not write it back. (An earlier Steno also wrote `!.gitignore`
+there, which left the folder showing in `git status` as untracked. That
+file is rewritten, once, the next time Steno writes in the folder; a
+`.gitignore` you have changed is left as it is.)
 
 If `notes/meetings` already holds files of yours when Steno first writes in
 it, a `*` would hide them from git too, and `git add` would refuse the next one
@@ -280,17 +332,17 @@ uploads hidden files may see the temporary file come and go.
 
 **The switch.** `STENO_PROJECT_NOTES=0` in `~/.config/steno/.env` turns all
 of it off: the window, `steno summarize` and `steno realign` write nothing,
-and `steno publish` refuses unless given `--force`. Unset or empty is on, and
-anything but a plain yes (`1`, `true`, `yes`, `on`) reads as off, so a typo
-fails towards writing nothing. It does not take back what is already
-written; `steno unpublish` does, and works with the switch off.
+and `steno project-notes` refuses unless given `--force`. Unset or empty is
+on, and anything but a plain yes (`1`, `true`, `yes`, `on`) reads as off, so
+a typo fails towards writing nothing. It does not take back what is already
+written; `steno project-notes --remove` does, and works with the switch off.
 
-**Meetings from before.** They are not copied until you ask. `steno publish
---all --dry-run` lists every file it would create, update or take away, and
-writes none; read it, then run `steno publish --all`:
+**Meetings from before.** They are not copied until you ask. `steno
+project-notes --all --dry-run` lists every file it would create, update or
+take away, and writes none; read it, then run `steno project-notes --all`:
 
 ```
-$ steno publish --all --dry-run
+$ steno project-notes --all --dry-run
 20261012-100000  Weekly sync  [rcnn]
   create  rcnn/notes/meetings/.gitignore
   create  rcnn/notes/meetings/2026-10-12-1000-weekly-sync.md
@@ -302,27 +354,29 @@ $ steno publish --all --dry-run
 dry run, nothing written: 2 meetings looked at, 0 already up to date; 6 to create
 ```
 
-`steno publish` alone does the newest meeting, `NAME` one, `--project P` only
-those filed under P. `--all` leaves the archived meetings out, as the other
+`steno project-notes` alone does the newest meeting, `NAME` one, `--project P`
+only those filed under P. `--all` leaves the archived meetings out, as the other
 commands that go through everything do, and also takes pages away from a
 meeting that has since left its project. A file Steno would not touch is
-listed as `skip`, with why. `steno unpublish NAME...` takes meetings' pages
-back out (also with `--dry-run`), and the folder with them if nothing else is
-in it. None of this needs the app running.
+listed as `skip`, with why. `steno project-notes --remove NAME...` takes
+meetings' pages back out (also with `--dry-run`), and the folder with them if
+nothing else is in it. None of this needs the app running.
 
-**For an agent.** Steno never edits a project's own files. To tell the agent
-working in a project that the folder is there, add one line to that project's
-`CLAUDE.md`:
+**For an agent.** Steno never edits a project's own files, so no project
+needs a line about the folder. The pointer is global: one line in your own
+agent instructions (`~/.claude/CLAUDE.md`, for Claude Code) covers every
+project:
 
 ```
-Meetings recorded by steno are in notes/meetings/ (generated; read README.md there).
+- Meetings steno recorded about a project are in its `notes/meetings/` (generated, read-only; start at `README.md` there).
 ```
 
-A clone of the repository has no meetings, since they were never committed, so
-the line is true on the machine that recorded them. An agent that reads the
-pages sends what it reads to its own provider; that is what they are for. The
-model that writes a summary is not shown them (see What it records, below),
-so a summary is not written from another meeting's pages, nor sends them on.
+The line is true of a project on the machine that recorded its meetings; a
+clone elsewhere has none, since they were never committed. An agent that
+reads the pages sends what it reads to its own provider; that is what they
+are for. The model that writes a summary is not shown them (see What it
+records, below), so a summary is not written from another meeting's pages,
+nor sends them on.
 
 ## The bar
 
@@ -419,7 +473,7 @@ reconnect.
   engine's asyncio loop and GTK's main loop meet; everything crossing back goes
   through `GLib.idle_add`. `sidebar.py`, `meeting.py` and `live.py` are the three
   surfaces; `summary.py` is the summary's rows and the bar of places; `words.py`
-  is what they say, testable headlessly; `republish.py` waits for a pause
+  is what they say, testable headlessly; `rewrite.py` waits for a pause
   before it rewrites a meeting's project pages. `player.py` is GStreamer, for playback.
 - **`events.py`** — what the engine says. The engine never touches a widget.
 - **`state.py` / `control.py`** — what the bar reads, and how a click reaches
