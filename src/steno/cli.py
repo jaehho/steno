@@ -359,7 +359,7 @@ def _summarize_one(
         _replace_line(f"  {session_dir.name}: failed - {e}", progress)
         return False
     todos = sync_todos(session_dir, summary.body)
-    open_n = sum(1 for t in todos if not t.done)
+    open_n = sum(1 for t in todos if t.open)
     project = f"  ({summary.project})" if summary.project else ""
     _replace_line(f"  {session_dir.name}: {summary.title}{project}", progress)
     print(f"    -> {session_dir / 'summary.md'}"
@@ -937,11 +937,15 @@ def cmd_todos(args: argparse.Namespace) -> None:
     """Everything still open, newest meeting first.
 
     A meeting put away is left out, and says so: its to-dos were closed
-    with it.
+    with it. A row closed that way is never listed, `--all` or not; that
+    flag adds the ticked ones.
     """
     any_open = False
     for session_dir in _leave_out_archived(iter_sessions(args.dir)):
-        todos = [t for t in pull_todos(session_dir) if not t.done or args.all]
+        todos = [
+            t for t in pull_todos(session_dir)
+            if t.open or (args.all and t.done)
+        ]
         if not todos:
             continue
         any_open = True

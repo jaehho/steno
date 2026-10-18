@@ -262,7 +262,10 @@ opens with a front matter block (title, date, time, length, project, the
 session it came from) and a line saying Steno generated it. The summary page
 is what `steno export` makes without the words: the summary with its
 citations written as `[03:21, 07:40]`, your to-dos as a checklist in the
-state they are in now, your notes, and a link to the transcript page. The
+state they are in now, your notes, and a link to the transcript page. A
+to-do closed because the meeting was put away is not on the checklist as an
+empty box: it follows it under *Closed when the meeting was put away*, as it
+does in `steno export`. The
 transcript page is `[mm:ss] who: text` for each line, with the far side's
 names where Steno has them, as the export has it. `README.md` is the index, a
 line per meeting (date, title, length, open to-dos) under a note on what the

@@ -214,6 +214,23 @@ class TestWrite(Base):
         self.assertIn("- They will send revised numbers. [03:21, 07:40]", page)
         self.assertNotIn("cite", page)
 
+    def test_a_closed_todo_is_not_an_open_box(self):
+        """The page says 0 open, so it must not draw a box to tick."""
+        d = self.session(todos=[
+            {"text": "Draft the comparison table", "owner": "you",
+             "dropped": True},
+        ])
+        self.write(d)
+        page = self.read(SUMMARY_NAME)
+        self.assertIn("todos_open: 0\n", page)
+        self.assertNotIn("- [ ]", page)
+        self.assertIn(
+            "*Closed when the meeting was put away:*\n"
+            "- Draft the comparison table (you)\n",
+            page,
+        )
+        self.assertNotIn("open to-do", self.read("README.md"))
+
     def test_the_transcript_page(self):
         self.write(self.session())
         page = self.read(TRANSCRIPT_NAME)

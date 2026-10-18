@@ -705,6 +705,46 @@ class TestNamedCommandsStillReachIt(ArchiveCase):
         self.assertNotIn("Send the report", self.out)
         self.assertIn("1 archived meeting left out", self.out)
 
+    def test_summarizing_it_counts_none_of_its_closed_to_dos(self):
+        save_todos(self.away, [
+            Todo(text="Send the report", owner="you", dropped=True),
+        ])
+        body = "## Action items\n**You**\n- Send the report\n"
+
+        async def fake(session_dir, _model, _brief):
+            (session_dir / "summary.md").write_text(f"# Standup\n\n{body}")
+            return Summary("Standup", body)
+
+        out = io.StringIO()
+        with mock.patch.object(cli, "summarize_session", fake), \
+             redirect_stdout(out):
+            cli._summarize_one(self.away, "m", None)
+        self.assertIn("summary.md", out.getvalue())
+        self.assertNotIn("todo", out.getvalue())
+        self.assertTrue(load_todos(self.away)[0].dropped)
+
+    def test_todos_never_lists_a_row_closed_with_a_meeting(self):
+        """Not by default, and not with --all, which adds the ticked."""
+        save_todos(self.new, [
+            Todo(text="Send the report", owner="you", dropped=True),
+            Todo(text="Book the room", owner="you", done=True),
+            Todo(text="Draft the table", owner="you"),
+        ])
+        with mock.patch.object(asstlink, "available", lambda: False):
+            self.run_cmd(cli.cmd_todos, argparse.Namespace(
+                dir=self.root, all=False
+            ))
+            plain = self.out
+            self.run_cmd(cli.cmd_todos, argparse.Namespace(
+                dir=self.root, all=True
+            ))
+        self.assertIn("[ ] Draft the table", plain)
+        self.assertNotIn("Book the room", plain)
+        self.assertNotIn("Send the report", plain)
+        self.assertIn("[ ] Draft the table", self.out)
+        self.assertIn("[x] Book the room", self.out)
+        self.assertNotIn("Send the report", self.out)
+
     def test_todos_lists_it_again_once_it_is_back(self):
         save_todos(self.away, [Todo(text="Send the report", owner="you")])
         self.run_cmd(cli.cmd_archive, argparse.Namespace(

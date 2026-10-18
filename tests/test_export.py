@@ -102,6 +102,48 @@ class TestMeetingMarkdown(unittest.TestCase):
         self.assertNotIn("- Revised quote next week", md)
         self.assertIn("- [x] Send the usage figures by Friday", md)
 
+    def test_a_todo_closed_with_the_meeting_is_not_an_open_box(self):
+        """Put away, a to-do is neither to do nor done. An unticked box
+        said it was still owed, though the page counted none open."""
+        d = _session(
+            self.root,
+            transcript_jsonl=_rows(*ROWS),
+            meta_json=json.dumps({"started_at": 1000.0, "title": "Sync"}),
+            todos_json=json.dumps([
+                {"text": "Send the usage figures", "owner": "you",
+                 "dropped": True, "cites": [[75, 80]]},
+                {"text": "Book the room", "owner": "you", "done": True},
+                {"text": "Revised quote", "owner": "them",
+                 "dropped": True},
+            ]),
+        )
+        md = meeting_markdown(d)
+        self.assertNotIn("- [ ]", md)
+        self.assertIn("- [x] Book the room", md)
+        self.assertIn(
+            "**You**\n- [x] Book the room\n\n"
+            "*Closed when the meeting was put away:*\n"
+            "- Send the usage figures [01:15] (you)\n"
+            "- Revised quote (them)\n",
+            md,
+        )
+        # No heading for an owner whose rows are all closed.
+        self.assertNotIn("**Them**", md)
+
+    def test_a_ticked_row_stays_ticked_though_it_is_marked_closed(self):
+        d = _session(
+            self.root,
+            transcript_jsonl=_rows(*ROWS),
+            meta_json=json.dumps({"started_at": 1000.0, "title": "Sync"}),
+            todos_json=json.dumps([
+                {"text": "Book the room", "owner": "you", "done": True,
+                 "dropped": True},
+            ]),
+        )
+        md = meeting_markdown(d)
+        self.assertIn("- [x] Book the room", md)
+        self.assertNotIn("Closed when", md)
+
     def test_citations_are_written_out_as_stamps(self):
         """A copy leaves the app: the marker is a comment only steno reads."""
         marked = SUMMARY.replace(
