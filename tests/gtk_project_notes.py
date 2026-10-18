@@ -210,6 +210,19 @@ class TestInTheWindow(Base):
         self.settle()
         self.assertIn(DONE_ITEM, self.page_text())
 
+    def test_a_re_timing_that_finished_reaches_the_project(self):
+        projectnotes.publish(self.alpha)
+        self.open(self.alpha)
+        meta = json.loads((self.alpha / "meta.json").read_text())
+        row = {"ts": meta["started_at"] + 5, "speaker": "them",
+               "text": "re-timed words"}
+        (self.alpha / "transcript.jsonl").write_text(json.dumps(row) + "\n")
+        self.page._realigned(self.alpha, 1, "")
+        self.time.advance(DELAY_S)
+        self.settle()
+        words = self.page_text(ALPHA_PAGE.replace(".md", ".transcript.md"))
+        self.assertIn("[00:05] them: re-timed words", words)
+
     def test_a_pull_that_finds_nothing_new_waits_for_nothing(self):
         projectnotes.publish(self.alpha)
         self.open(self.alpha)
