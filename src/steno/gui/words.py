@@ -101,31 +101,41 @@ def _open_tasks(n: int) -> str:
     return f"{n} open task{'s' if n != 1 else ''}"
 
 
+# Unarchive never takes a task out of asst, so it does not try a refused
+# removal again; archiving does. And the other way round for filing.
+# A toast is one line: this is as short as it can be said.
+RETRY_REMOVAL = "Unarchive and archive again to retry."
+RETRY_FILING = "Archive and unarchive again to retry."
+
+
 def archived_toast(title: str, removed: int, stuck: int = 0) -> str:
     """What archiving says it did. Its open to-dos are closed with it,
     which is the part that is not obvious; so is a task asst would not
-    give up, which stays open there."""
+    give up, which stays open there, and how to try again."""
     said = f"Archived “{title}”"
     if removed and stuck:
         return (
             f"{said}. Removed {_open_tasks(removed)} from asst; "
-            f"could not remove {stuck}."
+            f"could not remove {stuck}. {RETRY_REMOVAL}"
         )
     if removed:
         return f"{said}. Removed {_open_tasks(removed)} from asst."
     if stuck:
         return (
-            f"{said}. Could not remove {_open_tasks(stuck)} from asst; "
-            f"{'it stays' if stuck == 1 else 'they stay'} open there."
+            f"{said}. Could not remove {_open_tasks(stuck)} from asst. "
+            f"{RETRY_REMOVAL}"
         )
     return said
 
 
-def put_away_notes(closed: bool, unclosed: bool) -> list[str]:
+def put_away_notes(closed: bool, unclosed: bool, name: str = "") -> list[str]:
     """The lines over the to-dos of a meeting that is put away: what
     was closed with it, and what was not. A meeting put away before its
     to-dos were closed with it has the second kind, and so has one whose
-    asst would not give a task up; neither says so anywhere else."""
+    asst would not give a task up; neither says so anywhere else.
+    Unarchive does not close them, so the second line says what does:
+    archiving again, which `steno archive` does without the round trip
+    (`name` is the meeting's name for that command)."""
     lines = []
     if closed:
         lines.append(
@@ -136,7 +146,9 @@ def put_away_notes(closed: bool, unclosed: bool) -> list[str]:
         lines.append(
             "Some are still open: asst would not let go of a task, or "
             "this meeting was put away before its to-dos were closed "
-            "with it. Unarchive it and archive it again to close them."
+            "with it. Unarchive it and archive it again to close them"
+            + (f", or run steno archive {name} in a terminal." if name
+               else ".")
         )
     return lines
 
@@ -148,14 +160,15 @@ def unarchived_toast(title: str, filed: int, failed: int = 0) -> str:
     if filed and failed:
         return (
             f"{said}. Filed {_open_tasks(filed)} in asst again; "
-            f"asst did not take {failed}."
+            f"asst did not take {failed}. {RETRY_FILING}"
         )
     if filed:
         return f"{said}. Filed {_open_tasks(filed)} in asst again."
     if failed:
         return (
             f"{said}. asst did not take {_open_tasks(failed)}; "
-            f"{'it is' if failed == 1 else 'they are'} open here only."
+            f"{'it is' if failed == 1 else 'they are'} open here only. "
+            f"{RETRY_FILING}"
         )
     return ""
 

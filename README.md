@@ -235,6 +235,16 @@ to-do that never reached asst is closed here alone, so a meeting needs no
 asst to be put away. Archiving does not rewrite the pages the meeting has
 in a project (below).
 
+**Retrying asst.** Unarchive reopens what archiving closed and files it;
+it never takes a task out of asst, so it does not retry a removal asst
+refused. Archiving again does, and in the window that is Unarchive and then
+Archive (the toast and the meeting's page say so; the page also names the
+`steno archive` command, which needs only the one step). The other way
+round, when asst would not take a task Unarchive reopened (it is open here
+only, and the toast and `steno unarchive` say so), unarchiving again does
+nothing, since there is nothing left to reopen: archive it and unarchive it
+once more.
+
 A meeting put away before to-dos were closed with it keeps its open
 to-dos, and their tasks in asst: nothing closes them on its own, since
 that takes tasks out of asst. Its page says "Some are still open".

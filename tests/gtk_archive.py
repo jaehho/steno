@@ -712,6 +712,32 @@ class TestInTheWindow(unittest.TestCase):
         settle()
         (note,) = self.notes_over_the_to_dos()
         self.assertTrue(note.get_label().startswith("Some are still open"))
+        self.assertIn(
+            f"steno archive {self.folder('Alpha').name}", note.get_label()
+        )
+
+    def test_unarchiving_does_not_retry_the_removal_but_archiving_again_does(self):
+        asst = self.fake_asst()
+        self.open_with_filed_to_dos(asst)
+        asst.down = True
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.assertEqual(len(asst.tasks()), 1)
+        asst.down = False
+        self.toasts.clear()
+
+        self.sidebar.select(self.folder("Alpha"))
+        settle()
+        self.run_action("unarchive")
+        wait_for(lambda: False, 0.3)
+        self.assertEqual(len(asst.tasks()), 1)   # nothing taken out
+        (todo,) = load_todos(self.folder("Alpha"))
+        self.assertTrue(todo.open)
+        self.assertEqual(self.toasts, [])
+
+        self.run_action("archive")
+        self.assertTrue(wait_for(lambda: self.toasts))
+        self.assertEqual(asst.tasks(), [])
 
     def test_quitting_waits_for_asst_to_finish_removing_the_tasks(self):
         asst = self.fake_asst()
@@ -775,8 +801,8 @@ class TestInTheWindow(unittest.TestCase):
         self.assertTrue(is_archived(self.folder("Alpha")))
         self.assertEqual(
             self.toasts[-1][0],
-            "Archived “Alpha”. Could not remove 1 open task from asst; "
-            "it stays open there.",
+            "Archived “Alpha”. Could not remove 1 open task from asst. "
+            "Unarchive and archive again to retry.",
         )
         self.assertFalse(self.sidebar.owed.get_visible())
 

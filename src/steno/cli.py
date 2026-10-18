@@ -615,7 +615,8 @@ def _say_restored(restored: Restored) -> bool:
         print(f"  filed {_open_tasks(restored.filed)} in asst again")
     if restored.failed:
         print(f"  asst did not take {_open_tasks(restored.failed)}; "
-              "they are open here only", file=sys.stderr)
+              "they are open here only. Archive and unarchive it again "
+              "to retry", file=sys.stderr)
     return bool(restored.failed)
 
 

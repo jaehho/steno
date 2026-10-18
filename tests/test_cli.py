@@ -710,6 +710,40 @@ class TestArchiveClosesTodos(ArchiveCase):
         self.assertIn("asst did not take 2 open tasks", self.err)
         self.assertEqual(self.code, 1)
 
+    def test_archiving_and_unarchiving_again_files_what_asst_refused(self):
+        """What the message above tells you to do. Unarchiving twice
+        does nothing: it reopens what archiving closed, and no more."""
+        self.archive()
+        self.asst.down = True
+        self.archive(unarchive=True)
+        self.assertIn("Archive and unarchive it again to retry", self.err)
+        self.asst.down = False
+        self.archive(unarchive=True)
+        self.assertIn("already unarchived", self.out)
+        self.assertEqual(self.asst.tasks(), [])
+
+        self.archive()
+        self.archive(unarchive=True)
+        self.assertIn("  filed 2 open tasks in asst again", self.out)
+        self.assertEqual(len(self.asst.tasks()), 2)
+        self.assertIsNone(self.code)
+
+    def test_unarchive_does_not_retry_a_removal_asst_refused(self):
+        """It leaves those rows open and their tasks where they are;
+        archiving again is what removes them (above)."""
+        self.asst.down = True
+        self.archive()
+        self.asst.down = False
+        kept = self.asst.tasks()
+        self.assertEqual(len(kept), 2)
+
+        self.archive(unarchive=True)
+        self.assertEqual(self.asst.tasks(), kept)
+        self.assertNotIn("removed", self.out)
+        self.assertNotIn("filed", self.out)
+        self.assertTrue(all(t.open for t in load_todos(self.old)))
+        self.assertIsNone(self.code)
+
 
 class TestNamedCommandsStillReachIt(ArchiveCase):
     def test_export_by_name_writes_the_meeting(self):
