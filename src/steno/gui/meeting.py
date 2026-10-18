@@ -305,9 +305,11 @@ class MeetingPage(Gtk.Box):
             content = scroller.get_child()
             if isinstance(content, Gtk.Viewport):
                 content = content.get_child()
-            found, _x, y = row.translate_coordinates(content, 0, 0)
-            if found:
-                scroller.get_vadjustment().set_value(max(0.0, y - 48))
+            # (x, y), or None when they share no ancestor: pygobject's Gtk
+            # override drops the success flag the C call returns.
+            point = row.translate_coordinates(content, 0, 0)
+            if point is not None:
+                scroller.get_vadjustment().set_value(max(0.0, point[1] - 48))
         return GLib.SOURCE_REMOVE
 
     def load(self, s: Session) -> None:
@@ -668,8 +670,8 @@ class MeetingPage(Gtk.Box):
         content = scroller.get_child()
         if isinstance(content, Gtk.Viewport):
             content = content.get_child()
-        found, _x, y = row.translate_coordinates(content, 0, 0)
-        return (scroller, y, row.get_height()) if found else None
+        point = row.translate_coordinates(content, 0, 0)  # (x, y) or None
+        return None if point is None else (scroller, point[1], row.get_height())
 
     def _row_in_view(self, row: Gtk.ListBoxRow) -> bool | None:
         frame = self._row_frame(row)
