@@ -35,6 +35,15 @@ _OWNER_RE = re.compile(
 )
 _ACTION_HEADING_RE = re.compile(r"^\s*#+\s*action\s+items?\s*$", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s*#+\s+")
+# A bullet that says there are no action items ("No commitments were
+# made.") is a model padding a section it was told to leave out. It is
+# not a promise, and would come up as an open to-do nobody owes.
+_NONE_RE = re.compile(
+    r"(?:none|n/a|nothing\s+(?:was|were|is|came|specific|concrete)"
+    r"|no(?:\s+\w+){0,2}?\s+(?:commitments?|action\s+items?|tasks?"
+    r"|follow-?\s?ups?|next\s+steps?|deadlines?|promises?))\b",
+    re.IGNORECASE,
+)
 
 # A re-summarize can word one promise differently. An item that matches
 # no row by source or text is still taken for an old row of the same
@@ -150,7 +159,7 @@ def parse_action_items(summary_body: str) -> list[Todo]:
         m = citations.BULLET_RE.match(line)
         if m:
             text = m.group(1).strip()
-            if text:
+            if text and not _NONE_RE.match(text):
                 todos.append(
                     Todo(text=text, owner=owner, cites=citations.parse(raw))
                 )

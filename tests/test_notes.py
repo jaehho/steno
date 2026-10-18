@@ -84,6 +84,36 @@ class TestParseActionItems(unittest.TestCase):
         todos = parse_action_items("## Action items\n- [x] Already done\n")
         self.assertEqual(todos[0].text, "Already done")
 
+    def test_a_bullet_that_says_there_is_nothing_is_not_an_item(self):
+        """A model padding an empty section writes one, and it is
+        unassigned, so it would count as an open to-do of yours."""
+        for line in (
+            "No commitments were made. The next talk is in two weeks.",
+            "No real action items came out of it",
+            "No explicit follow-ups or deadlines were set",
+            "None.",
+            "None identified",
+            "N/A",
+            "Nothing was committed to",
+        ):
+            with self.subTest(line=line):
+                body = f"## Action items\n**Unassigned**\n- {line}\n"
+                self.assertEqual(parse_action_items(body), [])
+
+    def test_items_that_only_start_alike_still_are(self):
+        for line in (
+            "Notify Bob by Friday",
+            "Nominate someone to chair",
+            "Nothing-burger review for the board",
+            "No more than five slides in the deck",
+            "Follow up on the quote",
+        ):
+            with self.subTest(line=line):
+                body = f"## Action items\n**You**\n- {line}\n"
+                self.assertEqual(
+                    [t.text for t in parse_action_items(body)], [line]
+                )
+
     def test_key_is_whitespace_insensitive(self):
         a, = parse_action_items("## Action items\n- Send   the  figures\n")
         b, = parse_action_items("## Action items\n- send the figures\n")
@@ -285,6 +315,14 @@ class TestTodoState(unittest.TestCase):
         self.assertEqual(open_count(self.dir), 2)  # two "you", not the "them"
         set_done(self.dir, load_todos(self.dir)[0].key, True)
         self.assertEqual(open_count(self.dir), 1)
+
+    def test_a_meeting_with_no_commitments_has_no_open_to_do(self):
+        sync_todos(
+            self.dir,
+            "# T\n\n## Action items\n"
+            "- No commitments were made. The next talk is in two weeks.\n",
+        )
+        self.assertEqual(open_count(self.dir), 0)
 
     def test_corrupt_file_is_not_fatal(self):
         (self.dir / "todos.json").write_text("{not json")

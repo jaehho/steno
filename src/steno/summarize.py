@@ -66,7 +66,8 @@ tag. Use only ids that appear in the transcript; never invent one. The tag is \
 the last thing on the bullet. The title, headings and the `**You**`, \
 `**Them**` and `**Unassigned**` lines take none. Tags change nothing else: a \
 section with nothing for it is still left out, and no bullet is written just \
-to have lines to cite.
+to have lines to cite, nor one that says there is nothing ("No commitments \
+were made").
 Example of the format only: the lines `[L40 02:11] them: can you send the \
 usage figures by Friday?` and `[L41 02:15] you: yes, Thursday` give the \
 bullet `- Send the usage figures by Friday [L40-41]`.
