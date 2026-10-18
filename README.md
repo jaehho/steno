@@ -121,12 +121,18 @@ markdown, put it away (Archive, below), or delete it. Right-clicking a meeting i
 to your desktop trash, all of it together, recoverable from there.
 
 The Ask box answers with the model named under it, the summary's model until
-you choose another. Click the name for the choices: the default, the
-provider's presets, the models it lists at its `/models` endpoint, and
-**Custom…** for an id you type. The list is fetched once per run, the first time
-the menu is opened and off the window's thread; if the provider will not give
-it, the presets are all there is and nothing says why. Speech models (`tts`,
-`asr`) are left out of it. The choice is kept in `gui.json` under
+you choose another. Click the name for the choices, a row for each model: the
+summary's model, tagged *default*, then the provider's presets, the models it
+lists at its `/models` endpoint, and **Custom…** for an id you type. The
+*default* row follows the summary's model: choose it and the Ask box changes
+with it when `STENO_MODEL` or the provider's default does. Any other row, or an
+id you type, pins that model: it answers every question until you choose again,
+whatever the default becomes. (Pinning the model that is the default today is
+typing its id under Custom…; the menu shows that as the default row, because
+the two answer alike.) The list is fetched once per run, the first time the
+menu is opened and off the window's thread; if the provider will not give it,
+the presets are all there is and nothing says why. Speech models (`tts`, `asr`)
+are left out of it. The choice is kept in `gui.json` under
 `$XDG_STATE_HOME/steno` (`~/.local/state/steno`) and applies from the next
 question; summaries do not change. `STENO_ASK_MODEL` overrides it, and the menu
 then says that instead of offering a choice that would be ignored. Each answer

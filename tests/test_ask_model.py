@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 from steno import ASK_MODEL_ENV, ask_model, resolve_ask_model
-from steno.gui.askmodel import choice_rows
+from steno.gui.askmodel import choice_rows, row_in_force
 from tests.test_sidebar_menu import ROOT, SCRUBBED, start_broadway
 
 
@@ -43,9 +43,18 @@ class TestChoices(unittest.TestCase):
     def test_the_default_comes_first_then_presets_then_the_providers_list(self):
         rows = choice_rows("", "flash", ["flash", "pro"], ["alpha", "pro", "zed"])
         self.assertEqual(rows, [
-            ("", "Default · flash"), ("flash", "flash"), ("pro", "pro"),
-            ("alpha", "alpha"), ("zed", "zed"),
+            ("", "flash"), ("pro", "pro"), ("alpha", "alpha"), ("zed", "zed"),
         ])
+
+    def test_a_model_is_one_row_however_many_places_name_it(self):
+        """The default is also a preset and in the provider's list."""
+        rows = choice_rows("flash", "flash", ["flash", "pro"], ["flash", "pro"])
+        self.assertEqual([label for _value, label in rows], ["flash", "pro"])
+
+    def test_the_default_row_saves_nothing_so_it_follows_the_default(self):
+        rows = choice_rows("", "flash", ["flash", "pro"], [])
+        self.assertEqual(rows[0][0], "")
+        self.assertEqual([v for v, _ in rows if v], ["pro"])
 
     def test_a_pick_nothing_lists_is_still_shown(self):
         rows = choice_rows("mine", "flash", ["flash"], [])
@@ -55,8 +64,22 @@ class TestChoices(unittest.TestCase):
     def test_with_no_list_the_presets_are_what_there_is(self):
         self.assertEqual(
             [v for v, _ in choice_rows("", "flash", ["flash"], [])],
-            ["", "flash"],
+            [""],
         )
+        self.assertEqual(
+            [v for v, _ in choice_rows("", "flash", ["flash", "pro"], [])],
+            ["", "pro"],
+        )
+
+    def test_a_provider_with_no_default_still_has_a_default_row(self):
+        self.assertEqual(choice_rows("", "", [], []), [("", "Default")])
+
+    def test_the_tick_is_on_the_one_row_that_answers_as_the_pick_does(self):
+        self.assertEqual(row_in_force("", "flash"), "")
+        self.assertEqual(row_in_force("pro", "flash"), "pro")
+        # Pinned to what the default is: the same model, on the same row.
+        self.assertEqual(row_in_force("flash", "flash"), "")
+        self.assertEqual(row_in_force("", ""), "")
 
 
 class TestOnBroadway(unittest.TestCase):

@@ -147,6 +147,17 @@ class AskModel(unittest.TestCase):
             if isinstance(row.get_child().get_last_child(), Gtk.Image)
         ]
 
+    def tagged(self) -> list[str | None]:
+        """The rows that say they follow the default."""
+        found = []
+        for row in self.row_widgets():
+            part = row.get_child().get_first_child()
+            while part is not None:
+                if isinstance(part, Gtk.Label) and part.get_text() == "default":
+                    found.append(row.value)
+                part = part.get_next_sibling()
+        return found
+
     def values(self) -> list[str | None]:
         return [value for value, _label in self.rows()]
 
@@ -198,15 +209,32 @@ class AskModel(unittest.TestCase):
         self.open_menu()
         self.assertEqual(
             self.rows(),
-            [("", f"Default · {DEFAULT}"), (DEFAULT, DEFAULT),
-             (PRESETS[1], PRESETS[1]), (None, "Custom…")],
+            [("", DEFAULT), (PRESETS[1], PRESETS[1]), (None, "Custom…")],
         )
         self.assertFalse(self.button.note.get_visible())
 
         self.release.set()
         self.assertTrue(wait_for(lambda: LISTED[0] in self.values()))
         self.assertEqual(
-            self.values(), ["", *PRESETS, *LISTED, None])
+            self.values(), ["", PRESETS[1], *LISTED, None])
+
+    def test_a_model_is_one_row_and_only_the_default_one_is_tagged(self):
+        """The default is a preset too, and the provider lists it: it is
+        still a single row, and says it is the one that follows."""
+        self.listing = [*LISTED, DEFAULT]
+        self.open_menu()
+        self.assertTrue(wait_for(lambda: LISTED[0] in self.values()))
+        self.assertEqual(self.values().count(DEFAULT), 0)
+        self.assertEqual([label for _v, label in self.rows()].count(DEFAULT), 1)
+        self.assertEqual(self.tagged(), [""])
+        self.assertEqual(self.marked(), [""])
+
+    def test_a_pick_of_the_default_model_is_that_row_not_a_second_one(self):
+        prefs.save_ask_model(DEFAULT)
+        self.button.refresh()
+        self.open_menu()
+        self.assertEqual(self.marked(), [""])
+        self.assertEqual([label for _v, label in self.rows()].count(DEFAULT), 1)
 
     def test_the_list_is_fetched_once_per_run(self):
         self.open_menu()
@@ -222,7 +250,7 @@ class AskModel(unittest.TestCase):
         self.open_menu()
         self.assertTrue(wait_for(lambda: self.fetches == 1))
         settle()
-        self.assertEqual(self.values(), ["", *PRESETS, None])
+        self.assertEqual(self.values(), ["", PRESETS[1], None])
         self.assertFalse(self.button.note.get_visible())
 
         self.button.popover.popdown()
