@@ -89,6 +89,16 @@ class TestSummaryParsing(unittest.TestCase):
         self.assertFalse(has_body("# Vendor Pricing Call"))
         self.assertFalse(has_body("# Vendor Pricing Call\n\n  \n"))
 
+    def test_a_marker_alone_is_not_a_body(self):
+        self.assertFalse(has_body("# T\n\n<!--cite 1-5-->\n"))
+        self.assertFalse(has_body("# T <!--cite 1-->\n"))
+        self.assertTrue(has_body("# T\n\n- x <!--cite 1-5-->\n"))
+
+    def test_the_title_never_carries_a_marker_the_body_keeps_its_own(self):
+        s = parse_summary("# Pricing call <!--cite 1-->\n\n- x <!--cite 1-5-->")
+        self.assertEqual(s.title, "Pricing call")
+        self.assertIn("<!--cite 1-5-->", s.body)
+
     def test_a_section_counts_as_a_body(self):
         self.assertTrue(has_body("# T\n\n## TL;DR\n- x"))
         self.assertTrue(has_body("# T\n\nThey agreed on Thursday."))
@@ -105,6 +115,10 @@ class TestHasSummary(unittest.TestCase):
     def test_title_only_is_not_summarized(self):
         """Otherwise `steno status` reports done and never retries it."""
         (self.a / "summary.md").write_text("# Only a title\n")
+        self.assertFalse(has_summary(self.a))
+
+    def test_a_marker_only_summary_is_not_summarized(self):
+        (self.a / "summary.md").write_text("# T\n\n<!--cite 1-5-->\n")
         self.assertFalse(has_summary(self.a))
 
     def test_a_real_summary_counts(self):

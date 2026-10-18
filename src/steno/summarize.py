@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claude, data_dir
+from . import citations, claude, data_dir
 from .cost import prerecorded_cost, stream_cost
 from .redact import redact_text
 from .speakers import label as speaker_label
@@ -172,11 +172,15 @@ def format_for_model(
 
 
 def parse_summary(text: str) -> Summary:
-    """Split the leading `# title` off the body; fall back to a generic title."""
+    """Split the leading `# title` off the body; fall back to a generic title.
+
+    The body keeps its citation markers, since it is what summary.md holds;
+    the title never carries one."""
     body = text.strip()
     lines = body.splitlines()
     if lines and lines[0].startswith("# "):
-        return Summary(title=lines[0][2:].strip(), body=body)
+        title = citations.strip(lines[0][2:]).strip()
+        return Summary(title=title, body=body)
     return Summary(title="Untitled meeting", body=body)
 
 
@@ -184,9 +188,10 @@ def has_body(text: str) -> bool:
     """False when all that came back is a title (or nothing at all).
 
     A flash model sometimes stops after `# Title`. That is a failed summary, not
-    a short one: the page strips the title and would show an empty body.
+    a short one: the page strips the title and would show an empty body. A
+    line that is only a citation marker is not a body either.
     """
-    lines = text.strip().splitlines()
+    lines = citations.strip(text).strip().splitlines()
     if lines and lines[0].startswith("# "):
         lines = lines[1:]
     return any(line.strip() for line in lines)

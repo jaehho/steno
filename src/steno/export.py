@@ -13,6 +13,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from . import citations
 from .notes import Todo, load_notes, load_todos
 from .playback import display_offset, format_offset, session_start
 from .speakers import label as speaker_label
@@ -70,10 +71,13 @@ def default_filename(session_dir: Path) -> str:
 
 
 def _read_summary(session_dir: Path) -> str:
+    """The summary with each citation marker written out as `[mm:ss]`: a
+    copy leaves the app, and the marker is a comment only steno reads."""
     try:
-        return (session_dir / SUMMARY_FILENAME).read_text(errors="replace")
+        text = (session_dir / SUMMARY_FILENAME).read_text(errors="replace")
     except OSError:
         return ""
+    return citations.to_refs(text)
 
 
 def _session_datetime(session_dir: Path) -> datetime:
@@ -138,7 +142,8 @@ def _action_items(todos: list[Todo]) -> str:
         lines.append(f"**{label}**")
         for t in items:
             mark = "x" if t.done else " "
-            lines.append(f"- [{mark}] {t.text}")
+            ref = citations.refs(t.cites)
+            lines.append(f"- [{mark}] {t.text}" + (f" {ref}" if ref else ""))
     return "\n".join(lines)
 
 

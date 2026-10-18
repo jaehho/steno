@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from .. import citations
+
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
 MIN_WRAP_PARTS = 3  # token + two spans before wrapping kicks in
@@ -115,10 +117,11 @@ def summary_body(md: str, has_todos: bool) -> str:
 
     Action items are only dropped when the to-do list really has them; a
     summary whose items failed to parse keeps them, rather than losing them.
+    Citation markers are not text: they are stripped before anything is shown.
     """
     out: list[str] = []
     skipping = False
-    for raw in md.splitlines():
+    for raw in citations.strip(md).splitlines():
         line = raw.rstrip()
         if line.startswith(TITLE_PREFIX):
             continue

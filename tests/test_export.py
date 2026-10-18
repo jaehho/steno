@@ -96,6 +96,28 @@ class TestMeetingMarkdown(unittest.TestCase):
         self.assertNotIn("- Revised quote next week", md)
         self.assertIn("- [x] Send the usage figures by Friday", md)
 
+    def test_citations_are_written_out_as_stamps(self):
+        """A copy leaves the app: the marker is a comment only steno reads."""
+        marked = SUMMARY.replace(
+            "revised numbers.", "revised numbers. <!--cite 201-221,460-->"
+        )
+        d = _session(
+            self.root,
+            transcript_jsonl=_rows(*ROWS),
+            summary_md=marked,
+            meta_json=json.dumps({"started_at": 1000.0, "title": "Pricing"}),
+            todos_json=json.dumps([
+                {"text": "Send the usage figures by Friday", "owner": "you",
+                 "cites": [[75, 80]]},
+                {"text": "Draft the comparison table", "owner": "you"},
+            ]),
+        )
+        md = meeting_markdown(d)
+        self.assertNotIn("cite", md)
+        self.assertIn("- They will send revised numbers. [03:21, 07:40]", md)
+        self.assertIn("- [ ] Send the usage figures by Friday [01:15]", md)
+        self.assertIn("- [ ] Draft the comparison table\n", md)
+
     def test_summary_action_items_kept_when_there_are_no_todos(self):
         d = _session(
             self.root,

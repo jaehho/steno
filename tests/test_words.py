@@ -94,6 +94,17 @@ class TestSummary(unittest.TestCase):
         body = words.summary_body(SUMMARY, has_todos=False)
         self.assertIn("rerun the baseline", body)
 
+    def test_citation_markers_are_not_shown(self):
+        marked = SUMMARY.replace(
+            "Out of distribution?", "Out of distribution? <!--cite 12-30,41-->"
+        ).replace("appendix.", "appendix. <!--cite 5-->")
+        for has_todos in (True, False):
+            self.assertEqual(
+                words.summary_body(marked, has_todos),
+                words.summary_body(SUMMARY, has_todos),
+            )
+            self.assertNotIn("cite", words.summary_body(marked, has_todos))
+
     def test_markup_escapes_before_formatting(self):
         self.assertEqual(words.markup("- **a** & <b>"), "•  <b>a</b> &amp; &lt;b&gt;")
         self.assertEqual(words.markup("## Decisions"), "<b>Decisions</b>")
@@ -143,6 +154,15 @@ class TestSearchLocate(unittest.TestCase):
 
     def test_miss_returns_none(self):
         self.assertIsNone(self.session.locate("quantum"))
+
+    def test_a_citation_marker_is_not_a_word_to_search_for(self):
+        (self.dir / "summary.md").write_text(
+            "# Budget chat\n\n- We agreed. <!--cite 1-2-->\n"
+        )
+        session = type(self.session)(self.dir)
+        self.assertEqual(session.locate("agreed")["where"], "summary")
+        for query in ("cite", "<!--", "1-2"):
+            self.assertIsNone(session.locate(query))
 
     def test_matches_delegates_to_locate(self):
         self.assertTrue(self.session.matches("roadmap"))
