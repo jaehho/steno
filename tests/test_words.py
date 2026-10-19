@@ -124,6 +124,22 @@ class TestArchiveWording(unittest.TestCase):
         self.assertTrue(closed.startswith("Closed when"))
         self.assertEqual(words.put_away_notes(False, False), [])
 
+
+class TestJoinedToast(unittest.TestCase):
+    def test_it_says_where_the_later_half_went(self):
+        self.assertEqual(
+            words.joined_toast("Op-amp Q&A"),
+            "Joined into “Op-amp Q&A”. The later half is in the trash.",
+        )
+
+    def test_a_half_that_could_not_be_trashed_does_not_claim_it_was(self):
+        self.assertEqual(
+            words.joined_toast("Op-amp Q&A", trashed=False),
+            "Joined into “Op-amp Q&A”.",
+        )
+
+
+class TestEmptyArchive(unittest.TestCase):
     def test_the_empty_page_counts_the_meetings_put_away(self):
         title, description = words.nothing_open(0)
         self.assertEqual(title, "No meetings yet")

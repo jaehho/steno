@@ -37,6 +37,7 @@ from ..events import (
     MeetingStarted,
     SummaryReady,
 )
+from ..merge import previous_session
 from ..session import paused_until
 from ..state import PAUSE_CHOICES
 from ..summarize import load_records
@@ -343,7 +344,11 @@ class Window(Adw.ApplicationWindow):
         # A new model closes a menu that is open, and this runs every
         # second: only when the offer changes.
         if isinstance(item, Session) and (
-            key := (item.archived, item.has_notes)
+            key := (
+                item.archived,
+                item.has_notes,
+                previous_session(item.dir) is not None,
+            )
         ) != self._menu_key:
             self._menu_key = key
             self.meeting_menu.set_menu_model(meeting_menu_model(*key))

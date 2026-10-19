@@ -153,6 +153,14 @@ def put_away_notes(closed: bool, unclosed: bool, name: str = "") -> list[str]:
     return lines
 
 
+def joined_toast(title: str, trashed: bool = True) -> str:
+    """What joining two halves says it did. The later folder's fate is
+    the part that is not obvious from the list: one row is gone because
+    it is inside the earlier meeting now, not deleted by mistake."""
+    said = f"Joined into “{title}”"
+    return said + (". The later half is in the trash." if trashed else ".")
+
+
 def unarchived_toast(title: str, filed: int, failed: int = 0) -> str:
     """What bringing a meeting back says it did to its to-dos, "" when
     there was nothing to say: no asst task came back with it."""

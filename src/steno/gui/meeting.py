@@ -23,6 +23,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 from .. import asstlink, citations, projectnotes
 from ..cost import SUMMARY_GUESS, format_usd, prerecorded_cost
 from ..export import default_filename, meeting_markdown
+from ..merge import merge_sessions, moved_to_trash, previous_session
 from ..notes import (
     Dropped,
     Restored,
@@ -52,6 +53,7 @@ from ..summarize import (
     list_projects,
     load_meta,
     load_records,
+    load_title,
     projects_root,
     save_project,
     set_archived,
@@ -184,6 +186,7 @@ class MeetingPage(Gtk.Box):
             ("show-notes", self._show_notes),
             ("summarize", self._confirm_summarize),
             ("realign", self._confirm_realign),
+            ("merge", self._confirm_merge),
             ("archive", self._archive),
             ("unarchive", self._unarchive),
             ("delete-audio", self._confirm_delete_audio),
@@ -475,10 +478,23 @@ class MeetingPage(Gtk.Box):
             and s.dir != self._recording_dir()
         )
 
+    def _can_merge(self) -> bool:
+        """Join is offered when there is an earlier meeting to join into,
+        and not for the folder being recorded right now."""
+        s = self.current
+        return (
+            s is not None
+            and s.dir != self._recording_dir()
+            and previous_session(s.dir) is not None
+        )
+
     def _update_actions(self) -> None:
         """Switch off what the open meeting cannot do right now."""
         self.actions.lookup_action("summarize").set_enabled(
             self._can_summarize()
+        )
+        self.actions.lookup_action("merge").set_enabled(
+            self._can_merge()
         )
         self.actions.lookup_action("archive").set_enabled(
             self._can_archive()
@@ -1290,6 +1306,54 @@ class MeetingPage(Gtk.Box):
         ):
             self._toast(said)
         return GLib.SOURCE_REMOVE
+
+    def _confirm_merge(self) -> None:
+        s = self.current
+        if s is None or not self._can_merge():
+            return
+        earlier = previous_session(s.dir)
+        if earlier is None:
+            return
+        title = load_title(earlier) or earlier.name
+        self._dialog(
+            "Join this meeting with the one before?",
+            "They look like one conversation that was split when the app "
+            f"restarted. “{title}” keeps its name; this one's audio and "
+            "transcript are joined in, and its folder goes to the trash.\n\n"
+            "The summary is written again so the citations match.",
+            "Join them",
+            lambda: self._merge(s, earlier),
+            destructive=False,
+        )
+
+    def _merge(self, s: Session, earlier: Path) -> None:
+        """Join `s` into the meeting before it, then show that one.
+
+        The later folder's project pages go first, the way a delete does:
+        a half that is gone from the archive must not stay in the project.
+        """
+        gone = self._take_out_of_project(s)
+        if gone is None:
+            return
+        self.stop_playback()
+        self.notes.bind(None)
+        try:
+            result = merge_sessions(earlier, s.dir)
+        except ValueError as e:
+            self._toast(str(e))
+            return
+        self._on_deleted(s.dir)
+        if self._rewriter is not None:
+            self._rewriter.changed(earlier)
+        kept = Session(earlier)
+        self.load(kept)
+        self._on_session_changed(kept)
+        self._toast(
+            words.joined_toast(
+                kept.title or kept.dir.name, moved_to_trash(result)
+            )
+        )
+        self._summarize(kept)
 
     def _confirm_delete(self) -> None:
         s = self.current

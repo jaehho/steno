@@ -115,10 +115,17 @@ what someone else promised, kept as a reminder. Only the first is counted, in
 the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
 still owe across every meeting; a row opens its meeting. The ⋯ menu acts on
 the meeting you are looking at: summarize it again, re-time it against its
-audio, drop the audio but keep the words, copy or save the meeting as
-markdown, put it away (Archive, below), or delete it. Right-clicking a meeting in the list (or `Menu` /
+audio, join it with the meeting before, drop the audio but keep the words,
+copy or save the meeting as markdown, put it away (Archive, below), or
+delete it. Right-clicking a meeting in the list (or `Menu` /
 `Shift+F10` on it) opens that meeting and shows the same menu. Deleting goes
 to your desktop trash, all of it together, recoverable from there.
+
+If a crash mid-call (the meeting app dies, or you re-join from another
+client) left one conversation as two meetings, open the later half and choose
+**Join with the meeting before this…**. The earlier folder keeps its name and
+holds both transcripts and both recordings on one timeline; the later folder
+goes to the trash; the summary is written again so its citations match.
 
 The Ask box answers with the model named under it, the summary's model until
 you choose another. Click the name for the choices, a row for each model: the

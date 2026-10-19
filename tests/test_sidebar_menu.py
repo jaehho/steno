@@ -68,6 +68,20 @@ class TestMenuModel(unittest.TestCase):
                 menu_actions(meeting_menu_model(archived, has_notes=True)),
             )
 
+    def test_joining_is_offered_only_when_there_is_a_meeting_before(self):
+        self.assertNotIn("meeting.merge", menu_actions(meeting_menu_model()))
+        joined = menu_actions(meeting_menu_model(has_previous=True))
+        self.assertIn("meeting.merge", joined)
+        self.assertEqual(
+            joined.index("meeting.merge"),
+            joined.index("meeting.realign") + 1,
+        )
+        for archived in (False, True):
+            self.assertIn(
+                "meeting.merge",
+                menu_actions(meeting_menu_model(archived, has_previous=True)),
+            )
+
     def test_archiving_is_not_next_to_the_deletes(self):
         for archived in (False, True):
             menu = meeting_menu_model(archived)

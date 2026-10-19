@@ -38,10 +38,13 @@ EXPECTED = [
     "meeting.project",
     "meeting.summarize",
     "meeting.realign",
+    "meeting.merge",
     "meeting.archive",
     "meeting.delete-audio",
     "meeting.delete",
 ]
+# The oldest meeting has nothing before it to join with.
+OLDEST = [name for name in EXPECTED if name != "meeting.merge"]
 
 
 def setUpModule():
@@ -139,7 +142,8 @@ class TestRowMenu(unittest.TestCase):
         self.assertIsInstance(session, Session)
         self.assertEqual(menu_actions(row_menu(session)), EXPECTED)
         self.assertEqual(
-            labels(row_menu(session)), labels(meeting_menu_model())
+            labels(row_menu(session)),
+            labels(meeting_menu_model(has_previous=True)),
         )
 
     def test_the_meeting_in_progress_offers_nothing(self):
@@ -157,7 +161,7 @@ class TestRowMenu(unittest.TestCase):
         menu = self.sidebar._menu
         self.assertIsInstance(menu, Gtk.PopoverMenu)
         self.assertIs(menu.get_parent(), self.rows[2])
-        self.assertEqual(menu_actions(menu.get_menu_model()), EXPECTED)
+        self.assertEqual(menu_actions(menu.get_menu_model()), OLDEST)
 
     def test_delete_stays_last_in_its_own_section(self):
         right_click(self.rows[1])

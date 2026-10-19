@@ -22,6 +22,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from .. import citations, projectnotes
 from ..cost import format_meter, prerecorded_cost, stream_cost
+from ..merge import previous_session
 from ..notes import ensure_todos, open_count
 from ..summarize import (
     SUMMARY_FILENAME,
@@ -163,7 +164,11 @@ def row_menu(item: Item | None) -> Gio.Menu | None:
     """
     if not isinstance(item, Session):
         return None
-    return meeting_menu_model(archived=item.archived, has_notes=item.has_notes)
+    return meeting_menu_model(
+        archived=item.archived,
+        has_notes=item.has_notes,
+        has_previous=previous_session(item.dir) is not None,
+    )
 
 
 class Sidebar(Gtk.Box):
