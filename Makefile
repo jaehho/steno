@@ -4,6 +4,9 @@
 	hypr unhypr autostart unautostart waybar unwaybar \
 	install uninstall package aur release status clean
 
+PREFIX  ?= $(HOME)/.local
+DATADIR ?= $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
+
 help:            ## this list
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) \
 	  | sed 's/:.*## /\t/' | expand -t14
@@ -34,25 +37,37 @@ venv:            ## (re)create .venv - needed after moving the checkout
 	  print("ok: window and playback are importable")'
 
 link:            ## put `steno` on PATH, running from this checkout (no sudo)
-	@mkdir -p $(HOME)/.local/bin
-	@printf '#!/bin/sh\n# steno, run from the working checkout.\n# Not `uv tool install`: that venv is isolated and can never see the system\n# python-gobject the GTK window needs. This one is --system-site-packages.\nexec %s/.venv/bin/steno "$$@"\n' "$(CURDIR)" > $(HOME)/.local/bin/steno
-	@chmod +x $(HOME)/.local/bin/steno
-	@echo "linked $(HOME)/.local/bin/steno -> $(CURDIR)"
+	@mkdir -p $(PREFIX)/bin
+	@# Written beside the destination and renamed over it: a redirect would
+	@# follow a symlink there and empty what it points at.
+	@t=$$(mktemp $(PREFIX)/bin/.steno.XXXXXX) && \
+	trap 'rm -f "$$t"' EXIT && \
+	printf '#!/bin/sh\n# steno, run from the working checkout.\n# Not `uv tool install`: that venv is isolated and can never see the system\n# python-gobject the GTK window needs. This one is --system-site-packages.\nexec "%s/.venv/bin/steno" "$$@"\n' "$(CURDIR)" > "$$t" && \
+	chmod 755 "$$t" && \
+	mv -f "$$t" $(PREFIX)/bin/steno
+	@echo "linked $(PREFIX)/bin/steno -> $(CURDIR)"
 
 unlink:          ## remove that wrapper
-	rm -f $(HOME)/.local/bin/steno
+	rm -f $(PREFIX)/bin/steno
 
-desktop:         ## launcher entry, so rofi and friends can find it
-	install -Dm644 packaging/dev.jaeho.Steno.desktop \
-		$(HOME)/.local/share/applications/dev.jaeho.Steno.desktop
+desktop:         ## launcher entry and icon, so rofi and friends can find it
+	@# Exec= gets the absolute launcher path: a desktop launcher may not
+	@# have $(PREFIX)/bin on its PATH.
+	@mkdir -p $(DATADIR)/applications
+	@t=$$(mktemp $(DATADIR)/applications/.steno.XXXXXX) && \
+	trap 'rm -f "$$t"' EXIT && \
+	sed 's#^Exec=steno #Exec=$(PREFIX)/bin/steno #' \
+		packaging/dev.jaeho.Steno.desktop > "$$t" && \
+	chmod 644 "$$t" && \
+	mv -f "$$t" $(DATADIR)/applications/dev.jaeho.Steno.desktop
 	install -Dm644 src/steno/data/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg \
-		$(HOME)/.local/share/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg
-	@update-desktop-database $(HOME)/.local/share/applications 2>/dev/null || true
+		$(DATADIR)/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg
+	@update-desktop-database $(DATADIR)/applications 2>/dev/null || true
 	@echo "installed; rofi should list Steno"
 
-undesktop:       ## remove the launcher entry
-	rm -f $(HOME)/.local/share/applications/dev.jaeho.Steno.desktop \
-		$(HOME)/.local/share/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg
+undesktop:       ## remove the launcher entry and icon
+	rm -f $(DATADIR)/applications/dev.jaeho.Steno.desktop \
+		$(DATADIR)/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg
 
 hypr:            ## start listening with the Hyprland session (this machine)
 	uv run python packaging/install-hypr.py
@@ -73,11 +88,13 @@ waybar:          ## add the recording indicator to waybar (backs up your config)
 unwaybar:        ## take the indicator back out
 	uv run python packaging/install-waybar.py --remove
 
-install:         ## build and install the Arch package (asks for sudo)
-	cd packaging && paru -Bi .
+install:         ## live launcher and entry in ~/.local for this user (no sudo)
+	@# The venv first: a failed build must not leave a launcher that points
+	@# at nothing.
+	@[ -x .venv/bin/steno ] || { echo "no .venv yet, building it"; $(MAKE) venv; }
+	@$(MAKE) --no-print-directory link desktop
 
-uninstall:       ## remove the Arch package
-	sudo pacman -Rns steno
+uninstall: unlink undesktop  ## remove them (config, sessions and notes stay)
 
 package:         ## build the Arch package without installing
 	cd packaging && makepkg -f
