@@ -1,11 +1,12 @@
 # packaging
 
-`PKGBUILD` builds the Arch package from this checkout (`make install`). It
+`PKGBUILD` builds the Arch package from this checkout (`make package`). It
 depends on GStreamer as well as GTK, because archive playback uses it directly —
 GTK's own media backend is not packaged on Arch.
 
 `dev.jaeho.Steno.desktop` is the launcher entry, with actions for recording and
-quitting. `make desktop` installs it to `~/.local/share/applications`, which is
+quitting. `make install` installs a copy to
+`~/.local/share/applications` with `Exec=` set to the live launcher, which is
 what makes rofi list it.
 
 Starting at login is opt-in and per user: the window menu's "Start at login",

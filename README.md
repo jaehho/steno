@@ -29,12 +29,10 @@ at login until you ask: turn on **Start at login** in the window's menu (or
 unless the session was started through systemd (uwsm); there, start
 `steno gui --background` from the compositor's config instead.
 
-From a checkout:
+From a checkout, which is how steno runs on the author's machine:
 
 ```sh
-make venv          # .venv on the system python, sharing its site-packages
-make link          # `steno` on PATH, running from this checkout
-make desktop       # launcher entry, so rofi lists it
+make install       # `steno` on PATH and a launcher entry, both in ~/.local; builds .venv if missing
 make hypr          # start listening with the Hyprland session
 make waybar        # recording indicator in the bar (backs up your config)
 ```
@@ -44,13 +42,18 @@ not read `~/.config/autostart`; on a desktop that does, `make autostart` (the
 same as the menu toggle) is the portable equivalent. Both are idempotent, back up what they touch, and have an
 `un` twin.
 
-Or `make install` to build the Arch package properly. Note that `uv tool
-install` does **not** work: it builds an isolated venv, and the window needs the
-system `python-gobject`, which such a venv can never see. `make venv` builds one
-that can — on `/usr/bin/python` explicitly, since `--system-site-packages`
-shares the site-packages of whichever interpreter uv picks and uv left alone
-picks its own. Moving the checkout is `make venv && make link`; nothing else
-refers to it by path.
+`make install` needs no sudo and installs no package: the launcher runs this
+checkout, so `git pull` is the update (`make venv` again after a
+dependency change). `make uninstall` removes the launcher,
+the entry and the icon and leaves your config, sessions and notes. `make
+package` builds the Arch package locally without installing it.
+
+Note that `uv tool install` does **not** work: it builds an isolated venv, and
+the window needs the system `python-gobject`, which such a venv can never see.
+`make venv` builds one that can — on `/usr/bin/python` explicitly, since
+`--system-site-packages` shares the site-packages of whichever interpreter uv
+picks and uv left alone picks its own. Moving the checkout is `make venv &&
+make install`; nothing else refers to it by path.
 
 Then set it up once:
 

@@ -1,8 +1,8 @@
 # Maintainer: Jaeho Cho <jaeho2025@gmail.com>
 #
-# Local-build PKGBUILD. From the project root:
-#   make install             # build + install (paru -Bi resolves the AUR deps)
-#   sudo pacman -R steno
+# Local-build PKGBUILD, built from this checkout. From the project root:
+#   make package             # build it; nothing is installed
+# This machine runs the checkout (`make install`) and does not install it.
 #
 # Bump `pkgver` to match pyproject.toml on each release; bump `pkgrel` when you
 # change the recipe without bumping the version.
@@ -54,7 +54,7 @@ sha256sums=()
 prepare() {
   rm -rf "$srcdir/$pkgname"
   mkdir -p "$srcdir/$pkgname"
-  cp -r "$startdir"/{src,tests,pyproject.toml,README.md,LICENSE,packaging} \
+  cp -r "$startdir/.."/{src,tests,pyproject.toml,README.md,LICENSE,packaging} \
     "$srcdir/$pkgname/"
 }
 
