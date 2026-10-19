@@ -2,7 +2,7 @@
 
 .PHONY: help run listen test lint sources watch venv link unlink desktop undesktop \
 	hypr unhypr autostart unautostart waybar unwaybar \
-	install uninstall package aur status clean
+	install uninstall package aur release status clean
 
 help:            ## this list
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) \
@@ -84,6 +84,19 @@ package:         ## build the Arch package without installing
 
 aur:             ## regenerate the AUR package's .SRCINFO
 	cd packaging/aur/steno-git && makepkg --printsrcinfo > .SRCINFO
+
+release:         ## tag v$(VERSION) so a non-`-git` package can pin a version
+	@# The tag is the only thing a pinned PKGBUILD can point at. One per
+	@# pyproject version, annotated so `git describe` is readable in --version.
+	@V=$$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml); \
+	if [ -z "$$V" ]; then echo "no version in pyproject.toml"; exit 1; fi; \
+	if git rev-parse -q --verify "refs/tags/v$$V" >/dev/null; then \
+	  echo "v$$V is already tagged ($$(git rev-parse --short v$$V))"; \
+	else \
+	  git tag -a "v$$V" -m "steno $$V"; \
+	  echo "tagged v$$V — push it with: git push origin v$$V"; \
+	fi
+	@echo "keep packaging/PKGBUILD pkgver in step with pyproject.toml"
 
 status:          ## is it running, and what does the bar say
 	@uv run steno status
