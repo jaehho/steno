@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import shutil
 import time
 from collections.abc import Callable
@@ -59,6 +60,8 @@ PAUSE_FILENAME = "paused-until"
 # The model call alone may take a quarter of an hour; the outer bound is
 # what stops a wedged job from holding the meeting forever.
 NOTES_TIMEOUT_S = 30 * 60
+
+log = logging.getLogger("steno.session")
 
 ADVISOR_PROMPT = (
     "You are a meeting assistant, consulted mid-conversation by the person "
@@ -452,14 +455,20 @@ class Engine:
             force=force,
             stall_after_s=self.notes_timeout_s,
         )
+        log.info(
+            "notes begin %s kind=%s gen=%s requested=%s force=%s",
+            session_dir.name, kind.value, job.generation, requested, force,
+        )
         self._emit_notes(job, joined=kind is BeginKind.JOINED)
         if kind is BeginKind.JOINED:
+            log.info("notes join %s gen=%s", session_dir.name, job.generation)
             return
 
         # A superseded task is still awaiting somewhere; cancel it so the
         # new generation owns the meeting alone.
         old = self._notes_tasks.get(session_dir)
         if old is not None and not old.done():
+            log.info("notes cancel prior task %s", session_dir.name)
             old.cancel()
             with contextlib.suppress(BaseException):
                 await old
@@ -475,17 +484,24 @@ class Engine:
                 timeout=self.notes_timeout_s,
             )
         except TimeoutError:
+            log.warning(
+                "notes timeout %s gen=%s after %.0fs",
+                session_dir.name, job.generation, self.notes_timeout_s,
+            )
             self._fail_notes(
                 job,
                 f"gave up after {int(self.notes_timeout_s // 60)} minutes",
             )
         except asyncio.CancelledError:
+            log.info("notes cancelled %s gen=%s", session_dir.name, job.generation)
             self._fail_notes(job, "cancelled")
             raise
         except Exception as e:
+            log.exception("notes failed %s gen=%s", session_dir.name, job.generation)
             self._fail_notes(job, str(e) or type(e).__name__)
         else:
             self._notes.finish(job, now=time.time())
+            log.info("notes written %s gen=%s", session_dir.name, job.generation)
             self._emit_notes(self._notes.get(session_dir) or job)
         finally:
             if self._notes_tasks.get(session_dir) is task:

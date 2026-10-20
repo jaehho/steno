@@ -12,6 +12,7 @@ the window is narrow - the tall one parked beside a call.
 from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
+import logging
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -49,6 +50,8 @@ from .menu import meeting_menu_model
 from .sidebar import LIVE, Session, Sidebar
 from .style import palette, stylesheet
 from .widgets import AskBox
+
+log = logging.getLogger("steno.gui")
 
 if TYPE_CHECKING:  # the app imports the window lazily; this keeps the cycle unreal
     from .app import App
@@ -464,10 +467,22 @@ class Window(Adw.ApplicationWindow):
     def _summarize(self, session_dir: Path, *, force: bool = False) -> None:
         """Write a past meeting's summary on the engine's loop, report on GTK's."""
         engine, bridge = self.app.engine, self.app.bridge
-        if engine is None or bridge is None or bridge.submit(
-            engine.summarize_now(session_dir, force=force)
-        ) is None:
+        if engine is None or bridge is None:
             self._toast("Steno isn't running, so it can't write the summary")
+            return
+        future = bridge.submit(engine.summarize_now(session_dir, force=force))
+        if future is None:
+            self._toast("Steno isn't running, so it can't write the summary")
+            return
+        # The result is not awaited here; an exception in the coroutine would
+        # die on the future and leave the page saying it is being written.
+        future.add_done_callback(self._notes_future_done)
+
+    def _notes_future_done(self, future) -> None:
+        try:
+            future.result()
+        except Exception:
+            log.exception("summarize_now raised")
 
     def _ask_live(self, question: str) -> None:
         self._submit_question(self.live.ask, question, None)

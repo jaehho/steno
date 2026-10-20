@@ -26,6 +26,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from .. import autostart, icon_dir, migrate_legacy, projectnotes
+from .. import log as steno_log
 from ..control import APP_ID
 from ..events import (
     EngineError,
@@ -94,6 +95,7 @@ class App(Adw.Application):
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
+        steno_log.configure()
         # The app icon ships inside the package, so a checkout finds it too.
         display = Gdk.Display.get_default()
         if display is not None:
