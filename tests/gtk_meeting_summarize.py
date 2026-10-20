@@ -26,11 +26,13 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk
 
 from steno.cost import SUMMARY_GUESS, format_usd, prerecorded_cost
-from steno.events import EngineError, SummaryReady
+from steno.events import NotesStatus, SummaryReady
+from steno.notesjob import NotesPhase, NotesState
 from tests.gtk_meeting_cites import CitedMeeting, click
 from tests.gtk_sidebar_menu import right_click, settle
 
 WRITING = "Writing the summary…"
+ALREADY = "Already writing the summary…"
 NEW_SUMMARY = """# Rewritten call
 
 ## Decisions
@@ -50,8 +52,12 @@ class SummarizeAgain(CitedMeeting):
 
     def setUp(self):
         super().setUp()
-        self.asked: list[Path] = []
-        self.page._on_summarize = self.asked.append
+        self.asked: list[tuple[Path, bool]] = []
+
+        def ask(folder: Path, *, force: bool = False) -> None:
+            self.asked.append((folder, force))
+
+        self.page._on_summarize = ask
         self.dialogs: list[Adw.AlertDialog] = []
         present = Adw.AlertDialog.present
 
@@ -84,6 +90,21 @@ class SummarizeAgain(CitedMeeting):
         self.page.actions.activate_action("summarize", None)
         self.choose("go")
 
+    def engine_reports(
+        self,
+        folder: Path,
+        *,
+        state: NotesState = NotesState.RUNNING,
+        phase: NotesPhase | None = NotesPhase.SUMMARIZING,
+        error: str = "",
+        joined: bool = False,
+    ) -> None:
+        """What the engine says about a notes job, as the window hears it."""
+        self.window._on_finishing_event(NotesStatus(
+            folder, state, phase=phase, error=error, joined=joined
+        ))
+        settle()
+
     def action_enabled(self) -> bool:
         return self.page.actions.lookup_action("summarize").get_enabled()
 
@@ -111,7 +132,7 @@ class TestAsking(SummarizeAgain):
         self.assertIn("project", body)
         self.assertIn("ticked", body)
         self.assertEqual(self.asked, [])
-        self.assertEqual(self.page._working, {})
+        self.assertEqual(self.page._notes, {})
         self.assertEqual((self.cited / "summary.md").read_bytes(), before)
 
     def test_cancelling_spends_nothing(self):
@@ -119,18 +140,27 @@ class TestAsking(SummarizeAgain):
         self.choose("cancel")
 
         self.assertEqual(self.asked, [])
-        self.assertEqual(self.page._working, {})
+        self.assertEqual(self.page._notes, {})
         self.assertTrue(self.action_enabled())
 
     def test_the_default_answer_is_not_to(self):
         self.page.actions.activate_action("summarize", None)
         self.assertEqual(self.dialogs[0].get_default_response(), "cancel")
 
-    def test_confirming_starts_the_summary_of_this_meeting(self):
+    def test_confirming_asks_the_engine_and_waits_for_its_word(self):
+        """The page must not claim the summary is being written until the
+        engine says a job is under way — the bug this replaced."""
         self.ask_and_confirm()
 
-        self.assertEqual(self.asked, [self.cited])
-        self.assertEqual(self.page._working, {self.cited: WRITING})
+        self.assertEqual(self.asked, [(self.cited, True)])
+        self.assertEqual(self.page._notes, {})
+
+    def test_when_the_engine_says_it_is_writing_the_page_says_so(self):
+        self.ask_and_confirm()
+        self.engine_reports(self.cited)
+
+        self.assertEqual(self.note(), WRITING)
+        self.assertFalse(self.action_enabled())
 
     def test_it_costs_more_when_your_side_was_never_transcribed(self):
         """The engine transcribes the mic first then; the price shown
@@ -158,8 +188,8 @@ class TestAsking(SummarizeAgain):
         self.assertNotIn("replaces", dialog.get_body())
         self.assertNotIn("again", dialog.get_body())
         self.choose("go")
-        self.assertEqual(self.asked, [self.plain])
-        # Nothing to keep up: the slot says what is happening.
+        self.assertEqual(self.asked, [(self.plain, False)])
+        self.engine_reports(self.plain)
         self.assertEqual(self.page.summary_label.get_text(), WRITING)
 
     def test_the_button_of_a_meeting_with_no_summary_writes_it_at_once(self):
@@ -171,7 +201,8 @@ class TestAsking(SummarizeAgain):
         button.emit("clicked")
 
         self.assertEqual(self.dialogs, [])
-        self.assertEqual(self.asked, [self.plain])
+        self.assertEqual(self.asked, [(self.plain, False)])
+        self.engine_reports(self.plain)
         self.assertEqual(self.page.summary_label.get_text(), WRITING)
         self.assertFalse(button.get_visible())
 
@@ -190,6 +221,7 @@ class TestWhileItWrites(SummarizeAgain):
         click(self.item("deposit").mark)
         self.assertEqual(self.lit(), [120, 121, 122])
         self.ask_and_confirm()
+        self.engine_reports(self.cited)
 
     def test_the_old_summary_stays_up_and_so_does_what_is_lit(self):
         self.assertEqual(
@@ -213,7 +245,7 @@ class TestWhileItWrites(SummarizeAgain):
         self.page._confirm_summarize()
 
         self.assertEqual(self.dialogs, [])
-        self.assertEqual(self.asked, [self.cited])
+        self.assertEqual(self.asked, [(self.cited, True)])
 
     def test_it_can_be_asked_for_another_meeting_meanwhile(self):
         self.open_row(1)
@@ -235,6 +267,7 @@ class TestWhenItEnds(SummarizeAgain):
     def setUp(self):
         super().setUp()
         self.ask_and_confirm()
+        self.engine_reports(self.cited)
 
     def finish(self, folder: Path) -> None:
         """What the engine leaves behind, then what the app tells the
@@ -254,7 +287,7 @@ class TestWhenItEnds(SummarizeAgain):
 
         self.assertEqual(self.titles(), ["Sign on Monday", "Budget stays"])
         self.assertEqual(self.window.page_title.get_text(), "Rewritten call")
-        self.assertEqual(self.page._working, {})
+        self.assertEqual(self.page._notes, {})
         self.assertFalse(self.page.summary_hint.get_visible())
         self.assertTrue(self.action_enabled())
 
@@ -270,7 +303,7 @@ class TestWhenItEnds(SummarizeAgain):
         self.finish(self.cited)
 
         self.assertEqual(self.titles(), before)
-        self.assertEqual(self.page._working, {})
+        self.assertEqual(self.page._notes, {})
         self.open_row(0)
         self.assertEqual(self.titles(), ["Sign on Monday", "Budget stays"])
         self.assertFalse(self.page.summary_hint.get_visible())
@@ -280,14 +313,18 @@ class TestWhenItEnds(SummarizeAgain):
         titles = self.titles()
 
         self.window._on_finishing_event(
-            EngineError("summary", "summary failed: no key",
-                        session_dir=self.cited)
+            NotesStatus(self.cited, NotesState.FAILED, error="no key")
         )
+        settle()
 
-        self.assertEqual(self.page._working, {})
+        # The failure is kept so the heading can say why, and the action
+        # stays available as the retry.
+        failed = self.page._notes[self.cited]
+        self.assertIs(failed.state, NotesState.FAILED)
+        self.assertEqual(failed.error, "no key")
         self.assertEqual((self.cited / "summary.md").read_bytes(), before)
         self.assertEqual(self.titles(), titles)
-        self.assertFalse(self.page.summary_hint.get_visible())
+        self.assertEqual(self.note(), "no key")
         self.assertTrue(self.action_enabled())
 
 
@@ -301,8 +338,9 @@ class TestFromTheRowMenu(SummarizeAgain):
         self.choose("go")
 
         self.assertEqual(self.page.current.dir, self.plain)
-        self.assertEqual(self.asked, [self.plain])
-        self.assertEqual(self.page._working, {self.plain: WRITING})
+        self.assertEqual(self.asked, [(self.plain, True)])
+        self.engine_reports(self.plain)
+        self.assertEqual(self.note(), WRITING)
 
     def test_both_menus_name_it_the_same(self):
         header = self.window.meeting_menu.get_menu_model()
@@ -339,7 +377,8 @@ class TestTheNoteBesideTheHeading(SummarizeAgain):
             dialog.get_heading(), "Summarize this meeting again?"
         )
         self.choose("go")
-        self.assertEqual(self.asked, [self.plain])
+        self.assertEqual(self.asked, [(self.plain, True)])
+        self.engine_reports(self.plain)
         self.assertEqual(self.note(), WRITING)
 
     def test_enter_on_the_focused_link_asks_too(self):
@@ -381,9 +420,13 @@ class TestTheWindowsOwnCallback(CitedMeeting):
 
     def test_it_hands_the_engine_this_meeting_on_the_bridge(self):
         sent = []
+
+        def summarize_now(folder: Path, *, force: bool = False):
+            return ("summarize_now", folder, force)
+
         self.app.engine = SimpleNamespace(
             current=None,
-            summarize_now=lambda folder: ("summarize_now", folder),
+            summarize_now=summarize_now,
         )
         self.app.bridge = SimpleNamespace(
             submit=lambda job: sent.append(job) or object()
@@ -393,15 +436,17 @@ class TestTheWindowsOwnCallback(CitedMeeting):
 
         self.confirm()
 
-        self.assertEqual(sent, [("summarize_now", self.page.current.dir)])
         self.assertEqual(
-            self.page._working, {self.page.current.dir: WRITING}
+            sent, [("summarize_now", self.page.current.dir, True)]
         )
+        # The page waits for the engine's NotesStatus; it does not claim
+        # work has started on its own.
+        self.assertEqual(self.page._notes, {})
 
     def test_with_the_listener_down_it_says_so_and_does_not_hang(self):
         self.confirm()
 
-        self.assertEqual(self.page._working, {})
+        self.assertEqual(self.page._notes, {})
         self.assertEqual(
             self.window_toasts,
             ["Steno isn't running, so it can't write the summary"],

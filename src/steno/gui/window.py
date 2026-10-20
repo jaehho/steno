@@ -31,13 +31,14 @@ from ..events import (
     AdviceDone,
     EngineError,
     Event,
-    Finalizing,
     Heard,
     MeetingEnded,
     MeetingStarted,
+    NotesStatus,
     SummaryReady,
 )
 from ..merge import previous_session
+from ..notesjob import NotesPhase, NotesState
 from ..session import paused_until
 from ..state import PAUSE_CHOICES
 from ..summarize import load_records
@@ -395,19 +396,16 @@ class Window(Adw.ApplicationWindow):
                 self.meeting.show_summary(selected)
                 self._update_header()
             else:
-                self.meeting.mark_working(event.session_dir, "")
+                self.meeting.clear_notes(event.session_dir)
             self._toast(f"Summary ready: {event.title}", open_session=event.session_dir)
-        elif isinstance(event, Finalizing):
-            if event.step.startswith(("writing", "transcrib")):
-                self.meeting.mark_working(
-                    event.session_dir, event.step[0].upper() + event.step[1:] + "…"
-                )
-            if event.step.startswith("writing"):
+        elif isinstance(event, NotesStatus):
+            self.meeting.apply_notes(event)
+            if event.phase is NotesPhase.SUMMARIZING and event.state is NotesState.RUNNING:
                 # Your side has just been merged in; show it before the summary.
                 self.meeting.refresh_transcript(event.session_dir)
         elif isinstance(event, EngineError):
             if event.where in ("summary", "transcribe"):
-                self.meeting.clear_working(event.session_dir)
+                self.meeting.clear_notes(event.session_dir)
             self._toast(f"{event.where}: {event.message}")
 
     def _begin_live(self, session_dir: Path, app: str, started_at: float) -> None:
@@ -463,13 +461,12 @@ class Window(Adw.ApplicationWindow):
         else:
             self.app.toggle_record()
 
-    def _summarize(self, session_dir: Path) -> None:
+    def _summarize(self, session_dir: Path, *, force: bool = False) -> None:
         """Write a past meeting's summary on the engine's loop, report on GTK's."""
         engine, bridge = self.app.engine, self.app.bridge
         if engine is None or bridge is None or bridge.submit(
-            engine.summarize_now(session_dir)
+            engine.summarize_now(session_dir, force=force)
         ) is None:
-            self.meeting.mark_working(session_dir, "")
             self._toast("Steno isn't running, so it can't write the summary")
 
     def _ask_live(self, question: str) -> None:

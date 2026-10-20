@@ -22,6 +22,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from .. import asstlink, citations, projectnotes
 from ..cost import SUMMARY_GUESS, format_usd, prerecorded_cost
+from ..events import NotesStatus
 from ..export import default_filename, meeting_markdown
 from ..merge import merge_sessions, moved_to_trash, previous_session
 from ..notes import (
@@ -38,6 +39,7 @@ from ..notes import (
     restore_dropped_todos,
     set_done_local,
 )
+from ..notesjob import NotesState
 from ..playback import (
     audio_duration,
     display_offset,
@@ -101,7 +103,7 @@ class MeetingPage(Gtk.Box):
         on_deleted: Callable[[Path], None],
         on_session_changed: Callable[[Session], None],
         on_toast: Callable[..., None],
-        on_summarize: Callable[[Path], None] | None = None,
+        on_summarize: Callable[..., None] | None = None,
         is_recording: Callable[[], bool] | None = None,
         recording_dir: Callable[[], Path | None] | None = None,
         rewriter: Rewriter | None = None,
@@ -116,8 +118,8 @@ class MeetingPage(Gtk.Box):
         # The folder being recorded into, if any: the one meeting that
         # cannot be put away.
         self._recording_dir = recording_dir or (lambda: None)
-        # session dir -> what is being done to it ("Writing the summary…").
-        self._working: dict[Path, str] = {}
+        # session dir -> the last notes-job status the engine reported.
+        self._notes: dict[Path, NotesStatus] = {}
         self._on_realign = on_realign
         self._on_deleted = on_deleted
         self._on_session_changed = on_session_changed
@@ -430,8 +432,13 @@ class MeetingPage(Gtk.Box):
             self.summary_label.set_visible(False)
             self.summarize_button.set_visible(False)
         else:
+            status = self._notes.get(s.dir)
             text, offer = words.summary_missing(
-                len(self._records), self._working.get(s.dir, "")
+                len(self._records),
+                state=None if status is None else status.state,
+                phase=None if status is None else status.phase,
+                error="" if status is None else status.error,
+                joined=bool(status and status.joined),
             )
             self.summary_view.clear()
             self.summary_view.set_visible(False)
@@ -450,23 +457,25 @@ class MeetingPage(Gtk.Box):
         below instead, so the heading has nothing to add.
         """
         has_summary = s.summary_path.is_file()
+        status = self._notes.get(s.dir) if has_summary else None
         note = words.summary_note(
-            self._seen, self._working.get(s.dir, "") if has_summary else ""
+            self._seen,
+            state=None if status is None else status.state,
+            phase=None if status is None else status.phase,
+            error="" if status is None else status.error,
         )
         self.summary_hint.set_markup(note)
         self.summary_hint.set_visible(bool(note))
 
     def _can_summarize(self) -> bool:
-        """Not while it is being written (a second ask would only be
-        told it is already running), and not with nothing to write it
-        from."""
+        """Not while a job is running (a second ask would only be told
+        it is already running), and not with nothing to write it from.
+        A failed job stays selectable: that button is the retry."""
         s = self.current
-        return (
-            s is not None
-            and self._on_summarize is not None
-            and bool(self._records)
-            and s.dir not in self._working
-        )
+        if s is None or self._on_summarize is None or not self._records:
+            return False
+        status = self._notes.get(s.dir)
+        return status is None or status.state is not NotesState.RUNNING
 
     def _can_archive(self) -> bool:
         """Not the meeting being recorded (its folder is still being
@@ -511,7 +520,7 @@ class MeetingPage(Gtk.Box):
         your scroll position.
         """
         self.current = s
-        self._working.pop(s.dir, None)
+        self._notes.pop(s.dir, None)
         # The batch pass of your side was merged into the transcript before
         # the summary was written; the page still shows the far side alone.
         self.refresh_transcript()
@@ -531,14 +540,14 @@ class MeetingPage(Gtk.Box):
             if active is not None:
                 self._show_cites(active, scroll=False)
 
-    def mark_working(self, session_dir: Path, text: str) -> None:
-        """Say what is being done to a meeting, or (empty text) that it is done."""
-        if text:
-            self._working[session_dir] = text
+    def apply_notes(self, status: NotesStatus) -> None:
+        """Record the engine's word on this meeting's notes job, and redraw."""
+        if status.state is NotesState.WRITTEN:
+            self._notes.pop(status.session_dir, None)
         else:
-            self._working.pop(session_dir, None)
+            self._notes[status.session_dir] = status
         current = self.current
-        if current is None or current.dir != session_dir:
+        if current is None or current.dir != status.session_dir:
             return
         if current.summary_path.is_file():
             # The summary being written over stays up, and whatever is
@@ -546,27 +555,32 @@ class MeetingPage(Gtk.Box):
             self._show_note(current)
             self._update_actions()
         else:
-            self._show_summary(current, ensure_todos(session_dir))
+            self._show_summary(current, ensure_todos(status.session_dir))
 
-    def clear_working(self, session_dir: Path | None = None) -> None:
-        """Whatever was being written failed: stop saying it is in progress.
+    def clear_notes(self, session_dir: Path | None = None) -> None:
+        """Stop saying work is under way.
 
-        For that meeting when the failure says which; otherwise for all, since
-        that is the only safe reading of an error that names none.
+        For that meeting when the failure says which; otherwise for all,
+        since that is the only safe reading of an error that names none.
         """
-        for pending in [session_dir] if session_dir is not None else list(self._working):
-            self.mark_working(pending, "")
+        doomed = [session_dir] if session_dir is not None else list(self._notes)
+        for pending in doomed:
+            self._notes.pop(pending, None)
+        current = self.current
+        if current is None or (session_dir is not None and current.dir != session_dir):
+            return
+        self._show_summary(current, ensure_todos(current.dir))
 
     def _summarize_now(self) -> None:
-        """The button of a meeting that has no summary."""
+        """The button of a meeting that has no summary, or whose last try failed."""
         if self.current is not None:
             self._summarize(self.current)
 
-    def _summarize(self, s: Session) -> None:
-        if self._on_summarize is None:
-            return
-        self.mark_working(s.dir, "Writing the summary…")
-        self._on_summarize(s.dir)
+    def _summarize(self, s: Session, *, force: bool = False) -> None:
+        """Hand the meeting to the engine. The page waits for NotesStatus
+        rather than claiming work has started: that claim was the bug."""
+        if self._on_summarize is not None:
+            self._on_summarize(s.dir, force=force)
 
     def _on_hint_link(self, _label: Gtk.Label, href: str) -> bool:
         if href != words.SUMMARIZE_AGAIN:
@@ -607,7 +621,7 @@ class MeetingPage(Gtk.Box):
             "Summarize this meeting again?" if again else "Write the summary?",
             body,
             "Summarize",
-            lambda: self._summarize(s),
+            lambda: self._summarize(s, force=again),
             destructive=False,
         )
 
@@ -1353,7 +1367,7 @@ class MeetingPage(Gtk.Box):
                 kept.title or kept.dir.name, moved_to_trash(result)
             )
         )
-        self._summarize(kept)
+        self._summarize(kept, force=True)
 
     def _confirm_delete(self) -> None:
         s = self.current

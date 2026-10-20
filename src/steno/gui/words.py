@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from .. import citations
+from ..notesjob import NotesPhase, NotesState
 from ..playback import format_offset
 
 if TYPE_CHECKING:
@@ -244,29 +245,56 @@ def status_card(
     return "Listening", "Records when an app uses the mic", "Record"
 
 
-def summary_missing(lines: int, working: str = "") -> tuple[str, bool]:
+def notes_running_text(phase: NotesPhase | None) -> str:
+    """What to say while a notes job is under way."""
+    if phase is NotesPhase.TRANSCRIBING:
+        return "Transcribing your side…"
+    return "Writing the summary…"
+
+
+def summary_missing(
+    lines: int,
+    *,
+    state: NotesState | None = None,
+    phase: NotesPhase | None = None,
+    error: str = "",
+    joined: bool = False,
+) -> tuple[str, bool]:
     """(what the summary slot says, whether to offer "Summarize now").
 
     A meeting with no summary is a failed meeting, not a quiet one, so the
-    page says which of three things is true: it is being written, there was
-    nothing to write it from, or it can be written now.
+    page says which is true: work is under way (and whose), it failed and
+    why, there was nothing to write it from, or it can be written now.
+    A failure still offers the button — that is the retry.
     """
-    if working:
-        return working, False
+    if state is NotesState.RUNNING:
+        text = notes_running_text(phase)
+        return (f"Already {text[0].lower()}{text[1:]}" if joined else text), False
+    if state is NotesState.FAILED:
+        detail = error or "no reason given"
+        return f"No summary: {detail}", True
     if lines <= 0:
         return "Nothing was transcribed in this meeting, so there is no summary.", False
     return "No summary yet.", True
 
 
-def summary_note(seen: citations.Coverage, working: str = "") -> str:
+def summary_note(
+    seen: citations.Coverage,
+    *,
+    state: NotesState | None = None,
+    phase: NotesPhase | None = None,
+    error: str = "",
+) -> str:
     """Pango markup for the quiet line beside the Summary heading.
 
-    What is being done to the summary, else (for one whose points cite
-    nothing) how to fix that. Empty when there is nothing to say: a
-    summary with nothing to cite is not nagged about.
+    What is being done to the summary, why the last try failed, else (for
+    one whose points cite nothing) how to fix that. Empty when there is
+    nothing to say: a summary with nothing to cite is not nagged about.
     """
-    if working:
-        return escape(working)
+    if state is NotesState.RUNNING:
+        return escape(notes_running_text(phase))
+    if state is NotesState.FAILED:
+        return escape(error or "summary failed")
     if seen.items and not seen.cited:
         return (
             f'No citations. <a href="{SUMMARIZE_AGAIN}" '
