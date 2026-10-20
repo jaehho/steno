@@ -16,10 +16,11 @@ from steno import session
 from steno.events import (
     AdviceDone,
     EngineError,
-    Finalizing,
     MeetingEnded,
+    NotesStatus,
     SummaryReady,
 )
+from steno.notesjob import NotesState
 from steno.summarize import Summary, load_meta
 
 
@@ -58,11 +59,11 @@ class TestBusy(unittest.TestCase):
             nonlocal gate
             gate = asyncio.Event()
 
-            async def finish(_rec):
+            async def pipeline(_dir, _job, _rec):
                 seen.append(engine.busy)
                 await gate.wait()
 
-            engine._finish = finish
+            engine._notes_pipeline = pipeline
             engine.current = self.recording()
             ended = asyncio.create_task(engine._end())
             await asyncio.sleep(0.05)  # inside _end's settle sleep
@@ -105,7 +106,7 @@ class TestBusy(unittest.TestCase):
 
         engine._mic_pass = mic_pass
         with mock.patch.object(session, "write_transcripts", write):
-            asyncio.run(engine._finish(self.recording()))
+            asyncio.run(engine._run_notes_job(self.root, rec=self.recording()))
         self.assertEqual(seen, [True])
         self.assertNotIn("mic_pending", load_meta(self.root))
 
@@ -122,18 +123,18 @@ class TestBusy(unittest.TestCase):
             return [], False
 
         engine._mic_pass = mic_pass
-        asyncio.run(engine._finish(self.recording()))
+        asyncio.run(engine._run_notes_job(self.root, rec=self.recording()))
         self.assertTrue(load_meta(self.root)["mic_pending"])
 
     def test_a_failed_finish_is_reported_and_clears_busy(self):
         engine, events = make_engine(self.root)
 
-        async def finish(_rec):
+        async def pipeline(_dir, _job, _rec):
             msg = "boom"
             raise RuntimeError(msg)
 
         async def scenario():
-            engine._finish = finish
+            engine._notes_pipeline = pipeline
             engine.current = self.recording()
             await engine._end()
             await asyncio.gather(*engine._finishers)
@@ -193,6 +194,9 @@ class TestSummarizeNow(unittest.TestCase):
         self.root = Path(tmp.name)
         self.dir = self.root / "20260101-100000"
         self.dir.mkdir()
+        (self.dir / "transcript.jsonl").write_text(
+            '{"ts": 5.0, "speaker": "them", "text": "hi"}\n'
+        )
 
     def test_emits_a_requested_summary(self):
         engine, events = make_engine(self.root)
@@ -206,14 +210,18 @@ class TestSummarizeNow(unittest.TestCase):
             asyncio.run(engine.summarize_now(self.dir))
         self.assertEqual(busy, [True])
         self.assertFalse(engine.busy)
-        self.assertIsInstance(events[0], Finalizing)
+        running = next(e for e in events if isinstance(e, NotesStatus))
+        self.assertIs(running.state, NotesState.RUNNING)
+        self.assertFalse(running.joined)
         ready = next(e for e in events if isinstance(e, SummaryReady))
         self.assertTrue(ready.requested)
         self.assertEqual(ready.title, "Plan")
 
-    def test_a_meeting_being_finished_is_not_summarized_twice(self):
+    def test_a_live_job_is_joined_not_summarized_twice(self):
         engine, events = make_engine(self.root)
-        engine._notes_in_progress.add(self.dir)
+        engine._notes.begin(
+            self.dir, now=time.time(), requested=False, stall_after_s=60.0
+        )
         called = []
 
         async def fake(*_a):
@@ -223,7 +231,45 @@ class TestSummarizeNow(unittest.TestCase):
         with mock.patch.object(session, "summarize_session", fake):
             asyncio.run(engine.summarize_now(self.dir))
         self.assertEqual(called, [])
-        self.assertIsInstance(events[0], Finalizing)  # the page says "writing"
+        (status,) = [e for e in events if isinstance(e, NotesStatus)]
+        self.assertIs(status.state, NotesState.RUNNING)
+        self.assertTrue(status.joined)  # the page says "already writing"
+
+    def test_force_replaces_a_live_job(self):
+        engine, events = make_engine(self.root)
+        engine._notes.begin(
+            self.dir, now=time.time(), requested=False, stall_after_s=60.0
+        )
+        called = []
+
+        async def fake(*_a):
+            called.append(1)
+            return Summary(title="x", body="# x")
+
+        with mock.patch.object(session, "summarize_session", fake):
+            asyncio.run(engine.summarize_now(self.dir, force=True))
+        self.assertEqual(called, [1])
+        statuses = [e for e in events if isinstance(e, NotesStatus)]
+        self.assertEqual(statuses[0].generation, 2)
+        self.assertFalse(statuses[0].joined)
+        self.assertTrue(any(isinstance(e, SummaryReady) for e in events))
+
+    def test_a_stalled_job_is_replaced_without_force(self):
+        engine, events = make_engine(self.root)
+        engine.notes_timeout_s = 30.0
+        engine._notes.begin(
+            self.dir, now=time.time() - 1000, requested=False, stall_after_s=30.0
+        )
+        called = []
+
+        async def fake(*_a):
+            called.append(1)
+            return Summary(title="x", body="# x")
+
+        with mock.patch.object(session, "summarize_session", fake):
+            asyncio.run(engine.summarize_now(self.dir))
+        self.assertEqual(called, [1])
+        self.assertTrue(any(isinstance(e, SummaryReady) for e in events))
 
     def test_an_orphaned_meeting_gets_its_mic_pass_first(self):
         engine, events = make_engine(self.root)
@@ -263,6 +309,31 @@ class TestSummarizeNow(unittest.TestCase):
         self.assertIn("host down", errors[0].message)
         self.assertFalse(engine.busy)
         self.assertFalse(any(isinstance(e, MeetingEnded) for e in events))
+        failed = next(
+            e for e in events
+            if isinstance(e, NotesStatus) and e.state is NotesState.FAILED
+        )
+        self.assertIn("host down", failed.error)
+
+    def test_a_wedged_job_is_cut_off_and_the_meeting_can_be_tried_again(self):
+        engine, events = make_engine(self.root)
+        engine.notes_timeout_s = 0.05
+
+        async def hang(*_a):
+            await asyncio.sleep(10)
+
+        with mock.patch.object(session, "summarize_session", hang):
+            asyncio.run(engine.summarize_now(self.dir))
+        failed = next(
+            e for e in events
+            if isinstance(e, NotesStatus) and e.state is NotesState.FAILED
+        )
+        self.assertIn("gave up", failed.error)
+        self.assertFalse(engine.busy)
+        # The next ask is a fresh start, not a join on the dead job.
+        status = engine._notes.get(self.dir)
+        assert status is not None
+        self.assertIs(status.state, NotesState.FAILED)
 
 
 class TestAsking(unittest.TestCase):

@@ -29,12 +29,19 @@ from .events import (
     AdviceDone,
     EngineError,
     Event,
-    Finalizing,
     Heard,
     MeetingEnded,
     MeetingStarted,
+    NotesStatus,
     StatusChanged,
     SummaryReady,
+)
+from .notesjob import (
+    BeginKind,
+    NotesJob,
+    NotesPhase,
+    NotesState,
+    NotesTracker,
 )
 from .playback import session_start
 from .redact import redact_text
@@ -48,6 +55,10 @@ from .summarize import (
 from .transcribe import Utterance, stream_speaker, transcribe_file
 
 PAUSE_FILENAME = "paused-until"
+# One notes job (mic pass + summary) gets this long before it is cut off.
+# The model call alone may take a quarter of an hour; the outer bound is
+# what stops a wedged job from holding the meeting forever.
+NOTES_TIMEOUT_S = 30 * 60
 
 ADVISOR_PROMPT = (
     "You are a meeting assistant, consulted mid-conversation by the person "
@@ -136,6 +147,7 @@ class Engine:
         root: Path | None = None,
         start_hold_s: float = START_HOLD_S,
         end_grace_s: float = END_GRACE_S,
+        notes_timeout_s: float = NOTES_TIMEOUT_S,
     ) -> None:
         self.emit = emit
         self.allow = allow
@@ -146,6 +158,7 @@ class Engine:
         self.brief_path = brief_path or (config_dir() / BRIEF_FILENAME)
         self.start_hold_s = start_hold_s
         self.end_grace_s = end_grace_s
+        self.notes_timeout_s = notes_timeout_s
 
         self.current: Recording | None = None
         # Post-meeting work in flight (batch transcription, a summary). `current`
@@ -153,8 +166,11 @@ class Engine:
         # cancelled the very work that makes a recording worth keeping.
         self._finalizing = 0
         self._finishers: set[asyncio.Task] = set()
-        # Meetings being turned into notes right now; one summary at a time.
-        self._notes_in_progress: set[Path] = set()
+        # One notes job per meeting, with generations so a replaced job cannot
+        # settle the newer one. See `notesjob`.
+        self._notes = NotesTracker()
+        # The task running each meeting's job, so a supersede can cancel it.
+        self._notes_tasks: dict[Path, asyncio.Task] = {}
         self.transcript: list[dict] = []
         self.queue: asyncio.Queue[Utterance] = asyncio.Queue()
         self._commands: asyncio.Queue[str] = asyncio.Queue()
@@ -368,33 +384,32 @@ class Engine:
             duration = time.time() - rec.started_at
             self.emit(MeetingEnded(rec.session_dir, duration))
             self._status("finalizing", rec.session_dir.name)
-            self._notes_in_progress.add(rec.session_dir)
-            task = asyncio.create_task(self._finalize(rec))
+            task = asyncio.create_task(
+                self._run_notes_job(rec.session_dir, rec=rec, counted=True)
+            )
         except BaseException:
             self._finalizing -= 1
             raise
         self._finishers.add(task)
         task.add_done_callback(self._finishers.discard)
 
-    async def _finalize(self, rec: Recording) -> None:
-        try:
-            await self._finish(rec)
-        except Exception as e:
-            self.emit(EngineError(
-                "summary", f"finishing the meeting failed: {e}",
-                session_dir=rec.session_dir,
-            ))
-        finally:
-            self._notes_in_progress.discard(rec.session_dir)
-            self._finalizing -= 1
-        self._settle()
-
     def _settle(self) -> None:
         """Back to listening, unless another meeting is recording or finishing."""
         if self.current is None and self._finalizing == 0:
             self._status("paused" if paused_until() else "idle")
 
-    async def summarize_now(self, session_dir: Path) -> None:
+    def _emit_notes(self, job: NotesJob, *, joined: bool = False) -> None:
+        self.emit(NotesStatus(
+            session_dir=job.session_dir,
+            state=job.state,
+            phase=job.phase if job.state is NotesState.RUNNING else None,
+            error=job.error,
+            generation=job.generation,
+            requested=job.requested,
+            joined=joined,
+        ))
+
+    async def summarize_now(self, session_dir: Path, *, force: bool = False) -> None:
         """Write (or rewrite) one past meeting's summary, on request.
 
         For a meeting whose summary never came: the model host was down, the
@@ -402,52 +417,155 @@ class Engine:
         meeting, so the to-dos and the title follow. If your side was never
         transcribed (the app was quit or killed first) that pass is done too:
         a summary of half a conversation is the failure being repaired.
+
+        A live job is joined, not started again. `force` takes the meeting
+        away from a wedged job and begins a new generation.
         """
-        if session_dir in self._notes_in_progress:
-            # Being finished right now; the summary is coming. Say so.
-            self.emit(Finalizing(session_dir, "writing the summary"))
+        await self._run_notes_job(
+            session_dir, requested=True, force=force
+        )
+
+    async def _run_notes_job(
+        self,
+        session_dir: Path,
+        *,
+        rec: Recording | None = None,
+        requested: bool = False,
+        force: bool = False,
+        counted: bool = False,
+    ) -> None:
+        """One notes job for one meeting: begin, run to an end, settle.
+
+        The only place a job is started. Joining a live one and superseding
+        a stalled one both land here, so the page never says work is under
+        way when nothing is.
+
+        `counted` means the caller has already raised `_finalizing` (the
+        end-of-meeting path does, before `current` clears) and this will
+        lower it once.
+        """
+        now = time.time()
+        kind, job = self._notes.begin(
+            session_dir,
+            now=now,
+            requested=requested,
+            force=force,
+            stall_after_s=self.notes_timeout_s,
+        )
+        self._emit_notes(job, joined=kind is BeginKind.JOINED)
+        if kind is BeginKind.JOINED:
             return
-        self._notes_in_progress.add(session_dir)
-        self._finalizing += 1
+
+        # A superseded task is still awaiting somewhere; cancel it so the
+        # new generation owns the meeting alone.
+        old = self._notes_tasks.get(session_dir)
+        if old is not None and not old.done():
+            old.cancel()
+            with contextlib.suppress(BaseException):
+                await old
+
+        if not counted:
+            self._finalizing += 1
+        task = asyncio.current_task()
+        if task is not None:
+            self._notes_tasks[session_dir] = task
         try:
-            if load_meta(session_dir).get("mic_pending") and (session_dir / "you.wav").is_file():
-                await self._repair_mic(session_dir)
-            self.emit(Finalizing(session_dir, "writing the summary"))
-            try:
-                summary = await summarize_session(
-                    session_dir, self.model, self._meeting_brief("")
-                )
-            except Exception as e:
-                self.emit(EngineError(
-                    "summary", f"summary failed: {e}", session_dir=session_dir
-                ))
-                return
-            self.emit(SummaryReady(
-                session_dir, summary.title, summary.body, requested=True
-            ))
+            await asyncio.wait_for(
+                self._notes_pipeline(session_dir, job, rec),
+                timeout=self.notes_timeout_s,
+            )
+        except TimeoutError:
+            self._fail_notes(
+                job,
+                f"gave up after {int(self.notes_timeout_s // 60)} minutes",
+            )
+        except asyncio.CancelledError:
+            self._fail_notes(job, "cancelled")
+            raise
+        except Exception as e:
+            self._fail_notes(job, str(e) or type(e).__name__)
+        else:
+            self._notes.finish(job, now=time.time())
+            self._emit_notes(self._notes.get(session_dir) or job)
         finally:
-            self._notes_in_progress.discard(session_dir)
+            if self._notes_tasks.get(session_dir) is task:
+                self._notes_tasks.pop(session_dir, None)
             self._finalizing -= 1
             self._settle()
 
-    async def _repair_mic(self, session_dir: Path) -> None:
-        existing = load_records(session_dir)
-        mine, ok = await self._mic_pass(
-            session_dir, session_start(session_dir, existing), self._load_keyterms("")
+    def _fail_notes(self, job: NotesJob, error: str) -> None:
+        """Settle the job as failed and say so, once.
+
+        The generation check inside `fail` keeps a superseded job from
+        overwriting the page after a force-retry has already started.
+        """
+        if self._notes.fail(job, error, now=time.time()):
+            self._emit_notes(self._notes.get(job.session_dir) or job)
+            self.emit(EngineError(
+                "summary", f"summary failed: {error}", session_dir=job.session_dir
+            ))
+
+    async def _notes_pipeline(
+        self, session_dir: Path, job: NotesJob, rec: Recording | None
+    ) -> None:
+        """Transcribe what is missing, merge, then write the summary.
+
+        Raises on failure; `_run_notes_job` turns that into a failed job.
+        The SummaryReady event is emitted here, once the file exists.
+        """
+        started_at = rec.started_at if rec is not None else session_start(
+            session_dir, load_records(session_dir)
         )
-        if not ok:
+        keyterms = rec.keyterms if rec is not None else self._load_keyterms("")
+        you_wav = session_dir / "you.wav"
+        # End of a meeting always merges your side; a later ask only does
+        # that pass when the meeting is still marked missing it.
+        need_mic = you_wav.is_file() and (
+            rec is not None or bool(load_meta(session_dir).get("mic_pending"))
+        )
+        mine: list[dict] = []
+        mic_done = True
+        if need_mic:
+            done = self._notes.beat(
+                job, phase=NotesPhase.TRANSCRIBING, now=time.time()
+            )
+            if done is None:
+                return
+            self._emit_notes(done)
+            mine, mic_done = await self._mic_pass(
+                session_dir, started_at, keyterms
+            )
+
+        records = sorted(load_records(session_dir) + mine, key=lambda r: r["ts"])
+        if not records:
+            msg = "nothing was transcribed; no summary"
+            raise ValueError(msg)
+        write_transcripts(session_dir, records)
+        if mic_done:
+            # Only now, with your lines on disk: a kill before this point
+            # leaves the meeting marked as missing your side.
+            with contextlib.suppress(OSError):
+                update_meta(session_dir, mic_pending=None)
+
+        if not self.summarize:
             return
-        records = sorted(existing + mine, key=lambda r: r["ts"])
-        if records:
-            write_transcripts(session_dir, records)
-        with contextlib.suppress(OSError):
-            update_meta(session_dir, mic_pending=None)
+
+        done = self._notes.beat(
+            job, phase=NotesPhase.SUMMARIZING, now=time.time()
+        )
+        if done is None:
+            return
+        self._emit_notes(done)
+        brief = self._meeting_brief(rec.app if rec is not None else "")
+        summary = await summarize_session(session_dir, self.model, brief)
+        self.emit(SummaryReady(
+            session_dir, summary.title, summary.body, requested=job.requested
+        ))
 
     async def _mic_pass(
         self, session_dir: Path, started_at: float, keyterms: list[str]
     ) -> tuple[list[dict], bool]:
         """Batch-transcribe your side. (records, whether it worked)."""
-        self.emit(Finalizing(session_dir, "transcribing your side"))
         try:
             mine = await transcribe_file(
                 session_dir / "you.wav", started_at, "you", keyterms=keyterms
@@ -512,45 +630,6 @@ class Engine:
                     self.emit(EngineError(
                         "engine", f"could not save the transcript: {e}", fatal=True
                     ))
-
-    # ------------------------------------------------------------- finalization
-
-    async def _finish(self, rec: Recording) -> None:
-        """Batch-transcribe the mic, merge both sides, then summarize."""
-        you_wav = rec.session_dir / "you.wav"
-        mine: list[dict] = []
-        mic_done = True
-        if you_wav.is_file():
-            mine, mic_done = await self._mic_pass(
-                rec.session_dir, rec.started_at, rec.keyterms
-            )
-
-        records = sorted(load_records(rec.session_dir) + mine, key=lambda r: r["ts"])
-        if not records:
-            self.emit(EngineError(
-                "summary", "nothing was transcribed; no summary",
-                session_dir=rec.session_dir,
-            ))
-            return
-        write_transcripts(rec.session_dir, records)
-        if mic_done:
-            # Only now, with your lines on disk: a kill before this point
-            # leaves the meeting marked as missing your side.
-            with contextlib.suppress(OSError):
-                update_meta(rec.session_dir, mic_pending=None)
-
-        if not self.summarize:
-            return
-        self.emit(Finalizing(rec.session_dir, "writing the summary"))
-        brief = self._meeting_brief(rec.app)
-        try:
-            summary = await summarize_session(rec.session_dir, self.model, brief)
-        except Exception as e:
-            self.emit(EngineError(
-                "summary", f"summary failed: {e}", session_dir=rec.session_dir
-            ))
-            return
-        self.emit(SummaryReady(rec.session_dir, summary.title, summary.body))
 
     # --------------------------------------------------------------- the advisor
 
