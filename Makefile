@@ -63,6 +63,11 @@ desktop:         ## launcher entry and icon, so rofi and friends can find it
 	install -Dm644 src/steno/data/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg \
 		$(DATADIR)/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg
 	@update-desktop-database $(DATADIR)/applications 2>/dev/null || true
+	@# Without a refreshed theme cache the bar and the notification daemon
+	@# miss the SVG and fall back to their error placeholders (waybar's
+	@# circle-with-slash, swaync's stock paper image). `-t`: a user hicolor
+	@# often has no index.theme of its own.
+	@gtk-update-icon-cache -f -t $(DATADIR)/icons/hicolor 2>/dev/null || true
 	@echo "installed; rofi should list Steno"
 
 undesktop:       ## remove the launcher entry and icon
