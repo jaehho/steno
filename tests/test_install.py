@@ -31,6 +31,8 @@ INSTALLED = {
 }
 # update-desktop-database keeps this beside every entry, not just ours.
 SHARED = "share/applications/mimeinfo.cache"
+# gtk-update-icon-cache writes this beside the icon theme, not just ours.
+ICON_CACHE = "share/icons/hicolor/icon-theme.cache"
 
 
 # The package build runs the suite from a copy with no Makefile in it.
@@ -81,7 +83,7 @@ class Install(unittest.TestCase):
         found = {}
         for path in self.scratch.rglob("*"):
             rel = path.relative_to(self.scratch).as_posix()
-            if rel == SHARED or (path.is_dir() and not path.is_symlink()):
+            if rel in {SHARED, ICON_CACHE} or (path.is_dir() and not path.is_symlink()):
                 continue
             content = path.readlink() if path.is_symlink() else \
                 path.read_bytes()

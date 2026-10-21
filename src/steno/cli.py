@@ -1066,7 +1066,11 @@ def _alert(title: str, message: str) -> None:
     if not sys.stderr.isatty() and shutil.which("notify-send"):
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(
-                ["notify-send", "-a", "Steno", title, message],
+                [
+                    "notify-send", "-a", "Steno",
+                    "-i", "dev.jaeho.Steno",
+                    title, message,
+                ],
                 timeout=5, check=False,
             )
 
