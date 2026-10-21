@@ -576,11 +576,11 @@ class MeetingPage(Gtk.Box):
         if self.current is not None:
             self._summarize(self.current)
 
-    def _summarize(self, s: Session, *, force: bool = False) -> None:
+    def _summarize(self, s: Session) -> None:
         """Hand the meeting to the engine. The page waits for NotesStatus
         rather than claiming work has started: that claim was the bug."""
         if self._on_summarize is not None:
-            self._on_summarize(s.dir, force=force)
+            self._on_summarize(s.dir)
 
     def _on_hint_link(self, _label: Gtk.Label, href: str) -> bool:
         if href != words.SUMMARIZE_AGAIN:
@@ -621,7 +621,7 @@ class MeetingPage(Gtk.Box):
             "Summarize this meeting again?" if again else "Write the summary?",
             body,
             "Summarize",
-            lambda: self._summarize(s, force=again),
+            lambda: self._summarize(s),
             destructive=False,
         )
 
@@ -1367,7 +1367,7 @@ class MeetingPage(Gtk.Box):
                 kept.title or kept.dir.name, moved_to_trash(result)
             )
         )
-        self._summarize(kept, force=True)
+        self._summarize(kept)
 
     def _confirm_delete(self) -> None:
         s = self.current

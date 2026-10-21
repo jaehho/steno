@@ -464,13 +464,13 @@ class Window(Adw.ApplicationWindow):
         else:
             self.app.toggle_record()
 
-    def _summarize(self, session_dir: Path, *, force: bool = False) -> None:
+    def _summarize(self, session_dir: Path) -> None:
         """Write a past meeting's summary on the engine's loop, report on GTK's."""
         engine, bridge = self.app.engine, self.app.bridge
         if engine is None or bridge is None:
             self._toast("Steno isn't running, so it can't write the summary")
             return
-        future = bridge.submit(engine.summarize_now(session_dir, force=force))
+        future = bridge.submit(engine.summarize_now(session_dir))
         if future is None:
             self._toast("Steno isn't running, so it can't write the summary")
             return

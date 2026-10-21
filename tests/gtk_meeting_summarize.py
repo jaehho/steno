@@ -14,6 +14,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
 import json
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -52,12 +53,8 @@ class SummarizeAgain(CitedMeeting):
 
     def setUp(self):
         super().setUp()
-        self.asked: list[tuple[Path, bool]] = []
-
-        def ask(folder: Path, *, force: bool = False) -> None:
-            self.asked.append((folder, force))
-
-        self.page._on_summarize = ask
+        self.asked: list[Path] = []
+        self.page._on_summarize = self.asked.append
         self.dialogs: list[Adw.AlertDialog] = []
         present = Adw.AlertDialog.present
 
@@ -152,7 +149,7 @@ class TestAsking(SummarizeAgain):
         engine says a job is under way — the bug this replaced."""
         self.ask_and_confirm()
 
-        self.assertEqual(self.asked, [(self.cited, True)])
+        self.assertEqual(self.asked, [self.cited])
         self.assertEqual(self.page._notes, {})
 
     def test_when_the_engine_says_it_is_writing_the_page_says_so(self):
@@ -188,7 +185,7 @@ class TestAsking(SummarizeAgain):
         self.assertNotIn("replaces", dialog.get_body())
         self.assertNotIn("again", dialog.get_body())
         self.choose("go")
-        self.assertEqual(self.asked, [(self.plain, False)])
+        self.assertEqual(self.asked, [self.plain])
         self.engine_reports(self.plain)
         self.assertEqual(self.page.summary_label.get_text(), WRITING)
 
@@ -201,7 +198,7 @@ class TestAsking(SummarizeAgain):
         button.emit("clicked")
 
         self.assertEqual(self.dialogs, [])
-        self.assertEqual(self.asked, [(self.plain, False)])
+        self.assertEqual(self.asked, [self.plain])
         self.engine_reports(self.plain)
         self.assertEqual(self.page.summary_label.get_text(), WRITING)
         self.assertFalse(button.get_visible())
@@ -245,7 +242,7 @@ class TestWhileItWrites(SummarizeAgain):
         self.page._confirm_summarize()
 
         self.assertEqual(self.dialogs, [])
-        self.assertEqual(self.asked, [(self.cited, True)])
+        self.assertEqual(self.asked, [self.cited])
 
     def test_it_can_be_asked_for_another_meeting_meanwhile(self):
         self.open_row(1)
@@ -338,7 +335,7 @@ class TestFromTheRowMenu(SummarizeAgain):
         self.choose("go")
 
         self.assertEqual(self.page.current.dir, self.plain)
-        self.assertEqual(self.asked, [(self.plain, True)])
+        self.assertEqual(self.asked, [self.plain])
         self.engine_reports(self.plain)
         self.assertEqual(self.note(), WRITING)
 
@@ -377,7 +374,7 @@ class TestTheNoteBesideTheHeading(SummarizeAgain):
             dialog.get_heading(), "Summarize this meeting again?"
         )
         self.choose("go")
-        self.assertEqual(self.asked, [(self.plain, True)])
+        self.assertEqual(self.asked, [self.plain])
         self.engine_reports(self.plain)
         self.assertEqual(self.note(), WRITING)
 
@@ -421,24 +418,22 @@ class TestTheWindowsOwnCallback(CitedMeeting):
     def test_it_hands_the_engine_this_meeting_on_the_bridge(self):
         sent = []
 
-        def summarize_now(folder: Path, *, force: bool = False):
-            return ("summarize_now", folder, force)
+        def summarize_now(folder: Path):
+            return ("summarize_now", folder)
 
         self.app.engine = SimpleNamespace(
             current=None,
             summarize_now=summarize_now,
         )
         self.app.bridge = SimpleNamespace(
-            submit=lambda job: sent.append(job) or object()
+            submit=lambda job: sent.append(job) or Future()
         )
         self.addCleanup(setattr, self.app, "engine", None)
         self.addCleanup(setattr, self.app, "bridge", None)
 
         self.confirm()
 
-        self.assertEqual(
-            sent, [("summarize_now", self.page.current.dir, True)]
-        )
+        self.assertEqual(sent, [("summarize_now", self.page.current.dir)])
         # The page waits for the engine's NotesStatus; it does not claim
         # work has started on its own.
         self.assertEqual(self.page._notes, {})

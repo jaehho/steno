@@ -37,13 +37,7 @@ from .events import (
     StatusChanged,
     SummaryReady,
 )
-from .notesjob import (
-    BeginKind,
-    NotesJob,
-    NotesPhase,
-    NotesState,
-    NotesTracker,
-)
+from .notesjob import NotesPhase, NotesState
 from .playback import session_start
 from .redact import redact_text
 from .summarize import (
@@ -169,10 +163,7 @@ class Engine:
         # cancelled the very work that makes a recording worth keeping.
         self._finalizing = 0
         self._finishers: set[asyncio.Task] = set()
-        # One notes job per meeting, with generations so a replaced job cannot
-        # settle the newer one. See `notesjob`.
-        self._notes = NotesTracker()
-        # The task running each meeting's job, so a supersede can cancel it.
+        # One live notes task per meeting; a second ask joins it.
         self._notes_tasks: dict[Path, asyncio.Task] = {}
         self.transcript: list[dict] = []
         self.queue: asyncio.Queue[Utterance] = asyncio.Queue()
@@ -401,18 +392,18 @@ class Engine:
         if self.current is None and self._finalizing == 0:
             self._status("paused" if paused_until() else "idle")
 
-    def _emit_notes(self, job: NotesJob, *, joined: bool = False) -> None:
+    def _notes_running(
+        self, session_dir: Path, phase: NotesPhase, *, requested: bool, joined: bool = False
+    ) -> None:
         self.emit(NotesStatus(
-            session_dir=job.session_dir,
-            state=job.state,
-            phase=job.phase if job.state is NotesState.RUNNING else None,
-            error=job.error,
-            generation=job.generation,
-            requested=job.requested,
+            session_dir=session_dir,
+            state=NotesState.RUNNING,
+            phase=phase,
+            requested=requested,
             joined=joined,
         ))
 
-    async def summarize_now(self, session_dir: Path, *, force: bool = False) -> None:
+    async def summarize_now(self, session_dir: Path) -> None:
         """Write (or rewrite) one past meeting's summary, on request.
 
         For a meeting whose summary never came: the model host was down, the
@@ -421,12 +412,9 @@ class Engine:
         transcribed (the app was quit or killed first) that pass is done too:
         a summary of half a conversation is the failure being repaired.
 
-        A live job is joined, not started again. `force` takes the meeting
-        away from a wedged job and begins a new generation.
+        A job already running on this meeting is joined, not started again.
         """
-        await self._run_notes_job(
-            session_dir, requested=True, force=force
-        )
+        await self._run_notes_job(session_dir, requested=True)
 
     async def _run_notes_job(
         self,
@@ -434,95 +422,80 @@ class Engine:
         *,
         rec: Recording | None = None,
         requested: bool = False,
-        force: bool = False,
         counted: bool = False,
     ) -> None:
-        """One notes job for one meeting: begin, run to an end, settle.
+        """One notes job for one meeting: start or join, then settle.
 
-        The only place a job is started. Joining a live one and superseding
-        a stalled one both land here, so the page never says work is under
-        way when nothing is.
+        The only place a job is started. If a task is already live on this
+        meeting the caller is told so and nothing new begins — the page
+        never says work is under way when nothing is.
 
         `counted` means the caller has already raised `_finalizing` (the
         end-of-meeting path does, before `current` clears) and this will
         lower it once.
         """
-        now = time.time()
-        kind, job = self._notes.begin(
-            session_dir,
-            now=now,
-            requested=requested,
-            force=force,
-            stall_after_s=self.notes_timeout_s,
-        )
-        log.info(
-            "notes begin %s kind=%s gen=%s requested=%s force=%s",
-            session_dir.name, kind.value, job.generation, requested, force,
-        )
-        self._emit_notes(job, joined=kind is BeginKind.JOINED)
-        if kind is BeginKind.JOINED:
-            log.info("notes join %s gen=%s", session_dir.name, job.generation)
+        running = self._notes_tasks.get(session_dir)
+        if running is not None and not running.done():
+            log.info("notes join %s", session_dir.name)
+            self._notes_running(
+                session_dir, NotesPhase.SUMMARIZING,
+                requested=requested, joined=True,
+            )
             return
-
-        # A superseded task is still awaiting somewhere; cancel it so the
-        # new generation owns the meeting alone.
-        old = self._notes_tasks.get(session_dir)
-        if old is not None and not old.done():
-            log.info("notes cancel prior task %s", session_dir.name)
-            old.cancel()
-            with contextlib.suppress(BaseException):
-                await old
 
         if not counted:
             self._finalizing += 1
         task = asyncio.current_task()
         if task is not None:
             self._notes_tasks[session_dir] = task
+        log.info("notes start %s requested=%s", session_dir.name, requested)
+        self._notes_running(
+            session_dir, NotesPhase.TRANSCRIBING, requested=requested
+        )
         try:
             await asyncio.wait_for(
-                self._notes_pipeline(session_dir, job, rec),
+                self._notes_pipeline(session_dir, rec, requested=requested),
                 timeout=self.notes_timeout_s,
             )
         except TimeoutError:
             log.warning(
-                "notes timeout %s gen=%s after %.0fs",
-                session_dir.name, job.generation, self.notes_timeout_s,
+                "notes timeout %s after %.0fs",
+                session_dir.name, self.notes_timeout_s,
             )
             self._fail_notes(
-                job,
+                session_dir,
                 f"gave up after {int(self.notes_timeout_s // 60)} minutes",
             )
         except asyncio.CancelledError:
-            log.info("notes cancelled %s gen=%s", session_dir.name, job.generation)
-            self._fail_notes(job, "cancelled")
+            log.info("notes cancelled %s", session_dir.name)
+            self._fail_notes(session_dir, "cancelled")
             raise
         except Exception as e:
-            log.exception("notes failed %s gen=%s", session_dir.name, job.generation)
-            self._fail_notes(job, str(e) or type(e).__name__)
+            log.exception("notes failed %s", session_dir.name)
+            self._fail_notes(session_dir, str(e) or type(e).__name__)
         else:
-            self._notes.finish(job, now=time.time())
-            log.info("notes written %s gen=%s", session_dir.name, job.generation)
-            self._emit_notes(self._notes.get(session_dir) or job)
+            log.info("notes written %s", session_dir.name)
+            self.emit(NotesStatus(
+                session_dir=session_dir,
+                state=NotesState.WRITTEN,
+                requested=requested,
+            ))
         finally:
             if self._notes_tasks.get(session_dir) is task:
                 self._notes_tasks.pop(session_dir, None)
             self._finalizing -= 1
             self._settle()
 
-    def _fail_notes(self, job: NotesJob, error: str) -> None:
-        """Settle the job as failed and say so, once.
-
-        The generation check inside `fail` keeps a superseded job from
-        overwriting the page after a force-retry has already started.
-        """
-        if self._notes.fail(job, error, now=time.time()):
-            self._emit_notes(self._notes.get(job.session_dir) or job)
-            self.emit(EngineError(
-                "summary", f"summary failed: {error}", session_dir=job.session_dir
-            ))
+    def _fail_notes(self, session_dir: Path, error: str) -> None:
+        self.emit(NotesStatus(
+            session_dir=session_dir, state=NotesState.FAILED, error=error
+        ))
+        self.emit(EngineError(
+            "summary", f"summary failed: {error}", session_dir=session_dir
+        ))
 
     async def _notes_pipeline(
-        self, session_dir: Path, job: NotesJob, rec: Recording | None
+        self, session_dir: Path, rec: Recording | None, *, requested: bool
     ) -> None:
         """Transcribe what is missing, merge, then write the summary.
 
@@ -542,12 +515,9 @@ class Engine:
         mine: list[dict] = []
         mic_done = True
         if need_mic:
-            done = self._notes.beat(
-                job, phase=NotesPhase.TRANSCRIBING, now=time.time()
+            self._notes_running(
+                session_dir, NotesPhase.TRANSCRIBING, requested=requested
             )
-            if done is None:
-                return
-            self._emit_notes(done)
             mine, mic_done = await self._mic_pass(
                 session_dir, started_at, keyterms
             )
@@ -566,16 +536,13 @@ class Engine:
         if not self.summarize:
             return
 
-        done = self._notes.beat(
-            job, phase=NotesPhase.SUMMARIZING, now=time.time()
+        self._notes_running(
+            session_dir, NotesPhase.SUMMARIZING, requested=requested
         )
-        if done is None:
-            return
-        self._emit_notes(done)
         brief = self._meeting_brief(rec.app if rec is not None else "")
         summary = await summarize_session(session_dir, self.model, brief)
         self.emit(SummaryReady(
-            session_dir, summary.title, summary.body, requested=job.requested
+            session_dir, summary.title, summary.body, requested=requested
         ))
 
     async def _mic_pass(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import tempfile
 import time
@@ -59,7 +60,7 @@ class TestBusy(unittest.TestCase):
             nonlocal gate
             gate = asyncio.Event()
 
-            async def pipeline(_dir, _job, _rec):
+            async def pipeline(_dir, _rec, *, requested=False):  # noqa: ARG001
                 seen.append(engine.busy)
                 await gate.wait()
 
@@ -219,9 +220,20 @@ class TestSummarizeNow(unittest.TestCase):
 
     def test_a_live_job_is_joined_not_summarized_twice(self):
         engine, events = make_engine(self.root)
-        engine._notes.begin(
-            self.dir, now=time.time(), requested=False, stall_after_s=60.0
-        )
+
+        async def hold():
+            await asyncio.sleep(3600)
+
+        async def scenario():
+            task = asyncio.create_task(hold())
+            engine._notes_tasks[self.dir] = task
+            try:
+                await engine.summarize_now(self.dir)
+            finally:
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+
         called = []
 
         async def fake(*_a):
@@ -229,37 +241,14 @@ class TestSummarizeNow(unittest.TestCase):
             return Summary(title="x", body="# x")
 
         with mock.patch.object(session, "summarize_session", fake):
-            asyncio.run(engine.summarize_now(self.dir))
+            asyncio.run(scenario())
         self.assertEqual(called, [])
         (status,) = [e for e in events if isinstance(e, NotesStatus)]
         self.assertIs(status.state, NotesState.RUNNING)
         self.assertTrue(status.joined)  # the page says "already writing"
 
-    def test_force_replaces_a_live_job(self):
+    def test_a_finished_job_can_be_started_again(self):
         engine, events = make_engine(self.root)
-        engine._notes.begin(
-            self.dir, now=time.time(), requested=False, stall_after_s=60.0
-        )
-        called = []
-
-        async def fake(*_a):
-            called.append(1)
-            return Summary(title="x", body="# x")
-
-        with mock.patch.object(session, "summarize_session", fake):
-            asyncio.run(engine.summarize_now(self.dir, force=True))
-        self.assertEqual(called, [1])
-        statuses = [e for e in events if isinstance(e, NotesStatus)]
-        self.assertEqual(statuses[0].generation, 2)
-        self.assertFalse(statuses[0].joined)
-        self.assertTrue(any(isinstance(e, SummaryReady) for e in events))
-
-    def test_a_stalled_job_is_replaced_without_force(self):
-        engine, events = make_engine(self.root)
-        engine.notes_timeout_s = 30.0
-        engine._notes.begin(
-            self.dir, now=time.time() - 1000, requested=False, stall_after_s=30.0
-        )
         called = []
 
         async def fake(*_a):
@@ -268,8 +257,11 @@ class TestSummarizeNow(unittest.TestCase):
 
         with mock.patch.object(session, "summarize_session", fake):
             asyncio.run(engine.summarize_now(self.dir))
-        self.assertEqual(called, [1])
-        self.assertTrue(any(isinstance(e, SummaryReady) for e in events))
+            asyncio.run(engine.summarize_now(self.dir))
+        self.assertEqual(called, [1, 1])
+        self.assertEqual(
+            [e for e in events if isinstance(e, SummaryReady)].__len__(), 2
+        )
 
     def test_an_orphaned_meeting_gets_its_mic_pass_first(self):
         engine, events = make_engine(self.root)
@@ -330,10 +322,7 @@ class TestSummarizeNow(unittest.TestCase):
         )
         self.assertIn("gave up", failed.error)
         self.assertFalse(engine.busy)
-        # The next ask is a fresh start, not a join on the dead job.
-        status = engine._notes.get(self.dir)
-        assert status is not None
-        self.assertIs(status.state, NotesState.FAILED)
+        self.assertEqual(engine._notes_tasks, {})
 
 
 class TestAsking(unittest.TestCase):

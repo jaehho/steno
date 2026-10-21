@@ -50,7 +50,6 @@ class NotesStatus:
     state: NotesState
     phase: NotesPhase | None = None
     error: str = ""
-    generation: int = 0
     requested: bool = False
     # This event is the reply to an ask that found work already under way.
     joined: bool = False
