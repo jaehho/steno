@@ -26,17 +26,19 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from .. import autostart, icon_dir, migrate_legacy, projectnotes
+from .. import log as steno_log
 from ..control import APP_ID
 from ..events import (
     EngineError,
     Event,
-    Finalizing,
     MeetingEnded,
     MeetingStarted,
+    NotesStatus,
     StatusChanged,
     SummaryReady,
 )
 from ..notes import sync_todos
+from ..notesjob import NotesState
 from ..retention import prune_audio
 from ..session import paused_until, set_pause
 from ..state import clear_state, write_state
@@ -93,6 +95,7 @@ class App(Adw.Application):
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
+        steno_log.configure()
         # The app icon ships inside the package, so a checkout finds it too.
         display = Gdk.Display.get_default()
         if display is not None:
@@ -293,11 +296,14 @@ class App(Adw.Application):
         elif isinstance(event, MeetingEnded):
             self.withdraw_notification(RECORDING_NOTIFICATION)
 
-        elif isinstance(event, Finalizing):
+        elif isinstance(event, NotesStatus):
             # The last meeting finishing is not news while a new one records.
             engine = self.engine
             if engine is None or engine.current is None:
-                self._publish("finalizing", event.step)
+                if event.state is NotesState.RUNNING:
+                    self._publish("finalizing", words.notes_running_text(event.phase))
+                elif event.state is NotesState.FAILED and event.error:
+                    self._publish("finalizing", event.error)
 
         elif isinstance(event, SummaryReady):
             # Derived here, not in the engine, and not in the window: the window

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -48,6 +49,8 @@ HTTP_OK = 200
 MAX_TOOL_HITS = 60  # cap hits returned per tool call
 
 _transport: httpx.AsyncBaseTransport | None = None   # tests inject a MockTransport
+
+log = logging.getLogger("steno.claude")
 
 
 class ClaudeError(RuntimeError):
@@ -213,16 +216,19 @@ async def _call(client: httpx.AsyncClient, payload: dict) -> dict:
     reason, resp = "no response", None
     for attempt in range(3):
         if attempt:
+            log.info("model retry %s after %s", attempt, reason)
             await _retry_sleep(_backoff(attempt, resp))
         try:
             resp = await client.post(base_url(), json=payload, headers=headers)
         except httpx.TransportError as e:
             reason, resp = str(e), None
+            log.warning("model transport error: %s", e)
             continue
         if resp.status_code in _RETRY_STATUSES:
             reason = f"HTTP {resp.status_code}"
             continue
         if resp.status_code != HTTP_OK:
+            log.warning("model HTTP %s", resp.status_code)
             raise ClaudeError(_error_text(resp.status_code, resp.text))
         try:
             data = resp.json()
@@ -234,9 +240,11 @@ async def _call(client: httpx.AsyncClient, payload: dict) -> dict:
         if err:
             reason = str(err.get("message") or err)
         elif message.get("tool_calls") or _content(message):
+            log.info("model ok attempts=%s", attempt + 1)
             return data
         else:
             reason = "empty response"
+    log.warning("model failed: %s", reason)
     msg = f"OpenRouter: {reason}, after 3 attempts"
     raise ClaudeError(msg)
 

@@ -12,6 +12,7 @@ the window is narrow - the tall one parked beside a call.
 from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
+import logging
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -31,13 +32,14 @@ from ..events import (
     AdviceDone,
     EngineError,
     Event,
-    Finalizing,
     Heard,
     MeetingEnded,
     MeetingStarted,
+    NotesStatus,
     SummaryReady,
 )
 from ..merge import previous_session
+from ..notesjob import NotesPhase, NotesState
 from ..session import paused_until
 from ..state import PAUSE_CHOICES
 from ..summarize import load_records
@@ -48,6 +50,8 @@ from .menu import meeting_menu_model
 from .sidebar import LIVE, Session, Sidebar
 from .style import palette, stylesheet
 from .widgets import AskBox
+
+log = logging.getLogger("steno.gui")
 
 if TYPE_CHECKING:  # the app imports the window lazily; this keeps the cycle unreal
     from .app import App
@@ -395,19 +399,16 @@ class Window(Adw.ApplicationWindow):
                 self.meeting.show_summary(selected)
                 self._update_header()
             else:
-                self.meeting.mark_working(event.session_dir, "")
+                self.meeting.clear_notes(event.session_dir)
             self._toast(f"Summary ready: {event.title}", open_session=event.session_dir)
-        elif isinstance(event, Finalizing):
-            if event.step.startswith(("writing", "transcrib")):
-                self.meeting.mark_working(
-                    event.session_dir, event.step[0].upper() + event.step[1:] + "…"
-                )
-            if event.step.startswith("writing"):
+        elif isinstance(event, NotesStatus):
+            self.meeting.apply_notes(event)
+            if event.phase is NotesPhase.SUMMARIZING and event.state is NotesState.RUNNING:
                 # Your side has just been merged in; show it before the summary.
                 self.meeting.refresh_transcript(event.session_dir)
         elif isinstance(event, EngineError):
             if event.where in ("summary", "transcribe"):
-                self.meeting.clear_working(event.session_dir)
+                self.meeting.clear_notes(event.session_dir)
             self._toast(f"{event.where}: {event.message}")
 
     def _begin_live(self, session_dir: Path, app: str, started_at: float) -> None:
@@ -466,11 +467,22 @@ class Window(Adw.ApplicationWindow):
     def _summarize(self, session_dir: Path) -> None:
         """Write a past meeting's summary on the engine's loop, report on GTK's."""
         engine, bridge = self.app.engine, self.app.bridge
-        if engine is None or bridge is None or bridge.submit(
-            engine.summarize_now(session_dir)
-        ) is None:
-            self.meeting.mark_working(session_dir, "")
+        if engine is None or bridge is None:
             self._toast("Steno isn't running, so it can't write the summary")
+            return
+        future = bridge.submit(engine.summarize_now(session_dir))
+        if future is None:
+            self._toast("Steno isn't running, so it can't write the summary")
+            return
+        # The result is not awaited here; an exception in the coroutine would
+        # die on the future and leave the page saying it is being written.
+        future.add_done_callback(self._notes_future_done)
+
+    def _notes_future_done(self, future) -> None:
+        try:
+            future.result()
+        except Exception:
+            log.exception("summarize_now raised")
 
     def _ask_live(self, question: str) -> None:
         self._submit_question(self.live.ask, question, None)

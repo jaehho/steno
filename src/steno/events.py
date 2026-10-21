@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .notesjob import NotesPhase, NotesState
+
 
 @dataclass(frozen=True)
 class MeetingStarted:
@@ -36,11 +38,21 @@ class MeetingEnded:
 
 
 @dataclass(frozen=True)
-class Finalizing:
-    """Post-meeting work is running: batch transcription, then the summary."""
+class NotesStatus:
+    """What one meeting's notes job is doing, or how it ended.
+
+    Structured so the page can tell "already running" from "just started",
+    show a real error when a summary failed, and still offer the button
+    after a failure — the case a free-form progress string hid.
+    """
 
     session_dir: Path
-    step: str
+    state: NotesState
+    phase: NotesPhase | None = None
+    error: str = ""
+    requested: bool = False
+    # This event is the reply to an ask that found work already under way.
+    joined: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,7 +104,7 @@ Event = (
     MeetingStarted
     | Heard
     | MeetingEnded
-    | Finalizing
+    | NotesStatus
     | SummaryReady
     | AdviceDelta
     | AdviceDone

@@ -10,6 +10,7 @@ from pathlib import Path
 from steno import citations, projectnotes
 from steno.gui import words
 from steno.gui.sidebar import Session
+from steno.notesjob import NotesPhase, NotesState
 
 NOW = datetime(2026, 9, 12, 16, 0)
 
@@ -374,9 +375,33 @@ class TestSummaryMissing(unittest.TestCase):
         self.assertFalse(offer)
 
     def test_says_it_is_being_written_and_does_not_offer_twice(self):
-        text, offer = words.summary_missing(12, "Writing the summary…")
+        text, offer = words.summary_missing(
+            12, state=NotesState.RUNNING, phase=NotesPhase.SUMMARIZING
+        )
         self.assertEqual(text, "Writing the summary…")
         self.assertFalse(offer)
+
+    def test_a_joined_job_says_already(self):
+        text, offer = words.summary_missing(
+            12,
+            state=NotesState.RUNNING,
+            phase=NotesPhase.SUMMARIZING,
+            joined=True,
+        )
+        self.assertEqual(text, "Already writing the summary…")
+        self.assertFalse(offer)
+
+    def test_a_failure_says_why_and_still_offers_the_retry(self):
+        text, offer = words.summary_missing(
+            12, state=NotesState.FAILED, error="host down"
+        )
+        self.assertEqual(text, "No summary: host down")
+        self.assertTrue(offer)
+
+    def test_a_failure_without_a_reason_says_so(self):
+        text, offer = words.summary_missing(12, state=NotesState.FAILED)
+        self.assertIn("No summary:", text)
+        self.assertTrue(offer)
 
 
 class TestSummaryNote(unittest.TestCase):
@@ -399,17 +424,39 @@ class TestSummaryNote(unittest.TestCase):
 
     def test_while_it_is_written_over_it_says_so_and_offers_nothing(self):
         note = words.summary_note(
-            citations.Coverage(items=3, cited=0), "Writing the summary…"
+            citations.Coverage(items=3, cited=0),
+            state=NotesState.RUNNING,
+            phase=NotesPhase.SUMMARIZING,
         )
         self.assertEqual(note, "Writing the summary…")
         self.assertEqual(
-            words.summary_note(citations.Coverage(3, 3), "Writing…"),
-            "Writing…",
+            words.summary_note(
+                citations.Coverage(3, 3),
+                state=NotesState.RUNNING,
+                phase=NotesPhase.TRANSCRIBING,
+            ),
+            "Transcribing your side…",
+        )
+
+    def test_a_failed_rewrite_says_why(self):
+        self.assertEqual(
+            words.summary_note(
+                citations.Coverage(3, 3),
+                state=NotesState.FAILED,
+                error="host down",
+            ),
+            "host down",
         )
 
     def test_what_is_said_is_escaped_for_markup(self):
-        self.assertEqual(words.summary_note(citations.Coverage(), "a < b"),
-                         "a &lt; b")
+        self.assertEqual(
+            words.summary_note(
+                citations.Coverage(),
+                state=NotesState.FAILED,
+                error="a < b",
+            ),
+            "a &lt; b",
+        )
 
 
 class TestProjectNotesProblem(unittest.TestCase):

@@ -28,6 +28,7 @@ from . import (
     __version__,
     config_dir,
     data_dir,
+    log,
     migrate_legacy,
     model_default,
     projectnotes,
@@ -129,6 +130,7 @@ def cmd_init(_args: argparse.Namespace) -> None:
 
 def cmd_gui(args: argparse.Namespace) -> None:
     load_dotenv(config_dir() / ".env")
+    log.configure()
     _preflight()
     from .gui import run  # noqa: PLC0415  # GTK is heavy; only gui needs it
 
