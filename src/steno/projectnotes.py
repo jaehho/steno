@@ -9,7 +9,11 @@ root, is written to `P/notes/meetings/`:
     2026-10-06-1612-rcnn-toolbox.transcript.md    what was said
 
 so that whoever opens the project, a person or an agent, finds the
-meetings it had. Nothing here reaches a network or a model.
+meetings it had. The vault at `~/Obsidian` gets the same pages at
+`<project>/meetings`, by a symlink to that folder where one can be
+made (the lab pattern) and, where the vault already has a real folder
+of its own there, by writing them twice. Nothing here reaches a
+network or a model.
 
 The folder may be synced and the repository pushed, and that sets the
 rules. Steno writes inside the project only: a name that is not a plain
@@ -24,7 +28,9 @@ transcripts: `*` would hide those files from git.
 
 meta.json keeps a record of the project and the file names (under the
 key `published`, the name sessions already carry), so that a new title,
-a new project or a deleted meeting takes away what an earlier run wrote. `STENO_PROJECT_NOTES=0` turns the whole thing off.
+a new project or a deleted meeting takes away what an earlier run wrote. `STENO_PROJECT_NOTES=0` turns the whole thing off. The vault is
+`STENO_OBSIDIAN_DIR`, `~/Obsidian` by default; one that is not there is
+no vault, and nothing is said about it.
 """
 from __future__ import annotations
 
@@ -55,6 +61,10 @@ from .summarize import (
 log = logging.getLogger(__name__)
 
 SWITCH_ENV = "STENO_PROJECT_NOTES"
+# The vault that shows a project's meetings beside its own notes. The
+# lab pattern is one symlink from it to the project's `notes`, so the
+# vault path is that folder's `meetings` already.
+VAULT_ENV = "STENO_OBSIDIAN_DIR"
 # The key meta.json already carries. It is never shown to the user.
 RECORD_KEY = "published"
 INDEX_NAME = "README.md"
@@ -278,6 +288,105 @@ def meetings_dir(project: Path) -> Path:
         msg = f"{folder} is not a directory"
         raise ValueError(msg)
     return folder
+
+
+# --- the vault -------------------------------------------------------
+
+
+def vault_root() -> Path:
+    """The vault whose `<project>/meetings` should show the meetings.
+
+    `STENO_OBSIDIAN_DIR` names it; `~/Obsidian` otherwise. Not a
+    directory? Then there is no vault to sync to, and nothing is said
+    about it.
+    """
+    base = os.environ.get(VAULT_ENV) or str(Path.home() / "Obsidian")
+    return Path(base)
+
+
+def _joined(dest: Path, meetings: Path) -> bool:
+    """True when `dest` is the meetings folder, now or through a link.
+
+    The vault's `lab` is one symlink to `lab/notes`, so `lab/meetings`
+    resolves to the folder the pages are written in already.
+    """
+    try:
+        return dest.resolve() == meetings.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def vault_mirror(vault: Path, project: str, meetings: Path) -> Path | None:
+    """The vault's own folder for a project's pages, to write again.
+
+    None is the usual answer: the vault path is already the project's
+    folder (a link like the vault's `lab`), or is free to become one,
+    and one folder shows in both places. A real folder of the user's
+    there cannot become a link, so its pages are written twice, and
+    that folder is what comes back here. A link of the user's that
+    points elsewhere is not written through.
+    """
+    if not vault.is_dir():
+        return None
+    dest = vault / project / "meetings"
+    if dest.is_symlink() or _joined(dest, meetings) or not dest.is_dir():
+        return None
+    return dest
+
+
+def _in_the_way(dest: Path) -> str:
+    """What blocks making `dest` a link, "" when nothing does.
+
+    A parent that is a link is one: a link under it would write
+    wherever that points. Only the path itself is asked about; whether
+    a folder of the user's there is the vault's own is `vault_mirror`'s.
+    """
+    parent = dest.parent
+    if dest.is_symlink() or parent.is_symlink():
+        return "is a symbolic link"
+    if dest.exists() and not dest.is_dir():
+        return "is not a directory"
+    if parent.exists() and not parent.is_dir():
+        return "is not a directory"
+    return ""
+
+
+def _make_link(dest: Path, meetings: Path, dry_run: bool) -> Change:
+    """Make `dest` a link to `meetings`, or say what a run would make.
+
+    The parent is made along with it: `vault/<project>/` for a project
+    the vault has no folder for yet.
+    """
+    note = "a link to the meetings folder" if dry_run else ""
+    try:
+        if not dry_run:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.symlink_to(meetings)
+    except OSError as err:
+        return Change("skip", dest, str(err))
+    return Change("create", dest, note)
+
+
+def link_vault(
+    vault: Path, project: str, meetings: Path, *, dry_run: bool
+) -> Change | None:
+    """Create `vault/project/meetings` as a link to the meetings folder.
+
+    Once: a vault path that is already the folder needs nothing, and a
+    real folder of the user's there is `vault_mirror`'s to write into,
+    not a link's to take. What else is in the way is left as it is and
+    said so.
+    """
+    if not vault.is_dir():
+        return None
+    dest = vault / project / "meetings"
+    if _joined(dest, meetings):
+        return None
+    if dest.is_dir() and not dest.is_symlink():
+        return None
+    if why := _in_the_way(dest):
+        return Change("skip", dest, why)
+    return _make_link(dest, meetings, dry_run)
 
 
 # --- the text of a page -----------------------------------------------
@@ -551,9 +660,12 @@ class _Folder:
     them.
     """
 
-    def __init__(self, project: Path, dry_run: bool) -> None:
+    def __init__(self, project: Path, dry_run: bool, vault: Path) -> None:
         self.dir = meetings_dir(project)
         self.dry_run = dry_run
+        # The vault's own folder, when it has one where a link would go:
+        # the pages are written to it a second time.
+        self.mirror = vault_mirror(vault, project.name, self.dir)
         self.changes: list[Change] = []
         self.names = (
             {p.name for p in self.dir.iterdir()} if self.dir.is_dir()
@@ -582,49 +694,78 @@ class _Folder:
         text = _read_text(self.dir / INDEX_NAME)
         return text is not None and is_generated(text)
 
-    def put(self, name: str, text: str, session: str | None) -> Change:
-        """Create or update a file, unless it is not steno's to."""
-        path = self.dir / name
+    def _put(
+        self, root: Path, name: str, text: str, session: str | None
+    ) -> Change:
+        """Create or update `root/name`, unless it is not steno's to."""
+        path = root / name
         data = text.encode(errors="replace")
         try:
             old = _read(path)
         except _RefusedError as why:
-            return self._note(Change("skip", path, str(why)))
+            return Change("skip", path, str(why))
         action: Action = "create"
         if old is not None:
             if why := _refusal(old.decode(errors="replace"), session):
-                return self._note(Change("skip", path, why))
+                return Change("skip", path, why)
             action = "same" if old == data else "update"
         if action != "same" and not self.dry_run:
-            self.dir.mkdir(parents=True, exist_ok=True)
+            root.mkdir(parents=True, exist_ok=True)
             _write_whole(path, data)
+        return Change(action, path)
+
+    def put(self, name: str, text: str, session: str | None) -> Change:
+        """Create or update a file, unless it is not steno's to.
+
+        A page goes to the vault's own folder as well, when there is
+        one; the folder's `.gitignore` does not, being git's alone.
+        """
+        change = self._note(self._put(self.dir, name, text, session))
+        if change.action == "skip":
+            return change
         self.names.add(name)
         if _is_summary_name(name) and (entry := entry_of(name, text)):
             self.entries[name] = entry
-        return self._note(Change(action, path))
+        if self.mirror is not None and _is_page_name(name):
+            self._note(self._put(self.mirror, name, text, session))
+        return change
 
-    def drop(self, name: str, session: str | None) -> None:
-        """Remove a file, if it is there and steno's."""
-        path = self.dir / name
-        if not _is_page_name(name):
-            self._note(Change("skip", self.dir, f"not a page: {name!r}"))
-            return
-        if name not in self.names:
-            return
+    def _drop(self, root: Path, name: str, session: str | None) -> Change | None:
+        """Remove `root/name` when it is there and steno's. None when
+        there is no such file."""
+        path = root / name
         try:
             old = _read(path)
         except _RefusedError as why:
-            self._note(Change("skip", path, str(why)))
+            return Change("skip", path, str(why))
+        if old is None:
+            return None
+        if why := _refusal(old.decode(errors="replace"), session):
+            return Change("skip", path, why)
+        if not self.dry_run:
+            path.unlink()
+        return Change("remove", path)
+
+    def drop(self, name: str, session: str | None) -> None:
+        """Remove a file, if it is there and steno's.
+
+        The vault's own folder loses the page too, so the two copies do
+        not part ways over a meeting that is gone.
+        """
+        if not _is_page_name(name):
+            self._note(Change("skip", self.dir, f"not a page: {name!r}"))
             return
-        if old is not None:
-            if why := _refusal(old.decode(errors="replace"), session):
-                self._note(Change("skip", path, why))
-                return
-            if not self.dry_run:
-                path.unlink()
-            self._note(Change("remove", path))
-        self.names.discard(name)
-        self.entries.pop(name, None)
+        if name in self.names:
+            change = self._drop(self.dir, name, session)
+            if change is not None:
+                self._note(change)
+            if change is None or change.action == "remove":
+                self.names.discard(name)
+                self.entries.pop(name, None)
+        if self.mirror is not None:
+            change = self._drop(self.mirror, name, session)
+            if change is not None:
+                self._note(change)
 
     def _holds_others(self) -> bool:
         """True when the folder has anything steno did not write: a
@@ -750,10 +891,11 @@ def _fill(
     return record, frozenset(folder.dir / name for name in written)
 
 
-def _withdraw(
+def _withdraw(  # noqa: PLR0913, PLR0917 - one call shape: where to take from
     session: str,
     record: Record,
     root: Path,
+    vault: Path,
     dry_run: bool,
     spare: frozenset[Path] = frozenset(),
 ) -> list[Change]:
@@ -763,7 +905,7 @@ def _withdraw(
     name (a symlink) must not lose.
     """
     try:
-        folder = _Folder(project_dir(root, record.project), dry_run)
+        folder = _Folder(project_dir(root, record.project), dry_run, vault)
     except ValueError as err:
         return [Change("skip", root / record.project, str(err))]
     for name in record.files:
@@ -790,6 +932,7 @@ def _project_of(session_dir: Path) -> str | None:
 def write(
     session_dir: Path,
     root: Path | None = None,
+    vault: Path | None = None,
     *,
     dry_run: bool = False,
     force: bool = False,
@@ -807,12 +950,15 @@ def write(
     (OSError) is raised; the record is written last, so calling again
     finishes the job. The caller waits for a recording to be over.
 
-    `root` is the projects directory (default `projects_root()`). With
-    `dry_run` neither the project nor meta.json is written, and the
-    result is what the real run would give. `force` ignores
-    `STENO_PROJECT_NOTES=0`, for a person running it by hand.
+    `root` is the projects directory (default `projects_root()`);
+    `vault` is the vault whose `<project>/meetings` should show the
+    pages (default `vault_root()`). With `dry_run` neither the project
+    nor meta.json is written, and the result is what the real run would
+    give. `force` ignores `STENO_PROJECT_NOTES=0`, for a person running
+    it by hand.
     """
     root = root if root is not None else projects_root()
+    vault = vault if vault is not None else vault_root()
     with _LOCK:
         project = _project_of(session_dir)
         previous = read_record(session_dir)
@@ -828,15 +974,19 @@ def write(
         if project:
             try:
                 meeting = _meeting_with_words(session_dir)
-                folder = _Folder(project_dir(root, project), dry_run)
+                folder = _Folder(project_dir(root, project), dry_run, vault)
             except ValueError as err:
                 result.note = str(err)
             else:
+                if change := link_vault(
+                    vault, project, folder.dir, dry_run=dry_run
+                ):
+                    result.changes.append(change)
                 record, spare = _fill(folder, meeting, project, previous)
                 result.changes += folder.changes
         if leaving:
             result.changes += _withdraw(
-                session_dir.name, leaving, root, dry_run, spare
+                session_dir.name, leaving, root, vault, dry_run, spare
             )
         if not dry_run:
             _store_record(session_dir, record)
@@ -844,7 +994,11 @@ def write(
 
 
 def remove(
-    session_dir: Path, root: Path | None = None, *, dry_run: bool = False
+    session_dir: Path,
+    root: Path | None = None,
+    vault: Path | None = None,
+    *,
+    dry_run: bool = False,
 ) -> Result:
     """Take a meeting's pages out of the project they were put in.
 
@@ -855,13 +1009,16 @@ def remove(
     what it wrote.
     """
     root = root if root is not None else projects_root()
+    vault = vault if vault is not None else vault_root()
     with _LOCK:
         record = read_record(session_dir)
         result = Result(record.project if record else None)
         if record is None:
             result.note = "no pages in a project"
             return result
-        result.changes = _withdraw(session_dir.name, record, root, dry_run)
+        result.changes = _withdraw(
+            session_dir.name, record, root, vault, dry_run
+        )
         if not dry_run:
             _store_record(session_dir, None)
         return result
@@ -870,6 +1027,7 @@ def remove(
 def try_write(
     session_dir: Path,
     root: Path | None = None,
+    vault: Path | None = None,
     *,
     dry_run: bool = False,
     force: bool = False,
@@ -878,18 +1036,24 @@ def try_write(
     or a terminal line: a write that fails is logged and comes back as
     `Result.error`. Calling again finishes the job."""
     try:
-        return write(session_dir, root, dry_run=dry_run, force=force)
+        return write(
+            session_dir, root, vault, dry_run=dry_run, force=force
+        )
     except OSError as err:
         log.warning("project notes: %s: %s", session_dir.name, err)
         return Result(_project_of(session_dir), error=str(err))
 
 
 def try_remove(
-    session_dir: Path, root: Path | None = None, *, dry_run: bool = False
+    session_dir: Path,
+    root: Path | None = None,
+    vault: Path | None = None,
+    *,
+    dry_run: bool = False,
 ) -> Result:
     """`remove`, with a failing removal in `Result.error`."""
     try:
-        return remove(session_dir, root, dry_run=dry_run)
+        return remove(session_dir, root, vault, dry_run=dry_run)
     except OSError as err:
         log.warning("project notes: %s: %s", session_dir.name, err)
         return Result(_project_of(session_dir), error=str(err))
@@ -916,6 +1080,7 @@ def notes_folder(
 def rebuild_index(
     project: str,
     root: Path | None = None,
+    vault: Path | None = None,
     *,
     dry_run: bool = False,
     force: bool = False,
@@ -926,13 +1091,14 @@ def rebuild_index(
     make a folder that is not there.
     """
     root = root if root is not None else projects_root()
+    vault = vault if vault is not None else vault_root()
     with _LOCK:
         result = Result(project)
         if note := _switched_off(force):
             result.note = note
             return result
         try:
-            folder = _Folder(project_dir(root, project), dry_run)
+            folder = _Folder(project_dir(root, project), dry_run, vault)
         except ValueError as err:
             result.note = str(err)
             return result

@@ -1096,6 +1096,143 @@ class TestNotesFolder(Base):
         self.assertIsNone(projectnotes.notes_folder(d, self.projects))
 
 
+class TestVault(Base):
+    """The vault's `<project>/meetings` beside the project's own folder.
+
+    The vault already has the lab pattern — one symlink from
+    `~/Obsidian/lab` to `lab/notes`, so its `meetings` is the same
+    folder. This makes that happen for a project the user has not
+    linked by hand, and writes the pages a second time where the vault
+    has a real folder of its own and no link can be made.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.vault = self.base / "vault"
+        self.vault.mkdir()
+        os.environ[projectnotes.VAULT_ENV] = str(self.vault)
+
+    def vaulted(self, project: str = "demo") -> Path:
+        return self.vault / project / "meetings"
+
+    def test_the_vault_path_becomes_a_link_to_the_meetings(self):
+        self.write(self.session())
+
+        dest = self.vaulted()
+        self.assertTrue(dest.is_symlink())
+        self.assertEqual(dest.resolve(), self.meetings().resolve())
+        self.assertIn(SUMMARY_NAME, listing(dest))
+
+    def test_the_link_is_made_once(self):
+        self.write(self.session())
+        dest = self.vaulted()
+        made = dest.lstat().st_mtime_ns
+
+        self.write(self.session("20260928-150000", title="Second"))
+
+        self.assertEqual(dest.lstat().st_mtime_ns, made)
+
+    def test_the_lab_pattern_is_left_alone(self):
+        """A vault symlink of the user's already joins the two folders:
+        `vault/demo` -> `demo/notes` makes `vault/demo/meetings` the
+        folder the pages are written in. Nothing is made or copied."""
+        (self.vault / "demo").symlink_to(self.projects / "demo" / "notes")
+
+        self.write(self.session())
+
+        self.assertFalse(self.vaulted().is_symlink())
+        self.assertEqual(
+            self.vaulted().resolve(), self.meetings().resolve()
+        )
+        self.assertIn(SUMMARY_NAME, listing(self.vaulted()))
+
+    def test_a_real_folder_of_the_user_s_gets_the_pages_again(self):
+        self.vaulted().mkdir(parents=True)
+
+        result = self.write(self.session())
+
+        self.assertFalse(self.vaulted().is_symlink())
+        pages = {p.name for p in self.meetings().iterdir()}
+        self.assertEqual(
+            pages - {".gitignore"},
+            {p.name for p in self.vaulted().iterdir()},
+        )
+        self.assertIn(SUMMARY_NAME, listing(self.vaulted()))
+        # Both destinations are named in what the run reports.
+        said = {str(c.path) for c in result.changes}
+        self.assertIn(str(self.meetings() / SUMMARY_NAME), said)
+        self.assertIn(str(self.vaulted() / SUMMARY_NAME), said)
+
+    def test_the_gitignore_stays_with_the_project_folder(self):
+        """It is git's, for the repository the project is; a vault has
+        no use for a `*` over its own files."""
+        self.vaulted().mkdir(parents=True)
+
+        self.write(self.session())
+
+        self.assertIn(".gitignore", listing(self.meetings()))
+        self.assertNotIn(".gitignore", listing(self.vaulted()))
+
+    def test_a_second_copy_loses_the_page_when_the_meeting_is_removed(self):
+        self.vaulted().mkdir(parents=True)
+        d = self.session()
+        self.write(d)
+
+        self.remove(d)
+
+        # With no meetings there is no index either. The user's own
+        # folder stays, emptied of the pages.
+        self.assertEqual(listing(self.vaulted()), [])
+
+    def test_a_page_of_yours_in_the_vault_folder_is_left_alone(self):
+        self.vaulted().mkdir(parents=True)
+        (self.vaulted() / SUMMARY_NAME).write_text("mine\n")
+
+        self.write(self.session())
+
+        self.assertEqual(
+            (self.vaulted() / SUMMARY_NAME).read_text(), "mine\n"
+        )
+
+    def test_no_vault_root_is_no_vault(self):
+        os.environ[projectnotes.VAULT_ENV] = str(self.base / "gone")
+
+        self.write(self.session())
+
+        self.assertFalse((self.base / "gone").exists())
+        self.assertIn(SUMMARY_NAME, listing(self.meetings()))
+
+    def test_a_file_in_the_way_is_left_alone(self):
+        self.vault.mkdir(parents=True, exist_ok=True)
+        (self.vault / "demo").write_text("x")
+
+        result = self.write(self.session())
+
+        self.assertTrue(result.altered)  # the project still got its pages
+        self.assertEqual((self.vault / "demo").read_text(), "x")
+        self.assertEqual(len(result.skipped), 1)
+
+    def test_a_link_of_the_user_s_pointing_elsewhere_is_not_written_through(
+        self,
+    ):
+        outside = self.base / "outside"
+        outside.mkdir()
+        (self.vault / "demo").mkdir()
+        (self.vault / "demo" / "meetings").symlink_to(outside)
+
+        result = self.write(self.session())
+
+        self.assertEqual(listing(outside), [])
+        self.assertEqual(len(result.skipped), 1)
+
+    def test_a_dry_run_makes_no_link(self):
+        result = self.write(self.session(), dry_run=True)
+
+        self.assertFalse(self.vaulted().exists())
+        self.assertTrue(result.altered)
+        self.assertIn(str(self.vaulted()), {str(c.path) for c in result.altered})
+
+
 class TestPageText(unittest.TestCase):
     def test_front_matter_values_are_valid_yaml_scalars(self):
         text = projectnotes.frontmatter({

@@ -319,7 +319,8 @@ has pages in one.
 
 **What it keeps to.**
 
-- It stays in the project. The project has to be a plain directory directly
+- It stays in the project, with one exception (the vault, below). The project
+  has to be a plain directory directly
   under the projects directory, and Steno never makes one; it makes
   `notes/meetings/` (and `notes/`, if there is none). A `notes` or `meetings`
   that is a link leading out of the project is refused, not followed.
@@ -363,6 +364,18 @@ To keep them out, use the sync tool's own ignore setting for
 quiet neighbour in such a folder: a sync sees one new page per meeting, and
 an update only when a tick or a note really changes a page. A tool that
 uploads hidden files may see the temporary file come and go.
+
+**The vault.** The same pages are shown in an Obsidian vault at
+`~/Obsidian/<project>/meetings` (set `STENO_OBSIDIAN_DIR` for another
+vault). Where a symlink can make that path the folder the pages are already
+in, one is written once and the two are one folder — the way
+`~/Obsidian/lab` points at `lab/notes` and its `meetings` is the project's.
+A vault that has a real folder of its own at that path keeps it: the pages
+are written there as well, and a run names both destinations. A file or a
+link of yours in the way is left as it is and named, as everywhere else. A
+vault root that is not there is not one: nothing is made and nothing is
+said. The pages follow `STENO_PROJECT_NOTES` like the project copy; the
+`.gitignore` stays with the project, where git is.
 
 **The switch.** `STENO_PROJECT_NOTES=0` in `~/.config/steno/.env` turns all
 of it off: the window, `steno summarize` and `steno realign` write nothing,

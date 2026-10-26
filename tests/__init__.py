@@ -14,6 +14,11 @@ from steno import asstlink
 # way), `asst` cannot reach the user's asstd; it fails to connect and exits.
 os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/nonexistent/steno-tests"
 
+# The same for the vault: a test run must not make links in the user's
+# real Obsidian. Tests that mean to exercise the sync point
+# STENO_OBSIDIAN_DIR at a scratch one.
+os.environ["STENO_OBSIDIAN_DIR"] = "/nonexistent/steno-tests-vault"
+
 # The real `available`, for the test of the STENO_NO_ASST switch itself.
 real_available = asstlink.available
 
