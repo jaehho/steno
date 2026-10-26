@@ -112,8 +112,11 @@ class Window(Adw.ApplicationWindow):
         self.insert_action_group("meeting", self.meeting.actions)
 
         self.split = Adw.NavigationSplitView()
-        self.split.set_min_sidebar_width(260)
-        self.split.set_max_sidebar_width(300)
+        # A real travel for the drag handle: 260-300 left 40px of play, so
+        # the sidebar read as fixed-width (issue #33). 220 still fits a
+        # meeting title and its meta; 480 lets a long name have room.
+        self.split.set_min_sidebar_width(220)
+        self.split.set_max_sidebar_width(480)
         self.split.set_sidebar(self._build_sidebar_page())
         self.split.set_content(self._build_content_page())
         self.split.connect("notify::collapsed", lambda *_a: self._update_header())

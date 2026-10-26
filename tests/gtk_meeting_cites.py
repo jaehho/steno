@@ -782,6 +782,17 @@ def todo_parts(row: Gtk.Box) -> tuple[Gtk.CheckButton, Gtk.Label, Gtk.Widget]:
     return check, target.get_first_child(), target
 
 
+def find_css(root: Gtk.Widget, name: str) -> Gtk.Widget | None:
+    """The first widget at or under `root` carrying the `name` CSS class."""
+    if root.has_css_class(name):
+        return root
+    for child in children(root):
+        found = find_css(child, name)
+        if found is not None:
+            return found
+    return None
+
+
 class TestTodos(CitedMeeting):
     def todo_rows(self) -> dict[str, Gtk.Box]:
         """The to-do rows by their words."""
@@ -1116,6 +1127,60 @@ class TestStaleState(CitedMeeting):
 
         self.assertIsNone(self.page._active)
         self.assertEqual(self.lit(), [])
+
+
+class TestSidebarWidth(CitedMeeting):
+    """The drag handle has room to move (issue #33).
+
+    `min`-`max` of 260-300 left 40px of travel, so the sidebar read as
+    fixed-width however hard it was dragged. The split is the window's,
+    not the page's, so the numbers live in window.py and are only
+    checked here.
+    """
+
+    def test_the_drag_handle_has_somewhere_to_go(self):
+        split = self.window.split
+        self.assertGreaterEqual(
+            split.get_max_sidebar_width() - split.get_min_sidebar_width(),
+            200,
+        )
+
+    def test_the_sidebar_can_hold_a_meeting_title_at_its_narrowest(self):
+        self.assertGreaterEqual(self.window.split.get_min_sidebar_width(), 200)
+
+    def test_clicking_a_to_dos_text_widens_nothing(self):
+        """The complaint was that a click "expands the todo sidebar".
+
+        What does grow is the cite bar (a places list docked above the
+        player, by design). Neither the split sidebar nor the to-do
+        column may move for it.
+        """
+        split = self.window.split
+        side = find_css(self.page, "side-column")  # the to-do column
+        self.assertIsNotNone(side)
+        target = next(
+            todo_parts(source.mark)[2]
+            for source in self.page._todo_sources
+            if "figures" in source.markup
+        )
+        before = (
+            split.get_sidebar().get_child().get_width(),
+            side.get_width(),
+        )
+
+        click(target)
+        self.assertTrue(wait_for(self.page.cite_bar.get_visible))
+
+        self.assertEqual(
+            (
+                split.get_sidebar().get_child().get_width(),
+                side.get_width(),
+            ),
+            before,
+        )
+        # The bar is what changed, and it stays under its height cap.
+        self.assertTrue(wait_for(lambda: self.page.cite_bar.get_height() > 0))
+        self.assertLessEqual(self.page.cite_bar.scroller.get_height(), 120)
 
 
 if __name__ == "__main__":
