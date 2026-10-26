@@ -28,6 +28,8 @@ from . import (
     __version__,
     config_dir,
     data_dir,
+    icon_host_report,
+    icon_theme_dir,
     log,
     migrate_legacy,
     model_default,
@@ -270,6 +272,9 @@ def cmd_status(_args: argparse.Namespace) -> None:
     if unsummarized:
         print(f"  {len(unsummarized)} without a summary "
               f"(`steno summarize --all` to catch up)")
+    # The same one line the app logs at startup: what the bar and
+    # swaync will find when they resolve the app icon.
+    print(f"icon: {icon_host_report(icon_theme_dir())}")
 
 
 def cmd_pause(args: argparse.Namespace) -> None:

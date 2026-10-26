@@ -19,6 +19,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from steno import cache_verdict, icon_host_report
+
 CHECKOUT = Path(__file__).resolve().parent.parent
 HAS_MAKE = bool(shutil.which("make")) and (CHECKOUT / "Makefile").exists()
 ENTRY = "dev.jaeho.Steno.desktop"
@@ -250,6 +252,72 @@ class Install(unittest.TestCase):
         # Nothing left to remove is not an error.
         self.make("uninstall")
         self.assertEqual(self.files(), before)
+
+
+class IconHostReport(unittest.TestCase):
+    """The one line the app logs and `steno status` prints.
+
+    A cache that is missing or older than the SVG is the proven
+    failure: waybar and swaync then draw error placeholders instead of
+    the icon. The line has to say which of those cases this host is in.
+    """
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory(prefix="steno-icon-")
+        self.addCleanup(scratch.cleanup)
+        self.theme = Path(scratch.name) / "hicolor"
+
+    def place(self, *, svg_at: float | None, cache_at: float | None):
+        """Put the two files in the theme dir with the given mtimes."""
+        svg = self.theme / "scalable" / "apps" / "dev.jaeho.Steno.svg"
+        cache = self.theme / "icon-theme.cache"
+        for path, at in ((svg, svg_at), (cache, cache_at)):
+            if at is None:
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("x")
+            os.utime(path, (at, at))
+        return svg, cache
+
+    def test_a_cache_older_than_the_icon_is_the_placeholder_case(self):
+        self.place(svg_at=200.0, cache_at=100.0)
+        out = icon_host_report(self.theme)
+        self.assertIn("cache older than the icon", out)
+        self.assertIn("error placeholders", out)
+
+    def test_a_missing_cache_is_the_placeholder_case(self):
+        self.place(svg_at=100.0, cache_at=None)
+        out = icon_host_report(self.theme)
+        self.assertIn("cache missing", out)
+        self.assertIn("error placeholders", out)
+
+    def test_a_fresh_cache_is_not_blamed(self):
+        self.place(svg_at=100.0, cache_at=200.0)
+        out = icon_host_report(self.theme)
+        self.assertIn("cache fresh", out)
+        self.assertNotIn("error placeholders", out)
+
+    def test_the_line_names_both_files_with_their_mtimes(self):
+        svg, cache = self.place(svg_at=100.0, cache_at=200.0)
+        out = icon_host_report(self.theme)
+        self.assertIn(str(svg), out)
+        self.assertIn(str(cache), out)
+        self.assertIn("mtime", out)
+
+    def test_an_absent_file_says_so(self):
+        self.place(svg_at=None, cache_at=None)
+        out = icon_host_report(self.theme)
+        self.assertIn("missing", out)
+
+    def test_a_cache_with_no_icon_is_not_called_fresh(self):
+        self.place(svg_at=None, cache_at=100.0)
+        out = icon_host_report(self.theme)
+        self.assertIn("icon missing", out)
+
+    def test_verdict_only_compares_the_two_mtimes(self):
+        self.assertEqual(cache_verdict(100.0, 100.0), "cache fresh")
+        self.assertIn("older", cache_verdict(200.0, 100.0))
+        self.assertIn("missing", cache_verdict(100.0, None))
 
 
 if __name__ == "__main__":

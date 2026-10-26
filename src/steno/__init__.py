@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 __version__ = "0.11.0"
@@ -34,11 +35,70 @@ def ask_model(pref: str = "") -> str:
 
 LEGACY_NAME = "meeting-copilot"
 APP_NAME = "steno"
+# The installed app icon is named for the app id: control.APP_ID, the
+# desktop entry's Icon=, and this file all have to agree.
+APP_ICON = "dev.jaeho.Steno"
 
 
 def icon_dir() -> Path:
     """The icon theme shipped inside the package: the app icon and tray states."""
     return Path(__file__).parent / "data" / "icons"
+
+
+def icon_theme_dir() -> Path:
+    """The user hicolor theme, where hosts resolve `Icon=dev.jaeho.Steno`."""
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "icons" / "hicolor"
+
+
+def _mtime(path: Path) -> float | None:
+    """When `path` was last written, or None if it is not there."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _stamp(path: Path, at: float | None) -> str:
+    """`path` with its mtime, or the word `missing` — for one log line."""
+    if at is None:
+        return f"{path} missing"
+    when = time.strftime("%F %T", time.localtime(at))
+    return f"{path} mtime {when}"
+
+
+def cache_verdict(svg_at: float | None, cache_at: float | None) -> str:
+    """What a stale or missing theme cache means for a host's lookup.
+
+    `svg_at` and `cache_at` are the two files' mtimes, None when a file
+    is absent. An older or missing cache is the proven failure mode:
+    waybar and swaync then draw error placeholders instead of the icon.
+    """
+    if cache_at is None:
+        return "cache missing: hosts fall back to error placeholders"
+    if svg_at is not None and cache_at < svg_at:
+        return "cache older than the icon: hosts fall back to error placeholders"
+    if svg_at is None:
+        return "icon missing"
+    return "cache fresh"
+
+
+def icon_host_report(theme_dir: Path, icon_name: str = APP_ICON) -> str:
+    """One line on the icon a host resolves, and the theme cache beside it.
+
+    Waybar and swaync look `Icon=dev.jaeho.Steno` up under the user
+    hicolor theme. This names the installed SVG and `icon-theme.cache`
+    there with their mtimes and says which case the host is in, so a
+    wrong-looking bar can be told apart from a wrong icon file.
+    """
+    svg = theme_dir / "scalable" / "apps" / f"{icon_name}.svg"
+    cache = theme_dir / "icon-theme.cache"
+    svg_at = _mtime(svg)
+    cache_at = _mtime(cache)
+    return "; ".join((
+        _stamp(svg, svg_at), _stamp(cache, cache_at),
+        cache_verdict(svg_at, cache_at),
+    ))
 
 
 def config_dir() -> Path:

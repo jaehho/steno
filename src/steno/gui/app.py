@@ -25,7 +25,14 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
-from .. import autostart, icon_dir, migrate_legacy, projectnotes
+from .. import (
+    autostart,
+    icon_dir,
+    icon_host_report,
+    icon_theme_dir,
+    migrate_legacy,
+    projectnotes,
+)
 from .. import log as steno_log
 from ..control import APP_ID
 from ..events import (
@@ -100,6 +107,11 @@ class App(Adw.Application):
         display = Gdk.Display.get_default()
         if display is not None:
             Gtk.IconTheme.get_for_display(display).add_search_path(str(icon_dir()))
+        # Hosts resolve the icon outside this process. One line so the
+        # next "the bar shows a placeholder" can be read, not guessed.
+        logging.getLogger("steno.icon").info(
+            "%s", icon_host_report(icon_theme_dir())
+        )
         # Without this the app would exit the moment its last window closed,
         # taking the detector with it. The pipeline outlives every window.
         self.hold()
