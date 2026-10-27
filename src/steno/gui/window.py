@@ -138,6 +138,10 @@ class Window(Adw.ApplicationWindow):
         self.sidebar.refresh()
         self._adopt_running_meeting()
         self.set_state(app.status, app.detail)
+        # Not the Record/Stop button, which GTK would pick first: an
+        # Enter or Space right after launching from rofi or the bar must
+        # not start a recording or split a meeting (issue #20).
+        self.set_focus(self.sidebar.search)
 
     # ----------------------------------------------------------------- building
 

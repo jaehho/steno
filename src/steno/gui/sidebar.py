@@ -196,13 +196,7 @@ class Sidebar(Gtk.Box):
         self._menu: Gtk.PopoverMenu | None = None
 
         self.append(self._build_status())
-
-        self.search = Gtk.SearchEntry()
-        self.search.set_placeholder_text("Search meetings and transcripts")
-        self.search.set_margin_start(8)
-        self.search.set_margin_end(8)
-        self.search.set_margin_bottom(6)
-        self.search.connect("search-changed", self._on_search)
+        self.search = self._build_search()
         self.append(self.search)
 
         self.list = Gtk.ListBox()
@@ -248,6 +242,32 @@ class Sidebar(Gtk.Box):
         return keys
 
     # -------------------------------------------------------------------- owed
+
+    def _build_search(self) -> Gtk.SearchEntry:
+        """The box above the list, with the keys it owes the reader.
+
+        Esc, Enter and the arrows belong to it: Gtk.SearchEntry takes
+        Esc as `stop-search` and never hands it on (the same annoyance
+        as in asst's search), and the list must answer the rest.
+        """
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text("Search meetings and transcripts")
+        search.set_margin_start(8)
+        search.set_margin_end(8)
+        search.set_margin_bottom(6)
+        search.connect("search-changed", self._on_search)
+        search.connect("stop-search", self._on_stop_search)
+        search.connect("activate", self._on_search_activate)
+        search.connect("next-match", lambda _e: self._walk_hits(1))
+        search.connect("previous-match", lambda _e: self._walk_hits(-1))
+        # Arrows walk the hits while typing, so the box keeps the keys.
+        # Capture: the text inside binds Up and Down (to the line ends)
+        # and would take them before a bubbling controller saw them.
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_search_key)
+        search.add_controller(keys)
+        return search
 
     def _build_owed(self) -> Gtk.Widget:
         """What you still owe, across meetings, one flat list.
@@ -473,6 +493,14 @@ class Sidebar(Gtk.Box):
             index = next(
                 (i for i, it in enumerate(self.items) if it != ARCHIVE), -1
             )
+        if index < 0 and self.query:
+            # The meeting on the page is not among the hits: the page
+            # moves to the first hit, so the list and the page agree
+            # (issue #20).
+            index = next(
+                (i for i, it in enumerate(self.items)
+                 if isinstance(it, Session)), -1
+            )
         row = self.list.get_row_at_index(index) if index >= 0 else None
         if row is not None:
             self.list.select_row(row)
@@ -637,7 +665,70 @@ class Sidebar(Gtk.Box):
 
     def _on_search(self, entry) -> None:
         self.query = entry.get_text().strip()
-        self._repopulate(self._selected_key())
+        # A new query is a new question: its first hit is what it means,
+        # so the page starts there rather than at whatever was open
+        # (issue #20). Clearing it keeps the meeting being read.
+        self._repopulate(None if self.query else self._selected_key())
+
+    def _on_stop_search(self, entry) -> None:
+        """Esc in the search box: clear it, or with nothing left to
+        clear, hand the keyboard to the selected row (issue #20). A
+        SearchEntry takes Esc as `stop-search` and never lets it go."""
+        if entry.get_text():
+            entry.set_text("")
+            self._on_search(entry)
+            return
+        row = self.list.get_selected_row()
+        if row is not None:
+            row.grab_focus()
+
+    def _on_search_activate(self, _entry) -> None:
+        """Enter opens the hit being looked at — the first one, right
+        after typing — and hands the keyboard to the meeting page, so
+        Esc and Enter reach it from there (issue #20)."""
+        row = self.list.get_selected_row()
+        if row is None or not isinstance(self._item_at(row.get_index()), Session):
+            row = self._first_hit_row()
+            if row is None:
+                return
+            self.list.select_row(row)
+        self._on_activate()
+
+    def _on_search_key(
+        self, _keys: Gtk.EventControllerKey, key: int, _code: int, _state
+    ) -> bool:
+        """Arrows walk the hits while the box keeps the keys (issue #20)."""
+        step = {Gdk.KEY_Down: 1, Gdk.KEY_Up: -1}.get(key)
+        if step is None:
+            return False
+        self._walk_hits(step)
+        return True
+
+    def _first_hit_row(self) -> Gtk.ListBoxRow | None:
+        """The row of the first meeting the query matched, if any."""
+        for i, item in enumerate(self.items):
+            if isinstance(item, Session):
+                return self.list.get_row_at_index(i)
+        return None
+
+    def _walk_hits(self, step: int) -> None:
+        """Move the selection through the hits; the page follows it."""
+        rows = [
+            self.list.get_row_at_index(i)
+            for i, item in enumerate(self.items)
+            if isinstance(item, Session)
+        ]
+        if not rows:
+            return
+        current = self.list.get_selected_row()
+        try:
+            at = rows.index(current) + step
+        except ValueError:
+            at = 0 if step > 0 else len(rows) - 1
+        row = rows[max(0, min(at, len(rows) - 1))]
+        self.list.select_row(row)
+        give_up = GLib.get_monotonic_time() + SCROLL_GIVE_UP_US
+        GLib.timeout_add(SCROLL_POLL_MS, self._scroll_to, row, give_up)
 
     def _on_row_activated(self, _list, row: Gtk.ListBoxRow) -> None:
         if self._item_at(row.get_index()) == ARCHIVE:

@@ -219,6 +219,106 @@ class TestRowMenu(unittest.TestCase):
         self.assertEqual(self.sidebar.selected, LIVE)
 
 
+class TestSearchKeys(unittest.TestCase):
+    """Esc, Enter and the arrows in the search box (issue #20)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        make_meetings(self.root)
+        self.chosen: list = []
+        self.opened = 0
+        self.sidebar = Sidebar(
+            self.root,
+            on_select=self.chosen.append,
+            on_status_button=lambda _label: None,
+            on_activate=self._opened,
+        )
+        self.sidebar.refresh()
+        self.host = Gtk.Window(child=self.sidebar)
+        self.host.present()
+        settle()
+
+    def _opened(self) -> None:
+        self.opened += 1
+
+    def tearDown(self):
+        self.sidebar._drop_menu()
+        self.host.destroy()
+        settle()
+        self._tmp.cleanup()
+
+    def search(self, text: str) -> None:
+        self.sidebar.search.set_text(text)
+        # search-changed is delayed by the entry; run what it runs.
+        self.sidebar._on_search(self.sidebar.search)
+        settle()
+
+    def test_the_first_hit_is_selected_and_the_page_follows(self):
+        self.assertEqual(self.sidebar.selected.title, "Charlie")
+        self.search("Alpha")
+        self.assertEqual(self.sidebar.selected.title, "Alpha")
+        self.assertEqual(self.chosen[-1].title, "Alpha")
+        row = self.sidebar.list.get_selected_row()
+        self.assertIs(row, self.sidebar.list.get_row_at_index(0))
+
+    def test_a_query_with_no_hit_leaves_the_page_alone(self):
+        self.search("nothing-says-this")
+        self.assertEqual(self.sidebar.items, [])
+        self.assertEqual(self.sidebar.selected.title, "Charlie")
+
+    def test_esc_clears_the_text_and_keeps_the_meeting_being_read(self):
+        self.search("Alpha")
+        self.sidebar.search.emit("stop-search")
+        settle()
+        self.assertEqual(self.sidebar.search.get_text(), "")
+        self.assertEqual(self.sidebar.query, "")
+        self.assertEqual(len(self.sidebar.items), 3)
+        self.assertEqual(self.sidebar.selected.title, "Alpha")
+
+    def test_esc_on_an_empty_box_focuses_the_selected_row(self):
+        self.sidebar.search.grab_focus()
+        settle()
+        self.sidebar.search.emit("stop-search")
+        settle()
+        selected = self.sidebar.list.get_selected_row()
+        self.assertIs(self.sidebar.list.get_focus_child(), selected)
+
+    def test_enter_selects_the_first_hit_and_opens_the_page(self):
+        self.search("hello")
+        first = self.sidebar.items[0].title
+        self.sidebar.search.emit("activate")
+        self.assertEqual(self.sidebar.selected.title, first)
+        self.assertEqual(self.opened, 1)
+
+    def test_enter_with_no_hit_does_nothing(self):
+        self.search("nothing-says-this")
+        self.sidebar.search.emit("activate")
+        self.assertEqual(self.opened, 0)
+
+    def test_the_arrows_walk_the_hits_and_stop_at_the_ends(self):
+        self.search("hello")  # every meeting says it
+        titles = [s.title for s in self.sidebar.items]
+        self.assertEqual(titles, ORDER)
+        self.assertEqual(self.sidebar.selected.title, "Charlie")
+        self.sidebar.search.emit("next-match")
+        self.assertEqual(self.sidebar.selected.title, "Bravo")
+        self.sidebar.search.emit("next-match")
+        self.sidebar.search.emit("next-match")
+        self.assertEqual(self.sidebar.selected.title, "Alpha")
+        self.sidebar.search.emit("previous-match")
+        self.assertEqual(self.sidebar.selected.title, "Bravo")
+        self.assertEqual(self.chosen[-1].title, "Bravo")
+
+    def test_down_and_up_keys_in_the_box_walk_the_hits(self):
+        self.search("hello")
+        self.assertTrue(self.sidebar._on_search_key(None, Gdk.KEY_Down, 0, 0))
+        self.assertEqual(self.sidebar.selected.title, "Bravo")
+        self.assertTrue(self.sidebar._on_search_key(None, Gdk.KEY_Up, 0, 0))
+        self.assertEqual(self.sidebar.selected.title, "Charlie")
+        self.assertFalse(self.sidebar._on_search_key(None, Gdk.KEY_a, 0, 0))
+
+
 class RecordingStartedError(AssertionError):
     """A menu test must never start a recording."""
 
@@ -267,6 +367,14 @@ class TestMenuInTheWindow(unittest.TestCase):
 
     def row(self, index: int) -> Gtk.ListBoxRow:
         return self.sidebar.list.get_row_at_index(index)
+
+    def test_it_opens_on_the_search_box_not_on_record(self):
+        focus = self.window.get_focus()
+        self.assertNotIsInstance(focus, Gtk.Button)
+        self.assertTrue(
+            focus is self.sidebar.search
+            or focus.is_ancestor(self.sidebar.search)
+        )
 
     def test_it_is_the_menu_in_the_page_header(self):
         right_click(self.row(1))
