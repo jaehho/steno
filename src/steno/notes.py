@@ -597,6 +597,117 @@ def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) 
     return moved
 
 
+def rename_todo(session_dir: Path, key: str, text: str) -> Todo | None:
+    """Reword a row in todos.json, fast. The row that now has the new
+    wording, or None when there is no such row, the wording is empty or
+    another row already says it (the wording is how a row is found).
+
+    The row keeps its source, uid and state: it is the same promise, said
+    better. Telling asst is `deliver_title`, which is slow.
+    """
+    text = " ".join(text.split())
+    if not text:
+        return None
+    new_key = Todo(text=text).key
+    found: list[Todo] = []
+
+    def patch(todos: list[Todo]) -> bool:
+        row = next((t for t in todos if t.key == key), None)
+        if row is None or any(
+            t is not row and t.key == new_key for t in todos
+        ):
+            return False
+        # Frozen from the old wording, or the new one would name a task
+        # asst has never heard of.
+        _with_src(session_dir, row)
+        row.text = text
+        found.append(row)
+        return True
+
+    _edit(session_dir, patch)
+    return found[0] if found else None
+
+
+def deliver_title(uid: str, text: str) -> bool:
+    """Tell asst about a rewording. Slow: not for the GTK thread. An
+    unfiled row has nothing to tell, which is not a failure."""
+    if not uid or not asstlink.available():
+        return True
+    return asstlink.set_title(uid, " ".join(text.split()))
+
+
+def remove_todo(session_dir: Path, key: str) -> Todo | None:
+    """Take a row out of todos.json, fast; the row, or None if it was not
+    there. Its asst task is `deliver_remove`, which is slow."""
+    gone: list[Todo] = []
+
+    def patch(todos: list[Todo]) -> bool:
+        for t in todos:
+            if t.key == key:
+                gone.append(t)
+                todos.remove(t)
+                return True
+        return False
+
+    _edit(session_dir, patch)
+    return gone[0] if gone else None
+
+
+def deliver_remove(uid: str) -> bool:
+    """Delete a removed row's task in asst. Slow: not for the GTK thread.
+    An unfiled row has no task, which is not a failure."""
+    if not uid or not asstlink.available():
+        return True
+    return asstlink.rm_todo(uid)
+
+
+def add_todo_row(session_dir: Path, text: str) -> Todo | None:
+    """Add an item of your own to todos.json, fast. None when the wording
+    is empty or a row already says it.
+
+    It files like any item of yours (`file_with_asst`), which is slow and
+    is left to the caller.
+    """
+    text = " ".join(text.split())
+    if not text:
+        return None
+    fresh = Todo(text=text, owner="you")
+    _with_src(session_dir, fresh)
+    added: list[Todo] = []
+
+    def patch(todos: list[Todo]) -> bool:
+        if any(t.key == fresh.key for t in todos):
+            return False
+        todos.append(fresh)
+        added.append(fresh)
+        return True
+
+    _edit(session_dir, patch)
+    return added[0] if added else None
+
+
+def move_todo(session_dir: Path, key: str, list_name: str | None) -> bool:
+    """Move one filed row's task to another asst list (None is the inbox).
+    Slow. False when the row is not filed or asst would not move it."""
+    row = next((t for t in load_todos(session_dir) if t.key == key), None)
+    if row is None or not row.uid or not asstlink.available():
+        return False
+    if not asstlink.move_todos([row.uid], list_name):
+        return False
+    where = list_name or "Inbox"
+
+    def relist(current: list[Todo]) -> bool:
+        changed = False
+        for t in current:
+            if t.uid == row.uid and t.list_name != where:
+                t.list_name = where
+                changed = True
+        return changed
+
+    _edit(session_dir, relist)
+    return True
+
+
 def forget_asst(session_dir: Path, todos: list[Todo] | None = None) -> int:
     """The meeting is going away: take its asst tasks with it.
 

@@ -29,13 +29,20 @@ from ..notes import (
     Dropped,
     Restored,
     Todo,
+    add_todo_row,
     deliver_done,
+    deliver_remove,
+    deliver_title,
     drop_open_todos,
     ensure_todos,
+    file_with_asst,
     forget_asst,
     load_todos,
+    move_todo,
     move_with_asst,
     pull_todos,
+    remove_todo,
+    rename_todo,
     restore_dropped_todos,
     set_done_local,
 )
@@ -65,6 +72,7 @@ from .player import Player
 from .rewrite import QUIT_WAIT_S, Rewriter
 from .sidebar import Session
 from .summary import CiteBar, CitedBox, CiteSource, SummaryView, make_citable
+from .todoedit import RowMenus, ask_list, ask_text
 from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
 
 NUDGE_S = 10.0
@@ -96,7 +104,7 @@ def slot(name: str) -> Adw.LayoutSlot:
 
 
 class MeetingPage(Gtk.Box):
-    def __init__(  # noqa: PLR0913, PLR0917 - one callback per gesture the page hands up
+    def __init__(  # noqa: PLR0913, PLR0915, PLR0917 - one callback per gesture the page hands up
         self,
         on_ask: Callable[[Path, str], None],
         on_realign: Callable[..., None] | None,
@@ -153,6 +161,8 @@ class MeetingPage(Gtk.Box):
         # The to-dos on the page that cite, to find the lit one again when
         # the list is rebuilt.
         self._todo_sources: list[CiteSource] = []
+        # The menu of the to-do row that asked for one (issue #22).
+        self._row_menus = RowMenus()
         # Which to-dos are ticked, as last shown: a pull that finds
         # another state changed something the project's copy shows.
         self._ticks: dict[str, bool] = {}
@@ -728,6 +738,8 @@ class MeetingPage(Gtk.Box):
             self._rewriter.changed(session_dir)
 
     def _load_todos(self, s: Session, todos: list[Todo]) -> None:
+        # Parented to a row that is about to go.
+        self._row_menus.drop()
         while (child := self.todo_box.get_first_child()) is not None:
             self.todo_box.remove(child)
         self._todo_sources = []
@@ -744,6 +756,7 @@ class MeetingPage(Gtk.Box):
                 "Nothing to do out of this one." if s.summary_path.is_file()
                 else "To-dos come with the summary."
             ))
+            self._append_add_row(s)
             self._keep_todo_cite()
             return
         # Two groups, not one list with a tiny owner tag. Your work is the
@@ -766,7 +779,26 @@ class MeetingPage(Gtk.Box):
             self.todo_box.append(self._group_label("Waiting on them"))
             for todo in theirs:
                 self.todo_box.append(self._todo_row(s, todo))
+        self._append_add_row(s)
         self._keep_todo_cite()
+
+    def _append_add_row(self, s: Session) -> None:
+        """The way to add a to-do the model missed. A meeting put away is
+        read, not edited."""
+        if s.archived:
+            return
+        add = Gtk.Button()
+        add.add_css_class("flat")
+        add.add_css_class("add-todo")
+        add.set_halign(Gtk.Align.START)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.append(Gtk.Image.new_from_icon_name("list-add-symbolic"))
+        box.append(Gtk.Label(label="Add a to-do"))
+        add.set_child(box)
+        add.set_tooltip_text("Something you owe from this meeting")
+        add.connect("clicked", lambda _b: self._add_todo(s))
+        self.todo_box.append(add)
+        self.add_todo_button = add
 
     def _keep_todo_cite(self) -> None:
         """The to-do list was rebuilt (asst answered, a project moved the
@@ -829,12 +861,8 @@ class MeetingPage(Gtk.Box):
             check.set_child(label)
             row.append(check)
         # asst list, right-aligned. The group header already says whose it is.
-        if todo.list_name:
-            where = Gtk.Label(label=todo.list_name, xalign=1.0)
-            where.add_css_class("hint")
-            where.add_css_class("todo-list")
-            where.set_valign(Gtk.Align.START)
-            where.set_margin_top(4)
+        where = self._list_name(todo)
+        if where is not None:
             row.append(where)
 
         def toggled(button):
@@ -858,7 +886,146 @@ class MeetingPage(Gtk.Box):
             self._on_session_changed(s)
 
         check.connect("toggled", toggled)
+        if not s.archived:
+            self._row_menus.attach(row, bool(todo.uid), {
+                "edit": lambda: self._edit_todo(s, todo),
+                "remove": lambda: self._confirm_remove_todo(s, todo),
+                "open": lambda: self._open_todo(todo),
+                "move": lambda: self._move_todo(s, todo),
+            })
         return row
+
+    def _list_name(self, todo: Todo) -> Gtk.Widget | None:
+        """The asst list the task sits in, right-aligned (the group header
+        already says whose it is). On a filed task it is also the way to
+        it (issue #22)."""
+        if not todo.list_name:
+            return None
+        if todo.uid:
+            where = Gtk.Button(label=todo.list_name)
+            where.add_css_class("flat")
+            where.set_tooltip_text("Open in asst")
+            where.connect("clicked", lambda _b: self._open_todo(todo))
+        else:
+            where = Gtk.Label(label=todo.list_name, xalign=1.0)
+            where.set_margin_top(4)
+        where.add_css_class("hint")
+        where.add_css_class("todo-list")
+        where.set_valign(Gtk.Align.START)
+        return where
+
+    # ------------------------------------------------------- editing to-dos
+
+    def _todos_changed(self, s: Session) -> None:
+        """A to-do was edited, added or removed here: draw the list again,
+        and tell the project's pages and the sidebar's count."""
+        self._refresh_todos(s)
+        self._changed(s.dir)
+        self._on_session_changed(s)
+
+    def _refresh_todos(self, s: Session) -> bool:
+        if self.current is not None and self.current.dir == s.dir:
+            self._load_todos(s, load_todos(s.dir))
+        return GLib.SOURCE_REMOVE
+
+    def _in_asst(self, s: Session, work, failed: str) -> None:
+        """Tell asst on a thread of its own: it can take seconds, and the
+        edit is already made here. `work` says whether asst took it."""
+        def run(_s: Session) -> None:
+            if not work():
+                GLib.idle_add(self._toast, failed)
+
+        self._in_asst_thread(run, s)
+
+    def _edit_todo(self, s: Session, todo: Todo) -> None:
+        ask_text(
+            self, "Edit to-do", "",
+            lambda text: self._reword_todo(s, todo, text),
+            confirm="Save", initial=todo.text,
+        )
+
+    def _reword_todo(self, s: Session, todo: Todo, text: str) -> None:
+        if Todo(text=text).key == todo.key:
+            return
+        row = rename_todo(s.dir, todo.key, text)
+        if row is None:
+            self._toast("That is empty, or already on the list")
+            return
+        self._todos_changed(s)
+        if todo.uid:
+            self._in_asst(
+                s, lambda: deliver_title(todo.uid, row.text),
+                "asst did not take the new wording; its task keeps the old",
+            )
+
+    def _confirm_remove_todo(self, s: Session, todo: Todo) -> None:
+        also = " Its task in asst is deleted too." if todo.uid else ""
+        self._dialog(
+            "Remove this to-do?", f"“{todo.text}”.{also}", "Remove",
+            lambda: self._remove_todo(s, todo),
+        )
+
+    def _remove_todo(self, s: Session, todo: Todo) -> None:
+        if remove_todo(s.dir, todo.key) is None:
+            return
+        self._todos_changed(s)
+        if todo.uid:
+            self._in_asst(
+                s, lambda: deliver_remove(todo.uid),
+                "asst would not delete its task; it is still there",
+            )
+
+    def _add_todo(self, s: Session) -> None:
+        ask_text(
+            self, "Add a to-do", "Something you owe from this meeting.",
+            lambda text: self._add_todo_text(s, text), confirm="Add",
+        )
+
+    def _add_todo_text(self, s: Session, text: str) -> None:
+        row = add_todo_row(s.dir, text)
+        if row is None:
+            self._toast("That is empty, or already on the list")
+            return
+        self._todos_changed(s)
+
+        def file() -> bool:
+            # Only this one: filing is for what was asked for, not for
+            # whatever else is still waiting.
+            file_with_asst(s.dir, [row])
+            GLib.idle_add(self._refresh_todos, s)
+            return True
+
+        self._in_asst(s, file, "")
+
+    def _open_todo(self, todo: Todo) -> None:
+        if not asstlink.open_todo(todo.uid):
+            self._toast("Could not open asst")
+
+    def _move_todo(self, s: Session, todo: Todo) -> None:
+        def fetch(_s: Session) -> None:
+            names = asstlink.list_names()
+            GLib.idle_add(self._ask_move, s, todo, names)
+
+        self._in_asst_thread(fetch, s)
+
+    def _ask_move(self, s: Session, todo: Todo, names: list[str]) -> bool:
+        choices = ["Inbox"] + [n for n in names if n.lower() != "inbox"]
+        if len(choices) == 1 and not names:
+            self._toast("asst has no lists to move it to")
+            return GLib.SOURCE_REMOVE
+        ask_list(
+            self, "Move to list", choices, todo.list_name,
+            lambda name: self._move_todo_to(s, todo, name),
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _move_todo_to(self, s: Session, todo: Todo, name: str) -> None:
+        def move() -> bool:
+            ok = move_todo(s.dir, todo.key, None if name == "Inbox" else name)
+            GLib.idle_add(self._refresh_todos, s)
+            return ok
+
+        self._in_asst(s, move, "asst would not move its task")
 
     def _load_transcript(self, s: Session) -> None:
         while (row := self.transcript_list.get_first_child()) is not None:

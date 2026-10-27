@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 TIMEOUT_S = 15.0
@@ -216,6 +217,38 @@ def move_todos(uids: list[str], list_name: str | None) -> int:
         if uid and _run(["edit", uid, "--list", target]) is not None:
             moved += 1
     return moved
+
+
+def set_title(uid: str, text: str) -> bool:
+    """Reword a filed task. False means asst did not take it.
+
+    `--title=TEXT`, one argument: wording that starts with a dash is text,
+    not an option.
+    """
+    return bool(uid) and _run(["edit", uid, f"--title={text}"]) is not None
+
+
+def open_todo(uid: str) -> bool:
+    """Show a filed task in asst's window. False when it could not start.
+
+    Started and left alone: `asst open` may stay until the window it asked
+    for is closed, so it must not run under a timeout that kills it.
+    """
+    if not uid or not available():
+        return False
+    try:
+        proc = subprocess.Popen(
+            ["asst", "open", uid],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
+    # Reaped when it ends, without anyone waiting on it.
+    threading.Thread(target=proc.wait, name="asst-open", daemon=True).start()
+    return True
 
 
 def rm_todo(uid: str) -> bool:

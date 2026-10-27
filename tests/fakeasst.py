@@ -67,6 +67,7 @@ elif cmd == "add":
             "id": f"T{{len(tasks) + 1:03d}}",
             "source": source,
             "status": "needs-action",
+            "title": rest[-1],
             "list_name": rest[rest.index("--list") + 1]
             if "--list" in rest else "Inbox",
             "deleted": False,
@@ -86,9 +87,15 @@ elif cmd in ("done", "reopen", "show", "edit"):
     elif cmd == "reopen":
         task["status"] = "needs-action"
     elif cmd == "edit":
-        task["list_name"] = rest[rest.index("--list") + 1]
+        if "--list" in rest:
+            task["list_name"] = rest[rest.index("--list") + 1]
+        for arg in rest[1:]:
+            if arg.startswith("--title="):
+                task["title"] = arg[len("--title="):]
     save()
     print(json.dumps(view(task)))
+elif cmd == "open":
+    task = find(rest[0]) or fail("no such task")
 elif cmd == "rm":
     task = find(rest[0]) or fail("no such task")
     if rest[0] in state["refuse_rm"]:

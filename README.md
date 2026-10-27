@@ -116,7 +116,15 @@ and has a **Summarize now** button. A meeting's to-dos sit in two groups: **For
 you**, which also holds any item nobody has claimed, and **Waiting on them**,
 what someone else promised, kept as a reminder. Only the first is counted, in
 the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
-still owe across every meeting; a row opens its meeting. The ⋯ menu acts on
+still owe across every meeting; a row opens its meeting. The model's action
+items are the weakest part, so each to-do row has a menu (right-click, or
+`Menu` / `Shift+F10`): **Edit** the wording, **Remove** a wrong one, and, when
+asst holds the task, **Open in asst** (the list name beside the row does the
+same) and **Move to list**. **Add a to-do** at the end of the section files
+one the model missed under the meeting's project list. Edit and Remove reach
+asst too (`asst edit`, `asst rm`); a row that never reached asst, and what
+others owe, stay here. A re-summarize can bring back a row you removed, since
+the model says it again. The ⋯ menu acts on
 the meeting you are looking at: summarize it again, re-time it against its
 audio, join it with the meeting before, drop the audio but keep the words,
 copy or save the meeting as markdown, put it away (Archive, below), or

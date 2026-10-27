@@ -242,6 +242,8 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
     .owner-you  {{ color: {colors['teal']}; }}
     .owner-them {{ color: {colors['overlay2']}; }}
     .todo-list {{ color: {colors['overlay0']}; }}
+    button.todo-list {{ padding: 0 6px; min-height: 0; border-radius: 8px; }}
+    button.add-todo {{ padding: 2px 8px; min-height: 0; border-radius: 8px; color: {colors['overlay2']}; }}
 
     .player-bar {{
         background: {colors['mantle']};
