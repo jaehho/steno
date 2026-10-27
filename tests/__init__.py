@@ -14,6 +14,12 @@ from steno import asstlink
 # way), `asst` cannot reach the user's asstd; it fails to connect and exits.
 os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/nonexistent/steno-tests"
 
+# asst's launcher forks a background cargo build when its checkout moved,
+# and that child holds the pipes of any test that captures asst's output
+# until the build ends (a 15 s timeout in TestSuiteIsolation). The flag is
+# the launcher's own switch for callers that only read.
+os.environ["ASST_NO_REBUILD"] = "1"
+
 # The same for the vault: a test run must not make links in the user's
 # real Obsidian. Tests that mean to exercise the sync point
 # STENO_OBSIDIAN_DIR at a scratch one.
