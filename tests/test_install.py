@@ -48,10 +48,11 @@ class Install(unittest.TestCase):
         home.mkdir()
         self.launcher = self.scratch / "prefix/bin/steno"
         self.entry = self.scratch / "share/applications" / ENTRY
-        # Leave out make's own flags: this runs under `make test`.
+        # Leave out make's own flags: this runs under `make test`. And
+        # STENO_SRC, which would send the launcher to another tree.
         env = {
             k: v for k, v in os.environ.items()
-            if not k.startswith(("MAKE", "MFLAGS"))
+            if not k.startswith(("MAKE", "MFLAGS")) and k != "STENO_SRC"
         }
         env.update(
             HOME=str(home),
