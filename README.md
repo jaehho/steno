@@ -42,11 +42,7 @@ not read `~/.config/autostart`; on a desktop that does, `make autostart` (the
 same as the menu toggle) is the portable equivalent. Both are idempotent, back up what they touch, and have an
 `un` twin.
 
-`make install` needs no sudo and installs no package: the launcher runs this
-checkout, so `git pull` is the update (`make venv` again after a
-dependency change). `make uninstall` removes the launcher,
-the entry and the icon and leaves your config, sessions and notes. `make
-package` builds the Arch package locally without installing it.
+`make install` needs no sudo and installs no package: the launcher, `scripts/steno-live` with this checkout's path written in, runs the checkout's `.venv/bin/steno`, so `git pull` is the update (`make venv` again after a dependency change). `STENO_SRC` points it at another tree with a `.venv` of its own, a worktree say (`STENO_SRC=~/src/steno-wip steno`), and `scripts/steno-live` run where it is runs the checkout it sits in. `make uninstall` removes the launcher, the entry and the icon and leaves your config, sessions and notes. `make package` builds the Arch package locally without installing it.
 
 Note that `uv tool install` does **not** work: it builds an isolated venv, and
 the window needs the system `python-gobject`, which such a venv can never see.

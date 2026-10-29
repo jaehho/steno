@@ -1,0 +1,156 @@
+#!/bin/sh
+# What steno-live must do: run a checkout's .venv/bin/steno as this same
+# process, with the arguments it was given; find the checkout `make
+# install` baked in, the one it sits in when run out of scripts/, or
+# STENO_SRC's; refuse a tree that is not a checkout or has no .venv,
+# saying so, and run nothing then.
+#
+# Nothing here runs the real steno. Every tree is a scratch one whose
+# .venv/bin/steno only records that it ran, HOME is scratch (the last
+# fallback is $HOME/projects/steno), and scripts/steno-live is only ever
+# run from a copy: in place it would find this checkout's real venv.
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+mkdir -p "$tmp/bin"
+# A notify-send that records instead of reaching the desktop.
+cat >"$tmp/bin/notify-send" <<'EOF'
+#!/bin/sh
+echo "notified:$*" >>"$NOTIFIED"
+EOF
+chmod +x "$tmp/bin/notify-send"
+
+export MARKER="$tmp/marker"
+export NOTIFIED="$tmp/notified"
+# No bus either, for anything that finds the real notify-send.
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$tmp/no-bus"
+export HOME="$tmp/home"
+export PATH="$tmp/bin:$PATH"
+unset STENO_SRC
+
+die() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+# A checkout at $1: the file the launcher knows one by, a copy of the
+# launcher, and a venv whose steno records its tree's name and its
+# arguments, leaves its PID beside them, and exits with $STATUS.
+tree() {
+  mkdir -p "$1/src/steno" "$1/.venv/bin" "$1/scripts"
+  : >"$1/src/steno/__init__.py"
+  cp "$here/steno-live" "$1/scripts/steno-live"
+  cat >"$1/.venv/bin/steno" <<'EOF'
+#!/bin/sh
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+{
+  printf 'ran %s:' "${root##*/}"
+  for a; do printf ' [%s]' "$a"; done
+  echo
+} >>"$MARKER"
+echo $$ >"$MARKER.pid"
+exit "${STATUS:-0}"
+EOF
+  chmod +x "$1/.venv/bin/steno"
+}
+
+# What ran since the last call, against what should have.
+ran() {
+  got=$(cat "$MARKER" 2>/dev/null || true)
+  rm -f "$MARKER"
+  [ "$got" = "$1" ] || die "$2: expected '$1', got '$got'"
+}
+
+tree "$tmp/checkout"
+tree "$tmp/other"
+# The fallback, there to be wrongly picked.
+tree "$tmp/home/projects/steno"
+
+# Run out of scripts/: the checkout it sits in, from any directory, with
+# every argument as it was given.
+(cd "$tmp" && "$tmp/checkout/scripts/steno-live" gui 'two words' '') ||
+  die "the launcher in scripts/ exited non-zero"
+ran "ran checkout: [gui] [two words] []" "run out of scripts/"
+
+# STENO_SRC wins over the tree it sits in.
+STENO_SRC="$tmp/other" "$tmp/checkout/scripts/steno-live" x ||
+  die "STENO_SRC run exited non-zero"
+ran "ran other: [x]" "STENO_SRC"
+
+# exec: the app is the launcher's own process, and its status is the
+# launcher's.
+STATUS=3 "$tmp/checkout/scripts/steno-live" &
+pid=$!
+status=0
+wait "$pid" || status=$?
+[ "$status" = 3 ] || die "exit status 3 came back as $status"
+[ "$(cat "$MARKER.pid")" = "$pid" ] ||
+  die "steno ran as a child, not in the launcher's process"
+ran "ran checkout:" "exec"
+
+# Installed by the real `make link`: the checkout it was installed from
+# wins over $HOME/projects/steno, from anywhere, and STENO_SRC still
+# wins over that.
+cp "$here/../Makefile" "$tmp/checkout/Makefile"
+env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
+  make -s -C "$tmp/checkout" link PREFIX="$tmp/prefix" >/dev/null ||
+  die "make link failed"
+(cd "$tmp" && "$tmp/prefix/bin/steno" status) ||
+  die "the installed launcher exited non-zero"
+ran "ran checkout: [status]" "installed"
+STENO_SRC="$tmp/other" "$tmp/prefix/bin/steno" y ||
+  die "installed STENO_SRC run exited non-zero"
+ran "ran other: [y]" "installed, with STENO_SRC"
+# Installing rewrote the copy, not the template it was made from.
+grep -q '^DEFAULT_ROOT="@ROOT@"$' "$tmp/checkout/scripts/steno-live" ||
+  die "make link edited scripts/steno-live in place"
+grep -q '^DEFAULT_ROOT="@ROOT@"$' "$here/steno-live" ||
+  die "scripts/steno-live lost its @ROOT@ sentinel"
+
+# An uninstalled copy outside any checkout: $HOME/projects/steno.
+cp "$here/steno-live" "$tmp/bin/steno"
+"$tmp/bin/steno" z || die "the fallback run exited non-zero"
+ran "ran steno: [z]" "fallback to \$HOME/projects/steno"
+
+[ ! -e "$NOTIFIED" ] || die "a run that worked notified: $(cat "$NOTIFIED")"
+
+# Not a checkout: refuse, say which tree and how to point elsewhere, and
+# tell the desktop (a launch from rofi has no terminal).
+if out=$(STENO_SRC="$tmp/nowhere" "$tmp/checkout/scripts/steno-live" 2>&1)
+then
+  die "a missing checkout exited zero"
+fi
+ran "" "a missing checkout"
+case $out in
+  *"no checkout at $tmp/nowhere (set STENO_SRC)"*) ;;
+  *) die "no clear message for a missing checkout; got: $out" ;;
+esac
+grep -q "^notified:.*no checkout at $tmp/nowhere" "$NOTIFIED" ||
+  die "no notification for a missing checkout"
+
+# The bar module fails quietly: waybar reruns it every few seconds.
+rm "$NOTIFIED"
+if STENO_SRC="$tmp/nowhere" "$tmp/checkout/scripts/steno-live" bar \
+  2>/dev/null; then
+  die "steno bar with a missing checkout exited zero"
+fi
+[ ! -e "$NOTIFIED" ] ||
+  die "steno bar notified: $(cat "$NOTIFIED")"
+
+# A checkout with no venv: refuse, and say how to build one.
+tree "$tmp/bare"
+rm -r "$tmp/bare/.venv"
+if out=$(STENO_SRC="$tmp/bare" "$tmp/checkout/scripts/steno-live" 2>&1)
+then
+  die "a checkout with no .venv exited zero"
+fi
+ran "" "a checkout with no .venv"
+case $out in
+  *"no .venv in $tmp/bare (run make venv there)"*) ;;
+  *) die "no clear message for a missing .venv; got: $out" ;;
+esac
+
+echo "steno-live: ok"
