@@ -81,5 +81,38 @@ class TestOpenSession(unittest.TestCase):
         self.assertEqual(self.shown(), "Alpha")
 
 
+class TestBeforeTheFirstFrame(unittest.TestCase):
+    """The window is drawn empty first, and the meetings load after, so
+    a click on Steno shows at once."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        make_meetings(self.root)
+        self.app = StubApp()
+        self.app.register(None)
+        self.window = Window(self.app, self.root)
+
+    def tearDown(self):
+        self.window.destroy()
+        settle()
+        self._tmp.cleanup()
+
+    def test_the_meetings_load_once_it_is_drawn(self):
+        self.assertEqual(self.window.sidebar.sessions, [])
+        self.window.present()
+        settle()
+        self.assertEqual(self.window.sidebar.selected.title, "Charlie")
+
+    def test_a_meeting_asked_for_before_then_is_the_one_shown(self):
+        # App.open_session with no window yet: present, then ask, before
+        # the main loop has drawn anything.
+        self.window.present()
+        self.window.show_session(self.root / "20260110-090000")
+        settle()
+        self.assertEqual(self.window.sidebar.selected.title, "Alpha")
+        self.assertEqual(self.window.meeting.current.title, "Alpha")
+
+
 if __name__ == "__main__":
     unittest.main()

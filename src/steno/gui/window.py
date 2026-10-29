@@ -83,6 +83,9 @@ class Window(Adw.ApplicationWindow):
         self._asker: AskBox | None = None
         self._live_started = 0.0
         self._live_app = ""
+        # The meetings load once the window is on screen (`load`).
+        self._loaded = False
+        self._select_on_load: Path | None = None
 
         self.live = LivePage(on_ask=self._ask_live)
         self._css = Gtk.CssProvider()
@@ -135,13 +138,12 @@ class Window(Adw.ApplicationWindow):
         self._install_actions()
         self.connect("close-request", self._on_close)
         GLib.timeout_add_seconds(1, self._tick)
-        self.sidebar.refresh()
-        self._adopt_running_meeting()
         self.set_state(app.status, app.detail)
         # Not the Record/Stop button, which GTK would pick first: an
         # Enter or Space right after launching from rofi or the bar must
         # not start a recording or split a meeting (issue #20).
         self.set_focus(self.sidebar.search)
+        self.connect("realize", self._load_once_painted)
 
     # ----------------------------------------------------------------- building
 
@@ -446,8 +448,44 @@ class Window(Adw.ApplicationWindow):
                 self.set_state(self.app.status, self.app.detail)
         return GLib.SOURCE_CONTINUE
 
+    def _load_once_painted(self, _window) -> None:
+        """Load the meetings after the first frame, empty, is out.
+
+        Reading them and laying out a long transcript takes seconds, and
+        a window that only appears then makes a click on Steno look lost.
+        """
+        clock = self.get_frame_clock()
+        if clock is None:  # no frame to wait for
+            GLib.idle_add(self.load)
+            return
+        handler = 0
+
+        def painted(_clock) -> None:
+            clock.disconnect(handler)
+            GLib.idle_add(self.load)
+
+        handler = clock.connect("after-paint", painted)
+
+    def load(self) -> None:
+        """The meetings, and a meeting already going, into the window.
+
+        Runs once, after the first frame; whatever needs them drawn in
+        that frame can run it before.
+        """
+        if self._loaded:
+            return
+        self._loaded = True
+        # The empty frame reaches the compositor before this blocks.
+        self.get_display().flush()
+        self.sidebar.refresh(select=self._select_on_load)
+        # One that started while the window was loading is on its page.
+        if self.sidebar.live_dir is None:
+            self._adopt_running_meeting()
+
     def refresh_if_stale(self) -> None:
         """Catch up with anything the CLI changed while the window was hidden."""
+        if not self._loaded:
+            return  # the first load reads them all
         if self.sidebar.refresh_if_stale():
             selected = self.sidebar.selected
             if isinstance(selected, Session):
@@ -458,7 +496,10 @@ class Window(Adw.ApplicationWindow):
 
     def show_session(self, session_dir: Path | None) -> None:
         """Open one meeting - where a summary notification lands."""
-        self.sidebar.refresh(select=session_dir)
+        if self._loaded:
+            self.sidebar.refresh(select=session_dir)
+        else:
+            self._select_on_load = session_dir
         self.split.set_show_content(True)
 
     # ------------------------------------------------------------ user gestures
