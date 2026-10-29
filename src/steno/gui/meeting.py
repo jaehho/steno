@@ -84,6 +84,11 @@ PULL_S = 60
 # out, and drops the jump after JUMP_GIVE_UP_US (a window that never shows).
 JUMP_POLL_MS = 16
 JUMP_GIVE_UP_US = 2 * GLib.USEC_PER_SEC
+# A transcript goes into the page a screenful first and then a few lines a
+# frame: laid out at once, two thousand lines held the window still for
+# seconds.
+FIRST_LINES = 40
+LINES_PER_FRAME = 8
 
 # What "listen to" means for each side. Both sides at once is the default,
 # because that is what the meeting sounded like; the solo settings are for the
@@ -150,6 +155,13 @@ class MeetingPage(Gtk.Box):
         # cite is written in; `_offsets` is where its audio starts.
         self._display: list[int] = []
         self._rows: list[Gtk.ListBoxRow] = []
+        # How many of `_rows` are in the list yet, and the frame callback
+        # adding the rest (`_fill`), which waits while `fill_held`: the
+        # window holds it while the page fades in, so the fade has the
+        # frames to itself.
+        self._attached = 0
+        self._filling = 0
+        self.fill_held = False
         self._playing_index = -1
         # What was last asked where it was said, and the lines that answer.
         self._active: CiteSource | None = None
@@ -355,10 +367,6 @@ class MeetingPage(Gtk.Box):
 
     # ------------------------------------------------------------------ loading
 
-    def _clear_hits(self) -> None:
-        for row in self._rows:
-            row.remove_css_class("line-hit")
-
     def jump_to(self, query: str) -> None:
         """Scroll the transcript to the first line a search matched.
 
@@ -394,6 +402,7 @@ class MeetingPage(Gtk.Box):
 
         Runs until the line has a place; True means ask again.
         """
+        self._attach_through(row)
         scroller = row.get_ancestor(Gtk.ScrolledWindow)
         if scroller is None:  # another meeting replaced the rows
             return GLib.SOURCE_REMOVE
@@ -1039,17 +1048,46 @@ class MeetingPage(Gtk.Box):
         self._display = [
             display_offset(r, self._started_at) for r in self._records
         ]
-        self._rows = []
         self._playing_index = -1
 
-        for record in self._records:
-            row = _transcript_row(record, self._started_at)
-            self.transcript_list.append(row)
-            self._rows.append(row)
-        self._clear_hits()
+        # Every line's row now, for whatever marks lines by number; into
+        # the list a screenful at once and the rest by frames.
+        self._rows = [_transcript_row(r, self._started_at) for r in self._records]
+        self._attached = 0
+        self._attach(FIRST_LINES)
+        if self._filling:
+            self.transcript_list.remove_tick_callback(self._filling)
+            self._filling = 0
+        if self._attached < len(self._rows):
+            self._filling = self.transcript_list.add_tick_callback(self._fill)
         if not self._records:
             self.transcript_list.append(hint_label("No transcript."))
         self._update_player(s)
+
+    def _attach(self, count: int) -> None:
+        """Put the next `count` lines into the list."""
+        end = min(len(self._rows), self._attached + count)
+        for row in self._rows[self._attached:end]:
+            self.transcript_list.append(row)
+        self._attached = end
+
+    def _fill(self, _widget, _clock) -> bool:
+        """One frame's lines; until the transcript is all in."""
+        if self.fill_held:
+            return GLib.SOURCE_CONTINUE
+        self._attach(LINES_PER_FRAME)
+        if self._attached < len(self._rows):
+            return GLib.SOURCE_CONTINUE
+        self._filling = 0
+        return GLib.SOURCE_REMOVE
+
+    def _attach_through(self, row: Gtk.ListBoxRow) -> bool:
+        """Put the lines up to `row` into the list now, for a jump that
+        will not wait for the frames. True if `row` was not in it."""
+        if row.get_parent() is not None or row not in self._rows:
+            return False
+        self._attach(self._rows.index(row) + 1 - self._attached)
+        return True
 
     def _update_player(self, s: Session) -> None:
         tracks = session_tracks(s.dir)
@@ -1176,6 +1214,11 @@ class MeetingPage(Gtk.Box):
 
     def _bring_into_view(self, row: Gtk.ListBoxRow) -> None:
         """Scroll just enough that the playing line is on screen. No focus."""
+        if self._attach_through(row):
+            # In the list only now, so with no place until the next frame.
+            give_up = GLib.get_monotonic_time() + JUMP_GIVE_UP_US
+            GLib.timeout_add(JUMP_POLL_MS, self._scroll_to_row, row, give_up)
+            return
         if self._row_in_view(row) is not False:
             return
         frame = self._row_frame(row)
@@ -1721,6 +1764,10 @@ def _transcript_row(record: dict, started_at: float) -> Gtk.ListBoxRow:
     text = Gtk.Label(label=str(record.get("text", "")), xalign=0.0)
     text.set_wrap(True)
     text.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+    # GTK finds a wrapped label's narrowest width by wrapping it at width
+    # 0, which WORD_CHAR does at every letter; a floor of ten characters
+    # takes about half the time out of laying a transcript out.
+    text.set_width_chars(10)
     text.set_hexpand(True)
 
     box.append(stamp)

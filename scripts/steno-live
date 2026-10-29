@@ -48,4 +48,23 @@ fail() {
 bin="$ROOT/.venv/bin/steno"
 [ -x "$bin" ] || fail "no .venv in $ROOT (run make venv there)"
 
+# The window of a steno already running needs no second one: ask it over
+# the bus, with the activation token, as the copy GApplication starts
+# would, but without first loading Python and GTK, which took half a
+# second of every click. With nothing on the bus, start it.
+if [ $# -eq 0 ] || { [ $# -eq 1 ] && { [ "$1" = gui ] || [ "$1" = show ]; }; }; then
+  token="${XDG_ACTIVATION_TOKEN:-${DESKTOP_STARTUP_ID:-}}"
+  case "$token" in
+    "" | *[!A-Za-z0-9_.:-]*) platform="{}" ;;
+    *) platform="{'activation-token': <'$token'>, 'desktop-startup-id': <'$token'>}" ;;
+  esac
+  if command -v gdbus >/dev/null 2>&1 &&
+    gdbus call --session --timeout 2 --dest dev.jaeho.Steno \
+      --object-path /dev/jaeho/Steno \
+      --method org.freedesktop.Application.Activate "$platform" \
+      >/dev/null 2>&1; then
+    exit 0
+  fi
+fi
+
 exec "$bin" "$@"

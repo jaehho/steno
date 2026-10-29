@@ -153,4 +153,52 @@ case $out in
   *) die "no clear message for a missing .venv; got: $out" ;;
 esac
 
+# Showing the window of a steno already running asks it over the bus and
+# starts nothing. A gdbus that records its call and answers $GDBUS_STATUS
+# (0: a steno took it) stands in for the real one.
+cat >"$tmp/bin/gdbus" <<'EOF'
+#!/bin/sh
+for a; do printf '[%s] ' "$a"; done >>"$CALLED"
+echo >>"$CALLED"
+exit "${GDBUS_STATUS:-1}"
+EOF
+chmod +x "$tmp/bin/gdbus"
+export CALLED="$tmp/called"
+activate="[call] [--session] [--timeout] [2] [--dest] [dev.jaeho.Steno] [--object-path] [/dev/jaeho/Steno] [--method] [org.freedesktop.Application.Activate]"
+
+called() {
+  got=$(cat "$CALLED" 2>/dev/null || true)
+  rm -f "$CALLED"
+  [ "$got" = "$1" ] || die "$2: expected gdbus '$1', got '$got'"
+}
+
+for args in "" gui show; do
+  # shellcheck disable=SC2086  # "" is no argument at all
+  GDBUS_STATUS=0 "$tmp/checkout/scripts/steno-live" $args ||
+    die "showing a running steno ('$args') exited non-zero"
+  ran "" "showing a running steno ('$args')"
+  called "$activate [{}] " "showing a running steno ('$args')"
+done
+
+# The launcher's activation token goes with it, so the window may take
+# focus; one that could break the call's quoting does not.
+XDG_ACTIVATION_TOKEN=tok-1.2_3 GDBUS_STATUS=0 \
+  "$tmp/checkout/scripts/steno-live" gui
+called "$activate [{'activation-token': <'tok-1.2_3'>, 'desktop-startup-id': <'tok-1.2_3'>}] " \
+  "the activation token"
+XDG_ACTIVATION_TOKEN="x'y" GDBUS_STATUS=0 "$tmp/checkout/scripts/steno-live" gui
+called "$activate [{}] " "a token that could break the quoting"
+
+# With no steno on the bus, the app starts.
+"$tmp/checkout/scripts/steno-live" gui || die "a first start exited non-zero"
+ran "ran checkout: [gui]" "a first start"
+called "$activate [{}] " "a first start asks first"
+
+# Anything else is the app's, running or not.
+GDBUS_STATUS=0 "$tmp/checkout/scripts/steno-live" gui --background
+ran "ran checkout: [gui] [--background]" "gui --background"
+GDBUS_STATUS=0 "$tmp/checkout/scripts/steno-live" toggle
+ran "ran checkout: [toggle]" "toggle"
+called "" "commands other than showing the window"
+
 echo "steno-live: ok"
