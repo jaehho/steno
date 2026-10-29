@@ -6,6 +6,12 @@ and what it leaves unsaid (`rm` says nothing when it works). The real
 `asst` is not on that PATH, and its D-Bus address is dead besides
 (tests/__init__). Every call is logged. Not a test module: discovery
 skips it.
+
+What it prints is asst's own samples (`asst-contract/`, a copy of asst's
+`contract/`) with the fields this fake tracks written in, and it takes
+only the calls asst promises steno there (`consumers.json`). Any other
+call fails the test that made it, in `stop`, so steno cannot start
+relying on a call or a field asst never agreed to.
 """
 from __future__ import annotations
 
@@ -19,7 +25,9 @@ from unittest import mock
 from steno import asstlink
 from tests import real_available
 
-SHIM = r'''#!{python}
+CONTRACT = Path(__file__).resolve().parent / "asst-contract"
+
+SHIM = r'''#!@PYTHON@
 import json
 import sys
 from pathlib import Path
@@ -30,11 +38,36 @@ with (here / "calls.jsonl").open("a") as log:
     log.write(json.dumps(args) + "\n")
 state = json.loads((here / "state.json").read_text())
 tasks = state["tasks"]
+contract = Path(state["contract"])
 
 
-def fail(why):
+def sample(name):
+    return json.loads((contract / name).read_text())
+
+
+def shape(argv):
+    """The command and its options, without their values."""
+    flags = set()
+    for arg in argv:
+        if arg == "--":
+            flags.add(arg)
+            break
+        if arg.startswith("-"):
+            flags.add(arg.split("=", 1)[0])
+    words = [a for a in argv if a != "--json"]
+    return [words[0] if words else "", sorted(flags)]
+
+
+def fail(why, code=1):
     print("asst: " + why, file=sys.stderr)
-    sys.exit(1)
+    sys.exit(code)
+
+
+promised = [shape(c) for c in sample("consumers.json")["steno"]["calls"]]
+if shape(args) not in promised:
+    with (here / "unpromised.jsonl").open("a") as log:
+        log.write(json.dumps(args) + "\n")
+    fail("not a call asst promises steno (contract/consumers.json)", 2)
 
 
 def find(uid):
@@ -42,8 +75,21 @@ def find(uid):
     return next((t for t in live if t["id"] == uid), None)
 
 
-def view(task):
-    return {{k: task[k] for k in ("id", "source", "status", "list_name")}}
+def view(task, template=None):
+    """The task as asst prints it: a sample row with this task's fields."""
+    done = task["status"] == "completed"
+    if template is None:
+        template = sample("completed.json" if done else "ls.json")[0]
+    row = dict(template)
+    row.update(
+        id=task["id"], source=task["source"], status=task["status"],
+        list_name=task["list_name"], summary=task["title"],
+    )
+    if done:
+        row.setdefault("completed", sample("completed.json")[0]["completed"])
+    else:
+        row.pop("completed", None)
+    return row
 
 
 def save():
@@ -56,25 +102,27 @@ if args[:1] == ["--json"]:
     args = args[1:]
 cmd, rest = args[0], args[1:]
 if cmd == "lists":
-    print(json.dumps([{{"name": n}} for n in state["lists"]]))
+    shown = next(r for r in sample("lists.json") if not r["inbox"])
+    print(json.dumps([dict(shown, name=n) for n in state["lists"]]))
 elif cmd == "add":
     source = rest[rest.index("--source") + 1]
     task = next(
         (t for t in tasks if t["source"] == source and not t["deleted"]), None
     )
+    existed = task is not None
     if task is None:
-        task = {{
-            "id": f"T{{len(tasks) + 1:03d}}",
+        task = {
+            "id": f"T{len(tasks) + 1:03d}",
             "source": source,
             "status": "needs-action",
             "title": rest[-1],
             "list_name": rest[rest.index("--list") + 1]
             if "--list" in rest else "Inbox",
             "deleted": False,
-        }}
+        }
         tasks.append(task)
         save()
-    print(json.dumps(view(task)))
+    print(json.dumps(dict(view(task, sample("add.json")), existed=existed)))
 elif cmd in ("ls", "completed"):
     want = "needs-action" if cmd == "ls" else "completed"
     print(json.dumps([
@@ -118,10 +166,11 @@ class FakeAsst:
         self.dir = Path(self._tmp.name)
         self._state = {
             "down": False, "refuse_rm": [], "lists": list(lists), "tasks": [],
+            "contract": str(CONTRACT),
         }
         self._write()
         script = self.dir / "asst"
-        script.write_text(SHIM.format(python=sys.executable))
+        script.write_text(SHIM.replace("@PYTHON@", sys.executable))
         script.chmod(0o755)
         self._patches: list = []
 
@@ -145,7 +194,15 @@ class FakeAsst:
         for patch in self._patches:
             patch.stop()
         self._patches = []
+        unpromised = self.dir / "unpromised.jsonl"
+        calls = unpromised.read_text() if unpromised.is_file() else ""
         self._tmp.cleanup()
+        if calls:
+            msg = (
+                "steno made calls asst does not promise it "
+                f"(tests/asst-contract/consumers.json):\n{calls}"
+            )
+            raise AssertionError(msg)
 
     def __enter__(self) -> FakeAsst:
         return self.start()
