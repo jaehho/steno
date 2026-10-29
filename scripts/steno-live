@@ -27,12 +27,16 @@ if [ "$DEFAULT_ROOT" = "@ROOT@" ]; then
   fi
 fi
 ROOT="${STENO_SRC:-$DEFAULT_ROOT}"
+command="${1:-}"
 
 fail() {
   echo "steno-live: $*" >&2
   # From rofi, autostart or a bar click there is no terminal to read
   # stderr in; say it where the person will see it, as the app does.
-  if [ ! -t 2 ] && command -v notify-send >/dev/null 2>&1; then
+  # Not for `steno bar`: waybar restarts it every few seconds, so a
+  # broken checkout would pop up forever.
+  if [ "$command" != bar ] && [ ! -t 2 ] &&
+    command -v notify-send >/dev/null 2>&1; then
     notify-send -a Steno -i dev.jaeho.Steno "Steno cannot start" "$*" \
       2>/dev/null || true
   fi

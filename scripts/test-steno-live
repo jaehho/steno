@@ -131,6 +131,15 @@ esac
 grep -q "^notified:.*no checkout at $tmp/nowhere" "$NOTIFIED" ||
   die "no notification for a missing checkout"
 
+# The bar module fails quietly: waybar reruns it every few seconds.
+rm "$NOTIFIED"
+if STENO_SRC="$tmp/nowhere" "$tmp/checkout/scripts/steno-live" bar \
+  2>/dev/null; then
+  die "steno bar with a missing checkout exited zero"
+fi
+[ ! -e "$NOTIFIED" ] ||
+  die "steno bar notified: $(cat "$NOTIFIED")"
+
 # A checkout with no venv: refuse, and say how to build one.
 tree "$tmp/bare"
 rm -r "$tmp/bare/.venv"
