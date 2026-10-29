@@ -166,10 +166,13 @@ class CitedMeeting(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         self.window = Window(self.app, self.root)
-        # The meetings in the first frame, not after it: every test here
-        # waits for the transcript's layout, and Broadway with no browser
-        # draws one frame a second.
+        # The meetings, and the whole transcript, in the first frame, not
+        # brought in by frames after it: every test here reads lines
+        # anywhere in it, and Broadway with no browser draws one frame a
+        # second.
         self.window.load()
+        page = self.window.meeting
+        page._attach_through(page._rows[-1])
         self.window.present()
         settle()
         self.page: MeetingPage = self.window.meeting

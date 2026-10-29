@@ -231,6 +231,9 @@ class Sidebar(Gtk.Box):
         self.footer.set_margin_top(8)
         self.footer.set_margin_bottom(10)
         self.append(self.footer)
+        # What the meetings fill, under the status card and the search,
+        # which work before the meetings are read.
+        self.meeting_parts = (self.scroll, self.owed, self.footer)
 
     def _menu_shortcuts(self) -> Gtk.ShortcutController:
         keys = Gtk.ShortcutController()

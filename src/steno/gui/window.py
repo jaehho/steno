@@ -60,6 +60,8 @@ if TYPE_CHECKING:  # the app imports the window lazily; this keeps the cycle unr
 # the meeting become separate pages.
 MEDIUM = "max-width: 1000sp"
 NARROW = "max-width: 600sp"
+# The meetings and the page they open fade in together once they are read.
+ARRIVE_MS = 240
 
 SHORTCUTS = (
     ("Ctrl+F", "Search meetings"),
@@ -86,6 +88,7 @@ class Window(Adw.ApplicationWindow):
         # The meetings load once the window is on screen (`load`).
         self._loaded = False
         self._select_on_load: Path | None = None
+        self._arrival: Adw.TimedAnimation | None = None
 
         self.live = LivePage(on_ask=self._ask_live)
         self._css = Gtk.CssProvider()
@@ -189,6 +192,7 @@ class Window(Adw.ApplicationWindow):
         titles.append(self.page_title)
         titles.append(self.page_subtitle)
         header.pack_start(titles)
+        self.titles = titles
 
         self.meeting_menu = Gtk.MenuButton()
         self.meeting_menu.set_icon_name("view-more-symbolic")
@@ -212,6 +216,10 @@ class Window(Adw.ApplicationWindow):
         self.stack.add_named(self.meeting, "meeting")
         self.stack.add_named(self.live, "live")
         self.stack.add_named(empty, "empty")
+        # Until the meetings are read: the page's own surface, and nothing
+        # on it that would read as an empty meeting.
+        self.stack.add_named(Gtk.Box(), "loading")
+        self.stack.set_visible_child_name("loading")
 
         view = Adw.ToolbarView()
         view.add_top_bar(header)
@@ -477,10 +485,55 @@ class Window(Adw.ApplicationWindow):
         self._loaded = True
         # The empty frame reaches the compositor before this blocks.
         self.get_display().flush()
+        # Straight to the page that opens: `_arrive` fades it in, and the
+        # rest of a long transcript waits for that.
+        self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        self.meeting.fill_held = True
         self.sidebar.refresh(select=self._select_on_load)
         # One that started while the window was loading is on its page.
         if self.sidebar.live_dir is None:
             self._adopt_running_meeting()
+        if self.stack.get_visible_child_name() == "loading":
+            self._on_select(self.sidebar.selected)
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+
+        def settled() -> None:
+            self.meeting.fill_held = False
+
+        self._arrive(
+            [*self.sidebar.meeting_parts, self.titles, self.stack.get_visible_child()],
+            then=settled,
+        )
+
+    def _arrive(self, widgets: list, then: Callable[[], None]) -> None:
+        """Fade `widgets` in from the first frame that lays them out, and
+        call `then` once they are in.
+
+        That frame is the slow one; a fade started before it would spend
+        itself while the window waited, and land at its end in one step.
+        """
+        clock = self.get_frame_clock()
+        if clock is None:  # not on screen, so nothing to see arrive
+            then()
+            return
+
+        def show(value: float) -> None:
+            for widget in widgets:
+                widget.set_opacity(value)
+
+        show(0.0)
+        handler = 0
+
+        def laid_out(_clock) -> None:
+            clock.disconnect(handler)
+            self._arrival = Adw.TimedAnimation.new(
+                self, 0.0, 1.0, ARRIVE_MS, Adw.CallbackAnimationTarget.new(show)
+            )
+            self._arrival.set_easing(Adw.Easing.EASE_OUT_CUBIC)
+            self._arrival.connect("done", lambda _animation: then())
+            self._arrival.play()
+
+        handler = clock.connect("after-paint", laid_out)
 
     def refresh_if_stale(self) -> None:
         """Catch up with anything the CLI changed while the window was hidden."""

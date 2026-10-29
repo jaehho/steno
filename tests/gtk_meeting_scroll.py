@@ -27,7 +27,7 @@ gi.require_version("Graphene", "1.0")
 
 from gi.repository import Gdk, GLib, Graphene, Gtk
 
-from steno.gui.meeting import MeetingPage
+from steno.gui.meeting import FIRST_LINES, LINES_PER_FRAME, MeetingPage
 from steno.gui.window import Window
 from tests.gtk_sidebar_menu import StubApp, settle
 
@@ -107,7 +107,9 @@ def on_screen(row: Gtk.ListBoxRow) -> bool:
     return first <= top and top + row.get_height() <= last
 
 
-class TestTranscriptScroll(unittest.TestCase):
+class OnTheShortMeeting(unittest.TestCase):
+    """A window open on the newer, short meeting."""
+
     def setUp(self):
         # PyGObject reports an exception in a signal handler or an idle
         # callback through sys.excepthook and carries on, so a handler
@@ -134,6 +136,8 @@ class TestTranscriptScroll(unittest.TestCase):
         self._tmp.cleanup()
         self.assertEqual(self.raised, [])
 
+
+class TestTranscriptScroll(OnTheShortMeeting):
     def open_long_meeting(self) -> Gtk.ScrolledWindow:
         """Search, then pick the one meeting that holds the needle."""
         sidebar = self.window.sidebar
@@ -224,6 +228,50 @@ class TestTranscriptScroll(unittest.TestCase):
         self.assertIs(found_scroller, scroller)
         self.assertEqual(height, row.get_height())
         self.assertAlmostEqual(top, y_in_content(row), delta=1.0)
+
+
+class TestALongTranscriptComesInByFrames(OnTheShortMeeting):
+    """A screenful at once, the rest a few lines a frame, and a line
+    anything takes the page to goes in first."""
+
+    def open_long(self) -> Gtk.ListBox:
+        long = next(s for s in self.window.sidebar.sessions if s.title == "Long")
+        self.page.load(long)
+        return self.page.transcript_list
+
+    def test_a_screenful_now_and_the_rest_by_frames(self):
+        # Whether or not the window's own fade-in has ended by now.
+        self.page.fill_held = False
+        lines = self.open_long()
+        self.assertEqual(rows_in(lines), FIRST_LINES)
+        self.page._fill(lines, None)
+        self.assertEqual(rows_in(lines), FIRST_LINES + LINES_PER_FRAME)
+
+    def test_held_while_the_window_fades_in(self):
+        self.page.fill_held = True
+        lines = self.open_long()
+        self.page._fill(lines, None)
+        self.assertEqual(rows_in(lines), FIRST_LINES)
+
+    def test_the_line_playing_goes_in_and_on_screen(self):
+        self.open_long()
+        row = self.page._rows[HIT]
+        self.assertIsNone(row.get_parent())
+
+        self.page._on_tick(self.page._offsets[HIT], 1000.0, True)
+
+        self.assertIs(row.get_parent(), self.page.transcript_list)
+        self.assertTrue(
+            wait_for(lambda: row.get_height() > 0 and on_screen(row)),
+            "the line playing was never brought into view",
+        )
+
+
+def rows_in(lines: Gtk.ListBox) -> int:
+    count, row = 0, lines.get_first_child()
+    while row is not None:
+        count, row = count + 1, row.get_next_sibling()
+    return count
 
 
 if __name__ == "__main__":
