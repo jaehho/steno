@@ -49,6 +49,7 @@ from ..notesjob import NotesState
 from ..retention import prune_audio
 from ..session import paused_until, set_pause
 from ..state import clear_state, write_state
+from ..summarize import sessions_root
 from . import words
 from .bridge import EngineBridge
 from .rewrite import Rewriter
@@ -279,8 +280,22 @@ class App(Adw.Application):
             self._publish("idle")
 
     def open_session(self, name: str) -> None:
+        """Show one meeting: its folder name, as other apps send it (asst's
+        Open meeting), or its path, as steno's own toasts do.
+        """
         window = self.present_window()
-        window.show_session(Path(name) if name else None)
+        if not name:
+            window.show_session(None)
+            return
+        # Not summarize.resolve_session: it tries a bare name against the
+        # working directory first, and steno's is whoever started it.
+        session = Path(name)
+        if not session.is_absolute():
+            session = sessions_root(self.root) / name
+        if session.is_dir():
+            window.show_session(session)
+        else:
+            window._toast(f"No meeting {name}")
 
     def request_quit(self) -> None:
         """Quit, but never silently discard a meeting that is still recording.
