@@ -1,6 +1,7 @@
 # steno - listens to your meetings, hands you notes and todos.
 
-.PHONY: help run listen test lint sources watch venv link unlink desktop undesktop \
+.PHONY: help run listen test test-live lint sources watch venv link unlink \
+	desktop undesktop \
 	hypr unhypr autostart unautostart waybar unwaybar \
 	install uninstall package aur release status clean
 
@@ -17,8 +18,11 @@ run:             ## the window, from the source tree
 listen:          ## background listener, no window (what autostart runs)
 	uv run steno gui --background
 
-test:            ## headless suite - no audio, no network, no display
+test: test-live  ## headless suite - no audio, no network, no display
 	uv run python -m unittest discover -s tests -t . -v
+
+test-live:       ## the launcher runs the checkout's .venv, or STENO_SRC's
+	scripts/test-steno-live
 
 lint:            ## ruff
 	uv run ruff check src tests packaging
@@ -38,11 +42,14 @@ venv:            ## (re)create .venv - needed after moving the checkout
 
 link:            ## put `steno` on PATH, running from this checkout (no sudo)
 	@mkdir -p $(PREFIX)/bin
-	@# Written beside the destination and renamed over it: a redirect would
-	@# follow a symlink there and empty what it points at.
+	@# scripts/steno-live, with @ROOT@ made this checkout. Written beside
+	@# the destination and renamed over it: a redirect would follow a
+	@# symlink there and empty what it points at, and a failed sed would
+	@# leave the old launcher empty.
 	@t=$$(mktemp $(PREFIX)/bin/.steno.XXXXXX) && \
 	trap 'rm -f "$$t"' EXIT && \
-	printf '#!/bin/sh\n# steno, run from the working checkout.\n# Not `uv tool install`: that venv is isolated and can never see the system\n# python-gobject the GTK window needs. This one is --system-site-packages.\nexec "%s/.venv/bin/steno" "$$@"\n' "$(CURDIR)" > "$$t" && \
+	sed 's|^DEFAULT_ROOT="@ROOT@"|DEFAULT_ROOT="$(CURDIR)"|' \
+		scripts/steno-live > "$$t" && \
 	chmod 755 "$$t" && \
 	mv -f "$$t" $(PREFIX)/bin/steno
 	@echo "linked $(PREFIX)/bin/steno -> $(CURDIR)"

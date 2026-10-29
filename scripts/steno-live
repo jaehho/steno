@@ -1,0 +1,47 @@
+#!/bin/sh
+# steno from the working checkout. Installed by `make install` as steno
+# (see also wallhelper's and asst's wrappers, which this mirrors); the
+# desktop entry, autostart and the compositor's start line call it by
+# that name. STENO_SRC points at another tree.
+#
+# Rules this relies on:
+#   - the checkout's .venv, not `uv tool install`: that venv is isolated
+#     and can never see the system python-gobject the GTK window needs.
+#     `make venv` builds this one on /usr/bin/python with
+#     --system-site-packages
+#   - no build step: the venv installs the tree editable, so the tree is
+#     what runs
+#   - exec, so the app is this process (signals, one PID, exit status)
+set -eu
+
+# The checkout this was installed from. `make install` rewrites the
+# DEFAULT_ROOT line only; the @ROOT@ below stays a sentinel, so a run out
+# of scripts/ still recognizes an uninstalled copy.
+DEFAULT_ROOT="@ROOT@"
+if [ "$DEFAULT_ROOT" = "@ROOT@" ]; then
+  d=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  if [ -f "$d/../src/steno/__init__.py" ]; then
+    DEFAULT_ROOT=$(CDPATH= cd -- "$d/.." && pwd)
+  else
+    DEFAULT_ROOT="${HOME}/projects/steno"
+  fi
+fi
+ROOT="${STENO_SRC:-$DEFAULT_ROOT}"
+
+fail() {
+  echo "steno-live: $*" >&2
+  # From rofi, autostart or a bar click there is no terminal to read
+  # stderr in; say it where the person will see it, as the app does.
+  if [ ! -t 2 ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -a Steno -i dev.jaeho.Steno "Steno cannot start" "$*" \
+      2>/dev/null || true
+  fi
+  exit 1
+}
+
+[ -f "$ROOT/src/steno/__init__.py" ] ||
+  fail "no checkout at $ROOT (set STENO_SRC)"
+bin="$ROOT/.venv/bin/steno"
+[ -x "$bin" ] || fail "no .venv in $ROOT (run make venv there)"
+
+exec "$bin" "$@"

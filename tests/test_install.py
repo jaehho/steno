@@ -98,8 +98,12 @@ class Install(unittest.TestCase):
         root.mkdir()
         shutil.copy(CHECKOUT / "Makefile", root)
         shutil.copytree(CHECKOUT / "packaging", root / "packaging")
+        (root / "scripts").mkdir()
+        shutil.copy2(CHECKOUT / "scripts/steno-live", root / "scripts")
         shutil.copytree(CHECKOUT / "src/steno/data",
                         root / "src/steno/data")
+        # The file the launcher knows a checkout by.
+        (root / "src/steno/__init__.py").touch()
         if venv:
             tool = root / ".venv/bin/steno"
             tool.parent.mkdir(parents=True)
