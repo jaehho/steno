@@ -531,14 +531,15 @@ class Sidebar(Gtk.Box):
         self.owed.set_label(words.owed_label(open_todos))
 
     def update_session(self, session: Session) -> None:
-        """The meeting page changed this session's project, to-dos,
+        """The meeting page changed this session's title, project, to-dos,
         archive flag or project notes in place."""
         was_archived = session.archived
+        session.title = load_title(session.dir)
         session.archived = is_archived(session.dir)
         session.has_notes = projectnotes.read_record(session.dir) is not None
         session.project = load_project(session.dir)
         session.open_todos = open_count(session.dir)
-        session._haystack = None  # search includes project
+        session._haystack = None  # search includes title and project
         # The flag is part of the stamp, and was just read again.
         session.stamp = stamp_with_archived(session.stamp, session.archived)
         if session.archived != was_archived:

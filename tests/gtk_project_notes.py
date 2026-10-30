@@ -243,6 +243,21 @@ class TestInTheWindow(Base):
         press(dialog, "Save")
         self.settle()
 
+    def test_a_new_title_renames_the_pages_at_once(self):
+        projectnotes.write(self.alpha)
+        self.open(self.alpha)
+        self.page.actions.activate_action("rename", None)
+        self.window.title_entry.set_text("Quote review")
+        self.window.title_entry.emit("activate")
+        self.settle()
+        names = {p.name for p in self.meetings().glob("*.md")}
+        self.assertNotIn(ALPHA_PAGE, names)
+        new = "2026-09-28-1430-quote-review.md"
+        self.assertIn(new, names)
+        text = self.page_text(new)
+        self.assertIn("# Quote review", text)
+        self.assertNotIn("Vendor Pricing Call", text)
+
     def test_setting_a_project_writes_its_pages_there(self):
         self.open(self.charlie)
         self.assertNotIn("meeting.show-notes", self.header_actions())

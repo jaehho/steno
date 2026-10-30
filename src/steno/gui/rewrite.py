@@ -5,8 +5,8 @@ that is already in its project's notes. A note autosaves every few
 seconds and the folder may be synced, so the pages are not rewritten for
 each change: they wait until the changes stop for DELAY_S, and are
 written at once when the meeting is left or steno quits. A summary that
-lands, a project that is set and a meeting that is deleted do not wait;
-they are acts, not edits.
+lands, a project that is set, a new title and a meeting that is deleted
+do not wait; they are acts, not edits.
 
 The rewrite runs on a thread, since a folder can be slow, and reports
 back on the main loop. `projectnotes` does all the reading and writing,
