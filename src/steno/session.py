@@ -40,6 +40,8 @@ from .events import (
 from .notesjob import NotesPhase, NotesState
 from .playback import session_start
 from .redact import redact_text
+from .speakers import label as speaker_label
+from .speakers import load_names
 from .summarize import (
     META_FILENAME,
     load_meta,
@@ -69,7 +71,8 @@ ADVISOR_PROMPT = (
 
 REVIEW_PROMPT = (
     "You are answering a question about a meeting that has already ended, "
-    "asked by the person who wore the mic ('you'); 'them' is everyone else. "
+    "asked by the person who wore the mic ('you'); 'them' is everyone else, "
+    "and a line says their name instead where it is known. "
     "Answer from the transcript: lead with the answer, quote or paraphrase what "
     "was actually said when that settles it, and say plainly when the meeting "
     "did not cover it. Bullets are fine. Under 150 words."
@@ -642,8 +645,11 @@ class Engine:
             if not lines:
                 self.emit(AdviceDone("Nothing has been transcribed yet.", by_model=False))
                 return
+            # Names are learned when a meeting is summarized, so a meeting
+            # in progress has none yet.
+            names = load_names(session_dir) if session_dir is not None else {}
             convo = "\n".join(
-                f"{r['speaker']}: {redact_text(str(r.get('text', '')))}"
+                f"{speaker_label(r, names)}: {redact_text(str(r.get('text', '')))}"
                 for r in lines
             )
             content = f"{convo}\n\n---\nThe user asks: {question}" if question else convo

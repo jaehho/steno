@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from .. import citations
+from .. import citations, speakers
 from ..notesjob import NotesPhase, NotesState
 from ..playback import format_offset
 
@@ -36,6 +36,9 @@ OWNER_RE = re.compile(r"^\*\*[^*]+\*\*:?$")
 NUMBERED_RE = re.compile(r"\d+[.)]")
 # How much of a cited line the strip quotes before it says "…".
 QUOTE_CHARS = 90
+# A speaker tag's column: "Them" and "You" at the least, and a long name cut.
+TAG_MIN_CHARS = 5
+TAG_MAX_CHARS = 12
 # The href of the "Summarize again" link in the note by the heading.
 SUMMARIZE_AGAIN = "summarize"
 
@@ -74,6 +77,15 @@ def row_meta(
     if not summarized:
         parts.append("no summary")
     return [p for p in parts if p]
+
+
+def search_date(start: datetime) -> str:
+    """The date a search can find a meeting by: "Sunday, September 27".
+
+    No time and no year. "09:3" should not find a meeting by its hour, and
+    with the year "20" would find them all.
+    """
+    return f"{start:%A}, {start:%B} {start.day}"
 
 
 def page_subtitle(
@@ -375,9 +387,16 @@ class Place:
 
     rows: list[int]  # transcript records it covers, in order
     stamp: str  # when the first of them starts, as the gutter says
-    speaker: str  # "You" or "Them"
+    speaker: str  # as the line's tag says it
     quote: str  # the start of the first of them
     more: int  # how many lines follow it inside the cite
+
+
+def tag_chars(tags: Sequence[str]) -> int:
+    """How wide a column of speaker tags is: its longest, so that the words
+    beside them all start under each other, up to where a long name is cut."""
+    longest = max((len(t) for t in tags), default=0)
+    return min(max(longest, TAG_MIN_CHARS), TAG_MAX_CHARS)
 
 
 def quote(text: str) -> str:
@@ -391,7 +410,7 @@ def quote(text: str) -> str:
 
 def cite_places(
     cites: Sequence[citations.Cite], records: Sequence[dict],
-    offsets: Sequence[int],
+    offsets: Sequence[int], names: dict[str, str],
 ) -> list[Place]:
     """The places a list of cites points at, top of the transcript first.
 
@@ -408,7 +427,7 @@ def cite_places(
         places[tuple(rows)] = Place(
             rows,
             format_offset(offsets[rows[0]]),
-            "Them" if first.get("speaker", "them") == "them" else "You",
+            speakers.tag(first, names),
             quote(str(first.get("text", ""))),
             len(rows) - 1,
         )

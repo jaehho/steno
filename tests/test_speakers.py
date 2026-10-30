@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from steno.speakers import label, learn_from, load_names, save_names
+from steno.speakers import (
+    label,
+    learn_from,
+    load_names,
+    save_names,
+    tag,
+)
 
 
 class TestNames(unittest.TestCase):
@@ -36,6 +42,19 @@ class TestLabel(unittest.TestCase):
     def test_near_side_stays_you(self):
         row = {"speaker": "you", "who": "", "text": "hi"}
         self.assertEqual(label(row, {}), "you")
+
+
+class TestTag(unittest.TestCase):
+    def test_a_named_voice_is_tagged_with_the_name(self):
+        row = {"speaker": "them", "who": "speaker_0", "text": "hi"}
+        self.assertEqual(tag(row, {"speaker_0": "Alice"}), "Alice")
+
+    def test_an_unnamed_voice_is_them(self):
+        row = {"speaker": "them", "who": "speaker_1", "text": "hi"}
+        self.assertEqual(tag(row, {"speaker_0": "Alice"}), "Them")
+
+    def test_the_near_side_is_you(self):
+        self.assertEqual(tag({"speaker": "you", "text": "hi"}, {}), "You")
 
 
 class TestLearn(unittest.TestCase):

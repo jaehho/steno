@@ -37,6 +37,7 @@ FOLLOWED = 120
 NEEDLE = "zanzibar"
 FOUND = (20, 90, 180)
 MEETINGS = {"20260110-090000": "Long", "20260111-090000": "Short"}
+NAMED = "20260109-090000"
 
 
 def setUpModule():
@@ -67,6 +68,19 @@ def make_meetings(root: Path) -> None:
             "".join(json.dumps(r) + "\n" for r in records)
         )
         (folder / "meta.json").write_text(json.dumps({"title": title}))
+    folder = root / NAMED
+    folder.mkdir()
+    records = [
+        {"speaker": "them", "who": "speaker_0", "text": "the budget", "ts": 1.0},
+        {"speaker": "them", "who": "speaker_1", "text": "agreed", "ts": 2.0},
+        {"speaker": "you", "text": "good", "ts": 3.0},
+        {"speaker": "them", "who": "speaker_0", "text": "thanks", "ts": 4.0},
+    ]
+    (folder / "transcript.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records)
+    )
+    (folder / "meta.json").write_text(json.dumps({"title": "Named"}))
+    (folder / "speakers.json").write_text('{"speaker_0": "Priya"}')
 
 
 def wait_for(done, seconds: float = 5.0) -> bool:
@@ -136,6 +150,76 @@ class OnTheShortMeeting(unittest.TestCase):
         settle()
         self._tmp.cleanup()
         self.assertEqual(self.raised, [])
+
+
+def label_texts(widget: Gtk.Widget) -> list[str]:
+    """Every label under a widget, top to bottom."""
+    found = [widget.get_text()] if isinstance(widget, Gtk.Label) else []
+    child = widget.get_first_child()
+    while child is not None:
+        found += label_texts(child)
+        child = child.get_next_sibling()
+    return found
+
+
+class TestSpeakerNames(OnTheShortMeeting):
+    def session(self):
+        return next(
+            s for s in self.window.sidebar.sessions if s.dir.name == NAMED
+        )
+
+    def search(self, query: str) -> Gtk.ListBoxRow:
+        sidebar = self.window.sidebar
+        sidebar.search.set_text(query)
+        self.assertTrue(
+            wait_for(lambda: [i.title for i in sidebar.items] == ["Named"]),
+            "the search did not narrow the list to the meeting",
+        )
+        return sidebar.list.get_row_at_index(0)
+
+    def tags(self) -> list[str]:
+        return [label_texts(row)[1] for row in self.page._rows]
+
+    def test_a_line_is_tagged_with_the_name_learned_for_its_voice(self):
+        self.page.load(self.session())
+        self.assertEqual(self.tags(), ["Priya", "Them", "You", "Priya"])
+
+    def test_the_words_beside_a_name_line_up_with_the_others(self):
+        self.page.load(self.session())
+        self.assertTrue(
+            wait_for(lambda: self.page._rows[0].get_width() > 0),
+            "the transcript was never laid out",
+        )
+        def text_x(row):
+            label = row.get_child().get_last_child()
+            ok, point = label.compute_point(
+                row, Graphene.Point().init(0, 0)
+            )
+            self.assertTrue(ok)
+            return point.x
+        self.assertEqual(len({text_x(r) for r in self.page._rows}), 1)
+
+    def test_a_name_learned_later_reaches_the_open_page(self):
+        session = self.session()
+        (session.dir / "speakers.json").unlink()
+        self.page.load(session)
+        self.assertEqual(self.tags()[0], "Them")
+        (session.dir / "speakers.json").write_text('{"speaker_0": "Priya"}')
+        self.page.refresh_transcript()
+        self.assertEqual(self.tags()[0], "Priya")
+
+    def test_a_search_for_a_person_says_so_and_lights_their_lines(self):
+        row = self.search("priya")
+        self.assertIn("in speaker", " ".join(label_texts(row)))
+        self.window.sidebar.list.select_row(row)
+        self.assertEqual(
+            [r.has_css_class("line-hit") for r in self.page._rows],
+            [True, False, False, True],
+        )
+
+    def test_a_search_of_the_title_says_so(self):
+        row = self.search("named")
+        self.assertIn("in title", " ".join(label_texts(row)))
 
 
 class TestTranscriptScroll(OnTheShortMeeting):

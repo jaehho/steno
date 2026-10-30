@@ -71,12 +71,21 @@ def save_names(session_dir: Path, names: dict[str, str]) -> None:
     )
 
 
+def name_of(record: dict, names: dict[str, str]) -> str:
+    """The person a line's voice turned out to be, or "" if nobody knows."""
+    return names.get(str(record.get("who") or ""), "")
+
+
 def label(record: dict, names: dict[str, str]) -> str:
     """What a line should call its speaker: a name if we have one, else `them`."""
-    who = str(record.get("who") or "")
-    if who and who in names:
-        return names[who]
-    return str(record.get("speaker", "them"))
+    return name_of(record, names) or str(record.get("speaker", "them"))
+
+
+def tag(record: dict, names: dict[str, str]) -> str:
+    """`label` as the window prints it: the name, else "Them" or "You"."""
+    return name_of(record, names) or (
+        "Them" if record.get("speaker", "them") == "them" else "You"
+    )
 
 
 def _introduced(text: str) -> str | None:

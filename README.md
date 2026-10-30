@@ -202,6 +202,15 @@ meeting. Points with no number are plain text you can select, and a summary
 with no citations says so beside its heading, with a link to summarize it
 again.
 
+A voice with a learned name (`speakers.json`, written when the meeting is
+summarized) is called by it on the meeting page, in the bar of places, and in
+what the Ask box sends the model; any other far-side voice is "Them". While a
+meeting is being recorded there are no names yet. The search box reads the
+title, project, speakers' names, summary, notes, to-dos, the spoken words and
+the date ("monday", "october 12"), not the time of a line or the folder name,
+and a row says where it hit: `in speaker`, `in transcript`, and so on.
+Searching for a person opens their first line, and `n` steps through the rest.
+
 A meeting that no longer matters can be put away instead of deleted.
 **Archive** in the ⋯ menu (or in the menu of its row in the list) sets
 `archived` in its `meta.json`, so the audio and the words stay as they

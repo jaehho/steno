@@ -266,9 +266,22 @@ RECORDS = [
 OFFSETS = [10, 14, 20, 75]
 
 
+class TestSpeakerTags(unittest.TestCase):
+    def test_a_place_says_who_when_the_voice_has_a_name(self):
+        record = {"speaker": "them", "who": "speaker_0", "text": "hi"}
+        (place,) = words.cite_places([(10, 10)], [record], [10], {"speaker_0": "Priya"})
+        self.assertEqual(place.speaker, "Priya")
+
+    def test_the_column_fits_its_longest_tag_within_limits(self):
+        self.assertEqual(words.tag_chars(["You", "Them"]), words.TAG_MIN_CHARS)
+        self.assertEqual(words.tag_chars(["You", "Marcus"]), len("Marcus"))
+        self.assertEqual(words.tag_chars(["x" * 40]), words.TAG_MAX_CHARS)
+        self.assertEqual(words.tag_chars([]), words.TAG_MIN_CHARS)
+
+
 class TestCitePlaces(unittest.TestCase):
     def places(self, *cites):
-        return words.cite_places(cites, RECORDS, OFFSETS)
+        return words.cite_places(cites, RECORDS, OFFSETS, {})
 
     def test_a_range_is_one_place_with_the_lines_that_follow_the_first(self):
         (place,) = self.places((10, 14))
@@ -291,7 +304,7 @@ class TestCitePlaces(unittest.TestCase):
     def test_a_cite_before_the_first_line_is_no_place(self):
         self.assertEqual(self.places((3, 5)), [])
         self.assertEqual(
-            words.cite_places([(5, 9)], [], []), []
+            words.cite_places([(5, 9)], [], [], {}), []
         )
 
     def test_a_long_line_is_quoted_up_to_a_word(self):
@@ -385,6 +398,56 @@ class TestSearchLocate(unittest.TestCase):
         self.assertEqual(session.locate("agreed")["where"], "summary")
         for query in ("cite", "<!--", "1-2"):
             self.assertIsNone(session.locate(query))
+
+    def named(self):
+        """A meeting whose far side has two voices, one of them known."""
+        (self.dir / "transcript.jsonl").write_text(
+            '{"ts": 1, "speaker": "them", "who": "speaker_1", "text": "hello"}\n'
+            '{"ts": 2, "speaker": "them", "who": "speaker_0", "text": "the budget"}\n'
+            '{"ts": 3, "speaker": "you", "text": "we need the roadmap"}\n'
+        )
+        (self.dir / "speakers.json").write_text('{"speaker_0": "Priya"}')
+        return type(self.session)(self.dir)
+
+    def test_a_person_is_found_at_their_first_line(self):
+        hit = self.named().locate("priya")
+        self.assertEqual((hit["where"], hit["line"]), ("speaker", 1))
+
+    def test_a_name_and_a_word_are_one_phrase_like_any_other(self):
+        """Priya says "the budget", but nobody says "priya budget"."""
+        self.assertIsNone(self.named().locate("priya budget"))
+
+    def test_a_name_nobody_speaks_under_finds_nothing(self):
+        """`steno realign` drops the voices, and the file stays behind."""
+        (self.dir / "speakers.json").write_text('{"speaker_0": "Priya"}')
+        self.assertIsNone(type(self.session)(self.dir).locate("priya"))
+
+    def test_the_markup_of_a_transcript_line_is_not_searched(self):
+        """It was `[09:30:00] them: words`, so these found every meeting."""
+        (self.dir / "transcript.txt").write_text("[09:30:00] them: zebra\n")
+        session = type(self.session)(self.dir)
+        for query in ("them", "09:3", "zebra"):
+            self.assertIsNone(session.locate(query), query)
+
+    def test_the_folder_name_is_not_searched(self):
+        for query in ("20260927", "100000", "-"):
+            self.assertIsNone(self.session.locate(query), query)
+
+    def test_the_date_is_searched_as_it_reads(self):
+        for query in ("sunday", "september 27", "sep"):
+            self.assertEqual(self.session.locate(query)["where"], "date", query)
+
+    def test_a_line_comes_before_the_date(self):
+        (self.dir / "transcript.jsonl").write_text(
+            '{"ts": 1, "speaker": "them", "text": "see you sunday"}\n'
+        )
+        hit = type(self.session)(self.dir).locate("sunday")
+        self.assertEqual((hit["where"], hit["line"]), ("transcript", 0))
+
+    def test_a_project_hit_says_project(self):
+        (self.dir / "meta.json").write_text('{"project": "lab"}')
+        session = type(self.session)(self.dir)
+        self.assertEqual(session.locate("lab")["where"], "project")
 
     def test_matches_delegates_to_locate(self):
         self.assertTrue(self.session.matches("roadmap"))

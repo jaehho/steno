@@ -33,6 +33,42 @@ def make_engine(root: Path) -> tuple[session.Engine, list]:
     return engine, events
 
 
+class TestAskSpeakers(unittest.TestCase):
+    """Issue 23: "what did Marcus say" needs the names in the context."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def asked(self, **kwargs) -> str:
+        """What the model is sent. Nothing is called: `stream_text` is faked."""
+        engine, _events = make_engine(self.root)
+        engine.transcript = [
+            {"speaker": "them", "who": "speaker_0", "text": "live words"},
+        ]
+        fake = mock.AsyncMock(return_value="answer")
+        with mock.patch.object(session.claude, "stream_text", fake):
+            asyncio.run(engine.ask("who?", **kwargs))
+        return fake.call_args.args[0]
+
+    def test_a_past_meeting_is_asked_about_by_name(self):
+        (self.root / "transcript.jsonl").write_text(
+            '{"ts": 1, "speaker": "them", "who": "speaker_0", "text": "yes"}\n'
+            '{"ts": 2, "speaker": "them", "who": "speaker_1", "text": "no"}\n'
+            '{"ts": 3, "speaker": "you", "text": "ok"}\n'
+        )
+        (self.root / "speakers.json").write_text('{"speaker_0": "Marcus"}')
+        self.assertTrue(
+            self.asked(session_dir=self.root).startswith(
+                "Marcus: yes\nthem: no\nyou: ok\n"
+            )
+        )
+
+    def test_a_meeting_in_progress_has_no_names_yet(self):
+        self.assertTrue(self.asked().startswith("them: live words\n"))
+
+
 class TestBusy(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
