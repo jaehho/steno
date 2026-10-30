@@ -102,6 +102,7 @@ class Window(Adw.ApplicationWindow):
             on_select=self._on_select,
             on_status_button=self._on_status_button,
             on_activate=lambda: self.split.set_show_content(True),
+            on_search_enter=self._read_search_hit,
         )
 
         self.meeting = MeetingPage(
@@ -615,6 +616,10 @@ class Window(Adw.ApplicationWindow):
             self.live.ask.focus()
         elif page == "meeting":
             self.meeting.ask.focus()
+
+    def _read_search_hit(self) -> None:
+        self.split.set_show_content(True)
+        self.meeting.focus_reading()
 
     def _focus_search(self) -> None:
         self.split.set_show_content(False)

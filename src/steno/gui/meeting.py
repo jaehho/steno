@@ -418,6 +418,26 @@ class MeetingPage(Gtk.Box):
             scroller.get_vadjustment().set_value(max(0.0, point[1] - 48))
         return GLib.SOURCE_REMOVE
 
+    def focus_reading(self) -> None:
+        """Give the page the keyboard where its reading starts: the
+        line a search jumped to, the summary, then the transcript
+        (issue #20). Never "Summarize now": one stray Enter there is a
+        paid call.
+        """
+        hit = next(
+            (r for r in self._rows if r.has_css_class("line-hit")), None
+        )
+        if hit is not None:
+            self._attach_through(hit)
+            hit.grab_focus()
+            return
+        forward = Gtk.DirectionType.TAB_FORWARD
+        if not (
+            self.summary_view.child_focus(forward)
+            or self.transcript_list.child_focus(forward)
+        ):
+            self.ask.focus()
+
     def load(self, s: Session) -> None:
         left = self.current
         if left is not None and left.dir != s.dir:

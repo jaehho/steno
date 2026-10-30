@@ -120,6 +120,7 @@ class TestRowMenu(unittest.TestCase):
             on_select=self.chosen.append,
             on_status_button=lambda _label: None,
             on_activate=lambda: None,
+            on_search_enter=lambda: None,
         )
         self.sidebar.refresh()
         self.rows = [self.sidebar.list.get_row_at_index(i) for i in range(3)]
@@ -232,7 +233,8 @@ class TestSearchKeys(unittest.TestCase):
             self.root,
             on_select=self.chosen.append,
             on_status_button=lambda _label: None,
-            on_activate=self._opened,
+            on_activate=lambda: None,
+            on_search_enter=self._opened,
         )
         self.sidebar.refresh()
         self.host = Gtk.Window(child=self.sidebar)
@@ -375,6 +377,47 @@ class TestMenuInTheWindow(unittest.TestCase):
             focus is self.sidebar.search
             or focus.is_ancestor(self.sidebar.search)
         )
+
+    def focus_in_page(self) -> Gtk.Widget:
+        focus = self.window.get_focus()
+        self.assertTrue(focus.is_ancestor(self.page), focus)
+        return focus
+
+    def test_enter_on_a_hit_puts_the_keyboard_on_the_line_it_found(self):
+        self.sidebar.search.set_text("Alpha")
+        self.sidebar._on_search(self.sidebar.search)
+        settle()
+        self.sidebar.search.emit("activate")
+        settle()
+        self.assertEqual(self.page.current.title, "Alpha")
+        focus = self.focus_in_page()
+        self.assertIs(focus, self.page._rows[0])
+        self.assertTrue(focus.has_css_class("line-hit"))
+
+    def test_enter_on_an_empty_box_opens_the_meeting_being_read(self):
+        self.sidebar.search.grab_focus()
+        self.sidebar.search.emit("activate")
+        settle()
+        self.assertEqual(self.page.current.title, "Charlie")
+        self.assertIs(self.focus_in_page(), self.page._rows[0])
+
+    def test_enter_with_no_hit_keeps_the_keyboard_in_the_box(self):
+        self.sidebar.search.grab_focus()
+        self.sidebar.search.set_text("nothing-says-this")
+        self.sidebar._on_search(self.sidebar.search)
+        settle()
+        self.sidebar.search.emit("activate")
+        settle()
+        focus = self.window.get_focus()
+        self.assertFalse(focus.is_ancestor(self.page))
+        self.assertTrue(focus.is_ancestor(self.sidebar.search))
+
+    def test_enter_does_not_land_on_summarize_now(self):
+        """One stray Enter there would pay for a model call."""
+        self.page.summarize_button.set_visible(True)
+        self.page.focus_reading()
+        settle()
+        self.assertIsNot(self.window.get_focus(), self.page.summarize_button)
 
     def test_it_is_the_menu_in_the_page_header(self):
         right_click(self.row(1))
