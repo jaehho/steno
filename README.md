@@ -119,7 +119,11 @@ and has a **Summarize now** button. A meeting's to-dos sit in two groups: **For
 you**, which also holds any item nobody has claimed, and **Waiting on them**,
 what someone else promised, kept as a reminder. Only the first is counted, in
 the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
-still owe across every meeting; a row opens its meeting. The model's action
+still owe across every meeting; a row opens its meeting. A task reaches asst
+with the date the meeting gave it, if it gave one, worked out from the day of
+the meeting, and a note that says which meeting it came from and how to open it
+(`steno show NAME`). A date you change in asst stays changed; Steno sends it
+only once. The model's action
 items are the weakest part, so each to-do row has a menu (right-click, or
 the `Menu` key): **Edit** the wording, **Remove** a wrong one, and, when asst
 holds the task, **Open in asst** (the list name beside the row does the same)
@@ -131,11 +135,7 @@ asst too (`asst edit`, `asst rm`); a row that never reached asst, and what
 others owe, stay here. A title changed in asst comes back to the row. A
 re-summarize words every row as the model does, yours included, here and in
 asst, and **Summarize again** warns first when you have reworded one. It can
-also bring back a row you removed, since the model says it again. A task
-reaches asst with the date the meeting gave it, if it gave one, worked out from
-the day of the meeting, and a note that says which meeting it came from and how
-to open it (`steno show NAME`). A date you change in asst stays changed; Steno
-sends it only once. The ⋯ menu acts on
+also bring back a row you removed, since the model says it again. The ⋯ menu acts on
 the meeting you are looking at: summarize it again, re-time it against its
 audio, join it with the meeting before, drop the audio but keep the words,
 copy or save the meeting as markdown, put it away (Archive, below), or

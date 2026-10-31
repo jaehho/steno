@@ -359,6 +359,8 @@ def _reworded_pairs(
 
 def _carry_state(fresh: Todo, prior: Todo) -> None:
     """Hand the user's side of a row to the item that replaces it."""
+    # A later summary that does not say the date has not unsaid it.
+    fresh.due = fresh.due or prior.due
     fresh.done = prior.done
     fresh.done_at = prior.done_at
     fresh.uid = prior.uid
@@ -374,8 +376,6 @@ def _carry_state(fresh: Todo, prior: Todo) -> None:
     fresh.retitle = bool(prior.uid) and (
         prior.retitle or fresh.text != prior.text
     )
-    # A later summary that does not say the date has not unsaid it.
-    fresh.due = fresh.due or prior.due
 
 
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
