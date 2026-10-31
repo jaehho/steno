@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 
 APP_ID = "dev.jaeho.Steno"
 OBJECT_PATH = "/" + APP_ID.replace(".", "/")
@@ -45,6 +46,18 @@ def is_running() -> bool:
         return False
 
 
+def platform_data(environ: Mapping[str, str]) -> dict[str, str]:
+    """The activation token this command was started with, under the two
+    names GTK reads it by, so the window it asks for may take focus."""
+    token = environ.get("XDG_ACTIVATION_TOKEN") or environ.get(
+        "DESKTOP_STARTUP_ID"
+    )
+    return (
+        {"activation-token": token, "desktop-startup-id": token}
+        if token else {}
+    )
+
+
 def activate(
     action: str, args: list | None = None, timeout_ms: int = 2000
 ) -> bool:
@@ -60,9 +73,13 @@ def activate(
         bus = _bus()
         params = [GLib.Variant("i", a) if isinstance(a, int) else GLib.Variant("s", a)
                   for a in (args or [])]
+        platform = {
+            k: GLib.Variant("s", v)
+            for k, v in platform_data(os.environ).items()
+        }
         bus.call_sync(
             APP_ID, OBJECT_PATH, "org.gtk.Actions", "Activate",
-            GLib.Variant("(sava{sv})", (action, params, {})),
+            GLib.Variant("(sava{sv})", (action, params, platform)),
             None, Gio.DBusCallFlags.NONE, timeout_ms, None,
         )
     except Exception:
@@ -103,21 +120,41 @@ def show() -> bool:
     return launch()
 
 
+def _app_is_up() -> bool:
+    """Is an app on the bus, after starting one with no window if not?
+
+    False when it would not start, or exited on its own (its preflight says
+    why), or never appeared.
+    """
+    if is_running():
+        return True
+    proc = _spawn(background=True)
+    if proc is None:
+        return False
+    deadline = time.monotonic() + START_WAIT_S
+    while not is_running():
+        if proc.poll() is not None or time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
+def show_session(name: str) -> bool:
+    """Open one meeting in the window, starting the app first if it isn't
+    running. False when the call did not reach an app."""
+    if not _app_is_up():
+        return False
+    return activate("open-session", [name], timeout_ms=START_WAIT_S * 1000)
+
+
 def toggle_record() -> bool:
     """Start or stop recording, starting the app first if it isn't running.
 
     False when the call did not reach an app: it would not start, it exited
     on its own (its preflight says why), or it never answered.
     """
-    if not is_running():
-        proc = _spawn(background=True)
-        if proc is None:
-            return False
-        deadline = time.monotonic() + START_WAIT_S
-        while not is_running():
-            if proc.poll() is not None or time.monotonic() >= deadline:
-                return False
-            time.sleep(0.1)
+    if not _app_is_up():
+        return False
     # One long call, never a retry: a toggle that was answered late and then
     # sent again would stop the recording it had just started.
     return activate("toggle-record", timeout_ms=START_WAIT_S * 1000)

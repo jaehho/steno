@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import NamedTuple
@@ -36,6 +37,8 @@ _OWNER_RE = re.compile(
 )
 _ACTION_HEADING_RE = re.compile(r"^\s*#+\s*action\s+items?\s*$", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s*#+\s+")
+# What the summary prompt asks for after an item's wording.
+_DUE_RE = re.compile(r"\s*\(due:?\s*([^()]*)\)\s*$", re.IGNORECASE)
 # A bullet that says there are no action items ("No commitments were
 # made.") is a model padding a section it was told to leave out. It is
 # not a promise, and would come up as an open to-do nobody owes.
@@ -88,6 +91,9 @@ class Todo:
     src: str = ""
     # asst list the task sits in (`Inbox`, `thesis`, …). Empty when unfiled.
     list_name: str = ""
+    # The date the summary found, YYYY-MM-DD, or empty. What the task is
+    # filed with and no more: once filed, asst owns the date.
+    due: str = ""
     # A checkbox that did not reach asst (daemon down). Kept until it lands,
     # so a later pull cannot un-tick what the user just ticked.
     dirty: bool = False
@@ -160,6 +166,23 @@ def has_notes(session_dir: Path) -> bool:
     return notes_path(session_dir).is_file()
 
 
+def split_due(item: str) -> tuple[str, str]:
+    """An action item's wording and its due date (YYYY-MM-DD, or "").
+
+    The `(due: ...)` is never part of the wording, even when it is not a
+    date: the wording is the row's key and its asst source, so a summary
+    that adds a date must not make it a new promise.
+    """
+    m = _DUE_RE.search(item)
+    if m is None:
+        return item, ""
+    try:
+        due = date.fromisoformat(m.group(1).strip()).isoformat()
+    except ValueError:
+        due = ""
+    return item[:m.start()], due
+
+
 def parse_action_items(summary_body: str) -> list[Todo]:
     """Pull the Action items section out of a summary into todos.
 
@@ -167,6 +190,7 @@ def parse_action_items(summary_body: str) -> list[Todo]:
     asks for; bullets before any owner header are unassigned. A citation
     marker is not part of the wording: it becomes `cites`, so the text, and
     the key and asst source made from it, are the same with or without one.
+    So is a due date (`split_due`).
     """
     todos: list[Todo] = []
     in_section = False
@@ -187,11 +211,12 @@ def parse_action_items(summary_body: str) -> list[Todo]:
             break  # the next section ends the list
         m = citations.BULLET_RE.match(line)
         if m:
-            text = m.group(1).strip()
+            text, due = split_due(m.group(1).strip())
             if text and not _NONE_RE.match(text):
-                todos.append(
-                    Todo(text=text, owner=owner, cites=citations.parse(raw))
-                )
+                todos.append(Todo(
+                    text=text, owner=owner, due=due,
+                    cites=citations.parse(raw),
+                ))
     return todos
 
 
@@ -209,6 +234,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             uid=str(row.get("uid", "") or ""),
             src=str(row.get("src", "") or ""),
             list_name=str(row.get("list_name", "") or ""),
+            due=str(row.get("due", "") or ""),
             dirty=bool(row.get("dirty", False)),
             dropped=bool(row.get("dropped", False)),
             edited=bool(row.get("edited", False)),
@@ -348,6 +374,8 @@ def _carry_state(fresh: Todo, prior: Todo) -> None:
     fresh.retitle = bool(prior.uid) and (
         prior.retitle or fresh.text != prior.text
     )
+    # A later summary that does not say the date has not unsaid it.
+    fresh.due = fresh.due or prior.due
 
 
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
@@ -464,7 +492,7 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
     for t in pending:
         _with_src(session_dir, t)
         key = t.src[len(prefix):] if t.src.startswith(prefix) else t.key
-        uid = asstlink.add_todo(session_dir, t.text, key, list_name)
+        uid = asstlink.add_todo(session_dir, t.text, key, list_name, t.due)
         if uid:
             t.uid = uid
             t.list_name = list_name or "Inbox"

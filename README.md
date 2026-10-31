@@ -86,7 +86,7 @@ Day to day there is nothing to run. Open the window from rofi, or click the bar.
 steno                      the window (same as `steno gui`)
 steno gui --background     listen with no window (what autostart runs)
 steno autostart [on|off]   start listening at login, for this user
-steno show                 raise the window, starting it if needed
+steno show [NAME]          raise the window or open a meeting, starting it if needed
 steno toggle               start or stop recording (starts the listener if it is down)
 steno pause 45m            stop detecting for a while; --off to resume
 steno quit                 stop the listener
@@ -131,7 +131,11 @@ asst too (`asst edit`, `asst rm`); a row that never reached asst, and what
 others owe, stay here. A title changed in asst comes back to the row. A
 re-summarize words every row as the model does, yours included, here and in
 asst, and **Summarize again** warns first when you have reworded one. It can
-also bring back a row you removed, since the model says it again. The ⋯ menu acts on
+also bring back a row you removed, since the model says it again. A task
+reaches asst with the date the meeting gave it, if it gave one, worked out from
+the day of the meeting, and a note that says which meeting it came from and how
+to open it (`steno show NAME`). A date you change in asst stays changed; Steno
+sends it only once. The ⋯ menu acts on
 the meeting you are looking at: summarize it again, re-time it against its
 audio, join it with the meeting before, drop the audio but keep the words,
 copy or save the meeting as markdown, put it away (Archive, below), or

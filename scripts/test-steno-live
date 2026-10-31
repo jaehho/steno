@@ -200,5 +200,8 @@ ran "ran checkout: [gui] [--background]" "gui --background"
 GDBUS_STATUS=0 "$tmp/checkout/scripts/steno-live" toggle
 ran "ran checkout: [toggle]" "toggle"
 called "" "commands other than showing the window"
+GDBUS_STATUS=0 "$tmp/checkout/scripts/steno-live" show 20261012-100000
+ran "ran checkout: [show] [20261012-100000]" "showing one meeting"
+called "" "showing one meeting"
 
 echo "steno-live: ok"

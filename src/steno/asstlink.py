@@ -11,6 +11,10 @@ Your items file into the asst list named after the meeting's project when that
 list exists; otherwise the inbox. A list tied to a GitHub repo will open issues
 for them, which is why an unset project stays out of those lists.
 
+A task is filed with its due date, when the summary found one, and a note that
+leads back to the meeting. Both go across once, in the `add`: after that asst
+owns them, and a date changed there is left alone.
+
 Without `asst` on PATH nothing here does anything — the local `todos.json` is
 still the whole story, and a meeting must never fail because a task app is not
 installed. The CLI is only a client: writes need **asstd** (the daemon) on the
@@ -20,15 +24,19 @@ session bus. The GTK window is not required.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 import threading
+from datetime import datetime
 from pathlib import Path
 
 TIMEOUT_S = 15.0
 COMPLETED_LIMIT = "9999"
 OFF_ENV = "STENO_NO_ASST"
+
+log = logging.getLogger("steno.asst")
 
 
 def available() -> bool:
@@ -172,25 +180,67 @@ def archived(session_dir: Path) -> bool:
         return False
 
 
+def origin_note(
+    session_name: str, title: str | None, started_at: float | None
+) -> str:
+    """A task's way back: which meeting it came from, and the command
+    that opens it."""
+    when = (
+        datetime.fromtimestamp(started_at).strftime("%B %-d, %Y")
+        if started_at else ""
+    )
+    origin = ", ".join(part for part in (title, when) if part)
+    back = f"steno show {session_name}"
+    return f"From {origin}. {back}" if origin else back
+
+
+def _note_for(session_dir: Path) -> str:
+    """`origin_note` from what `meta.json` says; a damaged file costs the
+    title and the date, not the command."""
+    try:
+        meta = json.loads((session_dir / "meta.json").read_text())
+        title = meta.get("title")
+        started_at = float(meta.get("started_at") or 0.0)
+        return origin_note(
+            session_dir.name, str(title) if title else None, started_at
+        )
+    except (
+        OSError, json.JSONDecodeError, AttributeError,
+        TypeError, ValueError, OverflowError,
+    ):
+        return origin_note(session_dir.name, None, None)
+
+
 def add_todo(
     session_dir: Path,
     text: str,
     todo_key: str,
     list_name: str | None = None,
+    due: str = "",
 ) -> str | None:
     """File one action item under the meeting's source. Returns asst's id.
+
+    `due` is a date asst can read, or "" for none.
 
     Only a recorded meeting may create tasks. A scratch directory (the test
     suite's `mkdtemp`, a half-made export, anything without `meta.json`) must
     never reach the phone — that is how fixture to-dos filled the Inbox twice
     (gotcha #13).
+
+    A refusal is asked again with the bare item: a promise filed with no
+    date beats one lost over its date or its note.
     """
     if not (session_dir / "meta.json").is_file():
         return None
     args = ["add", "--literal", "--source", source_key(session_dir, todo_key)]
     if list_name:
         args.extend(["--list", list_name])
-    raw = _run([*args, "--", text])
+    extras = ["--due", due] if due else []
+    extras += ["--note", _note_for(session_dir)]
+    raw = _run([*args, *extras, "--", text])
+    if raw is None:
+        log.warning("asst did not take %s; filing it bare", extras)
+        raw = _run([*args, "--", text])
     return _parse_id(raw)
 
 

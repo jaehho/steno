@@ -7,6 +7,48 @@ from unittest import mock
 from steno import control
 
 
+class TestShowSession(unittest.TestCase):
+    def test_a_running_app_is_asked_without_a_launch(self):
+        with mock.patch.object(control, "is_running", return_value=True), \
+             mock.patch.object(control, "_spawn") as spawn, \
+             mock.patch.object(control, "activate", return_value=True) as act:
+            self.assertTrue(control.show_session("20261012-100000"))
+        spawn.assert_not_called()
+        self.assertEqual(act.call_args[0], ("open-session", ["20261012-100000"]))
+
+    def test_a_down_app_is_started_without_a_window_then_asked(self):
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        with mock.patch.object(control, "is_running", side_effect=[False, True]), \
+             mock.patch.object(control, "_spawn", return_value=proc) as spawn, \
+             mock.patch.object(control, "activate", return_value=True) as act:
+            self.assertTrue(control.show_session("s"))
+        spawn.assert_called_once_with(background=True)
+        act.assert_called_once()
+
+    def test_an_app_that_will_not_start_is_a_failure(self):
+        with mock.patch.object(control, "is_running", return_value=False), \
+             mock.patch.object(control, "_spawn", return_value=None), \
+             mock.patch.object(control, "activate") as act:
+            self.assertFalse(control.show_session("s"))
+        act.assert_not_called()
+
+
+class TestPlatformData(unittest.TestCase):
+    def test_the_token_goes_by_both_names(self):
+        self.assertEqual(
+            control.platform_data({"XDG_ACTIVATION_TOKEN": "t"}),
+            {"activation-token": "t", "desktop-startup-id": "t"},
+        )
+        self.assertEqual(
+            control.platform_data({"DESKTOP_STARTUP_ID": "x"})["activation-token"],
+            "x",
+        )
+
+    def test_no_token_no_data(self):
+        self.assertEqual(control.platform_data({}), {})
+
+
 class TestToggleRecord(unittest.TestCase):
     def toggle(self, running, proc=None, activated=True):
         """Run toggle_record; `running` is what is_running answers, in turn."""
