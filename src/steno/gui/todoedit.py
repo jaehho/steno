@@ -41,43 +41,52 @@ class RowMenus:
     def attach(
         self,
         row: Gtk.Widget,
+        home: Gtk.Widget,
         filed: bool,
         handlers: dict[str, Callable[[], None]],
     ) -> None:
+        """Give `row` its menu. Focus goes to `home`, in the row, when the
+        menu closes: a prompt an item asks gives focus back to whatever
+        had it when it opened, and the menu's own item will be gone."""
+        def run(handler: Callable[[], None]) -> None:
+            home.grab_focus()
+            handler()
+
         group = Gio.SimpleActionGroup()
         for name, handler in handlers.items():
             action = Gio.SimpleAction.new(name, None)
-            action.connect("activate", lambda _a, _p, fn=handler: fn())
+            action.connect("activate", lambda _a, _p, fn=handler: run(fn))
             group.add_action(action)
         row.insert_action_group(GROUP, group)
 
+        def at_pointer(gesture, x: float, y: float) -> None:
+            # Claimed, so a touch long press is not also taken for a click.
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self.popup(row, home, filed, x, y)
+
         click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
-        click.connect(
-            "pressed", lambda g, _n, x, y: self._on_gesture(g, row, filed, x, y)
-        )
+        click.connect("pressed", lambda g, _n, x, y: at_pointer(g, x, y))
         row.add_controller(click)
         hold = Gtk.GestureLongPress(touch_only=True)
-        hold.connect(
-            "pressed", lambda g, x, y: self._on_gesture(g, row, filed, x, y)
-        )
+        hold.connect("pressed", at_pointer)
         row.add_controller(hold)
         keys = Gtk.ShortcutController()
         for key in MENU_KEYS:
             keys.add_shortcut(Gtk.Shortcut.new(
                 Gtk.ShortcutTrigger.parse_string(key),
                 Gtk.CallbackAction.new(
-                    lambda *_a: self.popup(row, filed)
+                    lambda *_a: self.popup(row, home, filed)
                 ),
             ))
         row.add_controller(keys)
 
-    def _on_gesture(self, gesture, row, filed: bool, x: float, y: float) -> None:
-        # Claimed, so a touch long press is not also taken for a click.
-        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-        self.popup(row, filed, x, y)
-
     def popup(
-        self, row: Gtk.Widget, filed: bool, x: float | None = None, y: float = 0
+        self,
+        row: Gtk.Widget,
+        home: Gtk.Widget,
+        filed: bool,
+        x: float | None = None,
+        y: float = 0,
     ) -> bool:
         """Open the row's menu at the pointer, or under the row without one."""
         self.drop()
@@ -89,12 +98,17 @@ class RowMenus:
             area = Gdk.Rectangle()
             area.x, area.y, area.width, area.height = int(x), int(y), 1, 1
             popover.set_pointing_to(area)
-        popover.connect("closed", self._on_closed)
+        popover.connect("closed", self._on_closed, home)
         self.popover = popover
         popover.popup()
         return True
 
-    def _on_closed(self, popover: Gtk.PopoverMenu) -> None:
+    def _on_closed(self, popover: Gtk.PopoverMenu, home: Gtk.Widget) -> None:
+        # Esc: left inside, focus would move on to the next row or further
+        # when the menu is unparented. An item already has it out of here.
+        focus = popover.get_root().get_focus()
+        if focus is not None and focus.is_ancestor(popover):
+            home.grab_focus()
         # Not here: the click that closed it is still delivering its action.
         GLib.idle_add(self.drop, popover)
 

@@ -98,6 +98,10 @@ class Todo:
     # task (`drop_open_todos`): a dropped row that names a task is one
     # whose removal is still to do.
     dropped: bool = False
+    # Words the user gave it (Edit or Add on the meeting page). A later
+    # summary keeps them, as it keeps a title given by hand: the task in
+    # asst says the same and nothing would tell it otherwise.
+    edited: bool = False
     # Where in the meeting this was said, as seconds on the transcript's
     # timeline. Comes from the summary's markers, never from the text.
     cites: list[citations.Cite] = field(default_factory=list)
@@ -201,6 +205,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             list_name=str(row.get("list_name", "") or ""),
             dirty=bool(row.get("dirty", False)),
             dropped=bool(row.get("dropped", False)),
+            edited=bool(row.get("edited", False)),
             cites=citations.coerce(row.get("cites")),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
@@ -330,6 +335,9 @@ def _carry_state(fresh: Todo, prior: Todo) -> None:
     fresh.dirty = prior.dirty
     fresh.dropped = prior.dropped
     fresh.list_name = prior.list_name
+    if prior.edited:
+        fresh.text = prior.text
+        fresh.edited = True
 
 
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
@@ -339,7 +347,8 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
     an item the summary now words differently (`SAME_ITEM_RATIO`, and no
     word swapped for another) is the same row, with the new wording and
     the old state, uid and source, so the task asst holds is neither
-    duplicated nor orphaned. Items the user has completed are kept even if
+    duplicated nor orphaned. Words the user gave a row stay over the
+    summary's. Items the user has completed are kept even if
     a re-summarize drops them — deleting the record of finished work would
     be the one unrecoverable thing this file could do. An open item already
     on the phone is kept too: the model must not orphan a task asst is
@@ -603,7 +612,8 @@ def rename_todo(session_dir: Path, key: str, text: str) -> Todo | None:
     another row already says it (the wording is how a row is found).
 
     The row keeps its source, uid and state: it is the same promise, said
-    better. Telling asst is `deliver_title`, which is slow.
+    better, and a later summary does not put the model's words back.
+    Telling asst is `deliver_title`, which is slow.
     """
     text = " ".join(text.split())
     if not text:
@@ -621,6 +631,7 @@ def rename_todo(session_dir: Path, key: str, text: str) -> Todo | None:
         # asst has never heard of.
         _with_src(session_dir, row)
         row.text = text
+        row.edited = True
         found.append(row)
         return True
 
@@ -671,7 +682,7 @@ def add_todo_row(session_dir: Path, text: str) -> Todo | None:
     text = " ".join(text.split())
     if not text:
         return None
-    fresh = Todo(text=text, owner="you")
+    fresh = Todo(text=text, owner="you", edited=True)
     _with_src(session_dir, fresh)
     added: list[Todo] = []
 

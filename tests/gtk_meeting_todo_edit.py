@@ -120,6 +120,13 @@ class TodoEditCase(unittest.TestCase):
     def row(self, text: str) -> Gtk.Box:
         return self.rows()[text]
 
+    def box(self, text: str) -> Gtk.CheckButton:
+        """The tick box of the row with these words."""
+        return self.page._todo_rows[" ".join(text.lower().split())][1]
+
+    def focus(self) -> Gtk.Widget | None:
+        return self.window.get_focus()
+
     def right_click(self, text: str) -> Gtk.PopoverMenu:
         row = self.row(text)
         secondary = [
@@ -214,6 +221,37 @@ class TestTheMenu(TodoEditCase):
             )
         )
 
+    def test_closing_it_leaves_focus_on_its_row(self):
+        popover = self.right_click(DRAFT)
+        settle()
+        popover.popdown()
+        settle()
+        self.assertIs(self.focus(), self.box(DRAFT))
+
+    def test_an_item_puts_focus_on_its_row_before_it_asks(self):
+        seen = []
+        patch = mock.patch(
+            "steno.gui.meeting.ask_text",
+            lambda *_a, **_k: seen.append(self.focus()),
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+        popover = self.right_click(DRAFT)
+        popover.activate_action("todo.edit", None)
+        self.assertEqual(seen, [self.box(DRAFT)])
+
+    def test_rebuilding_the_list_keeps_focus_on_the_same_row(self):
+        self.box(DRAFT).grab_focus()
+        self.page._refresh_todos(self.page.current)
+        self.assertIs(self.focus(), self.box(DRAFT))
+
+    def test_rebuilding_the_list_leaves_focus_elsewhere_alone(self):
+        search = self.window.sidebar.search
+        search.grab_focus()
+        before = self.focus()
+        self.page._refresh_todos(self.page.current)
+        self.assertIs(self.focus(), before)
+
     def test_rebuilding_the_list_takes_the_menu_down(self):
         popover = self.right_click(SEND)
         self.page._load_todos(self.page.current, load_todos(self.dir))
@@ -241,6 +279,21 @@ class TestEditing(TodoEditCase):
             "asst never heard the new wording",
         )
         self.assertEqual(self.toasts, [])
+
+    def test_capitals_alone_are_a_change_that_reaches_asst(self):
+        self.answers("ask_text", SEND.upper())
+        uid = self.local(SEND).uid
+        self.right_click(SEND).activate_action("todo.edit", None)
+        self.assertIn(SEND.upper(), self.rows())
+        self.assertTrue(
+            wait_for(lambda: self.task(uid).get("title") == SEND.upper()),
+            "asst never heard the new capitals",
+        )
+
+    def test_focus_is_on_the_row_that_took_the_new_words(self):
+        self.answers("ask_text", "Send the Q3 usage figures")
+        self.right_click(SEND).activate_action("todo.edit", None)
+        self.assertIs(self.focus(), self.box("Send the Q3 usage figures"))
 
     def test_the_same_words_change_nothing_and_call_nothing(self):
         self.answers("ask_text", SEND)
@@ -311,6 +364,13 @@ class TestRemoving(TodoEditCase):
         )
         self.assertEqual(self.toasts, [])
 
+    def test_focus_moves_to_the_row_after_it_or_to_add(self):
+        self.confirm()
+        self.right_click(SEND).activate_action("todo.remove", None)
+        self.assertIs(self.focus(), self.box(DRAFT))
+        self.right_click(THEIRS).activate_action("todo.remove", None)
+        self.assertIs(self.focus(), self.page.add_todo_button)
+
     def test_the_count_follows(self):
         self.confirm()
         self.assertEqual(self.window.sidebar.sessions[0].open_todos, 2)
@@ -363,6 +423,19 @@ class TestAdding(TodoEditCase):
         self.assertIs(
             self.page.todo_box.get_last_child(), self.page.add_todo_button
         )
+
+    def test_focus_is_on_the_new_row_and_stays_when_it_comes_back_filed(self):
+        self.answers("ask_text", "Book the room")
+        self.page.add_todo_button.emit("clicked")
+        self.assertIs(self.focus(), self.box("Book the room"))
+        self.assertTrue(wait_for(lambda: self.local("Book the room").uid))
+        self.assertTrue(wait_for(
+            lambda: any(
+                w.has_css_class("todo-list")
+                for w in walk(self.row("Book the room"))
+            )
+        ))
+        self.assertIs(self.focus(), self.box("Book the room"))
 
     def test_nothing_else_waiting_is_filed_with_it(self):
         self.asst.down = True

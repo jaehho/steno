@@ -89,6 +89,20 @@ class TestRewording(EditCase):
         self.assertTrue(reworded.done)
         self.assertEqual(len(load_todos(self.dir)), 3)
 
+    def test_a_summary_again_keeps_the_words_the_user_gave_it(self):
+        uid = self.row(SEND).uid
+        rename_todo(self.dir, SEND, "Send the Q3 figures")
+        sync_todos(self.dir, SUMMARY)
+        rows = [t for t in load_todos(self.dir) if t.uid == uid]
+        self.assertEqual([t.text for t in rows], ["Send the Q3 figures"])
+        self.assertEqual(self.asst.calls("add")[2:], [])
+
+    def test_an_untouched_row_still_takes_the_summarys_new_words(self):
+        sync_todos(self.dir, SUMMARY.replace("usage figures", "usage figure"))
+        self.assertIn(SEND.replace("figures", "figure"), [
+            t.key for t in load_todos(self.dir)
+        ])
+
     def test_empty_wording_or_wording_another_row_has_is_refused(self):
         self.assertIsNone(rename_todo(self.dir, SEND, "   "))
         self.assertIsNone(
@@ -176,6 +190,16 @@ class TestAdding(EditCase):
         sync_todos(self.dir, SUMMARY)
         self.assertEqual(
             len([t for t in load_todos(self.dir) if t.owner == "you"]), 3
+        )
+
+    def test_a_summary_with_the_same_words_keeps_how_you_wrote_them(self):
+        add_todo_row(self.dir, "SEND THE USAGE FIGURES BY FRIDAY again")
+        sync_todos(
+            self.dir, SUMMARY + "- send the usage figures by friday again\n"
+        )
+        self.assertIn(
+            "SEND THE USAGE FIGURES BY FRIDAY again",
+            [t.text for t in load_todos(self.dir)],
         )
 
     def test_empty_wording_or_wording_already_there_is_refused(self):
