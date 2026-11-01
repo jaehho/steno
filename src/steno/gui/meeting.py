@@ -73,7 +73,7 @@ from .rewrite import QUIT_WAIT_S, Rewriter
 from .sidebar import Session
 from .summary import CiteBar, CitedBox, CiteSource, SummaryView, make_citable
 from .todoedit import RowMenus, ask_list, ask_text
-from .widgets import AskBox, NotesBox, hint_label, section, wrapping_label
+from .widgets import AskBox, NotesBox, hint_label, mark_matches, section, wrapping_label
 
 NUDGE_S = 10.0
 # asstd emits a D-Bus `Changed` on every task write, which is how a phone
@@ -163,6 +163,10 @@ class MeetingPage(Gtk.Box):
         self._filling = 0
         self.fill_held = False
         self._playing_index = -1
+        # What the sidebar's search is looking for, and the lines that hold
+        # it; both shown on the page wherever the words occur.
+        self._search_terms: list[str] = []
+        self._hits: list[int] = []
         # What was last asked where it was said, and the lines that answer.
         self._active: CiteSource | None = None
         self._cited: list[int] = []
@@ -375,17 +379,10 @@ class MeetingPage(Gtk.Box):
         it, which is the difference between finding a meeting and finding a
         moment.
         """
-        if not query or not self._rows:
+        self.show_search(query)
+        if not self._hits:
             return
-        words = query.lower().split()
-        first = -1
-        for i, record in enumerate(self._records):
-            if all(w in str(record.get("text", "")).lower() for w in words):
-                if first < 0:
-                    first = i
-                self._rows[i].add_css_class("line-hit")
-        if first < 0:
-            return
+        first = self._hits[0]
         # The rows were only just added, and the page may not be on screen
         # yet. The frame clock lays them out when it next runs, which can
         # come after any idle pass, and until then the scroller has no
@@ -395,6 +392,27 @@ class MeetingPage(Gtk.Box):
         GLib.timeout_add(
             JUMP_POLL_MS, self._scroll_to_row, self._rows[first], give_up
         )
+
+    def show_search(self, query: str) -> None:
+        """Light the words of a search where they occur on the page, and
+        take them off again when it changes. Does not move the page.
+        """
+        for i in self._hits:
+            if i < len(self._rows):
+                self._rows[i].remove_css_class("line-hit")
+                _line_text(self._rows[i]).set_attributes(None)
+        self._hits = []
+        self._search_terms = words.search_terms(query)
+        for i, record in enumerate(self._records):
+            if words.holds_terms(str(record.get("text", "")), self._search_terms):
+                self._hits.append(i)
+                self._rows[i].add_css_class("line-hit")
+                mark_matches(_line_text(self._rows[i]), self._search_terms)
+        self._mark_summary()
+
+    def _mark_summary(self) -> None:
+        for label in self.summary_view.labels:
+            mark_matches(label, self._search_terms)
 
     def _scroll_to_row(self, row: Gtk.ListBoxRow, give_up: int) -> bool:
         """Bring a transcript line to just under the top of whichever scroller
@@ -465,6 +483,7 @@ class MeetingPage(Gtk.Box):
         if s.summary_path.is_file():
             md = s.summary_path.read_text()
             self.summary_view.show(words.summary_blocks(md, has_todos=bool(todos)))
+            self._mark_summary()
             self._seen = citations.coverage(md)
             self._show_note(s)
             self.summary_view.set_visible(True)
@@ -1795,3 +1814,8 @@ def _transcript_row(record: dict, started_at: float) -> Gtk.ListBoxRow:
     box.append(text)
     row.set_child(box)
     return row
+
+
+def _line_text(row: Gtk.ListBoxRow) -> Gtk.Label:
+    """The words of a transcript line, the last thing in its row."""
+    return row.get_child().get_last_child()

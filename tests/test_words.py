@@ -299,6 +299,39 @@ class TestCitePlaces(unittest.TestCase):
         self.assertTrue(place.quote.endswith("word…"), place.quote)
 
 
+
+class TestSearchMatches(unittest.TestCase):
+    def test_finds_every_occurrence_whatever_its_case(self):
+        self.assertEqual(
+            words.match_spans("Budget and budget", ["budget"]),
+            [(0, 6), (11, 17)],
+        )
+
+    def test_offsets_count_bytes_not_characters(self):
+        self.assertEqual(words.match_spans("café budget", ["budget"]), [(6, 12)])
+
+    def test_overlapping_terms_join(self):
+        self.assertEqual(words.match_spans("rebudgeted", ["budget", "get"]), [(2, 8)])
+
+    def test_each_term_is_found_alone(self):
+        self.assertEqual(
+            words.match_spans("the plan for budget", ["budget", "plan"]),
+            [(4, 8), (13, 19)],
+        )
+
+    def test_a_term_is_taken_literally(self):
+        self.assertEqual(words.match_spans("a.b axb", ["a.b"]), [(0, 3)])
+
+    def test_no_terms_means_no_spans(self):
+        self.assertEqual(words.match_spans("anything", []), [])
+
+    def test_a_line_must_hold_every_term(self):
+        terms = words.search_terms("Budget PLAN")
+        self.assertTrue(words.holds_terms("the plan for budget", terms))
+        self.assertFalse(words.holds_terms("the plan", terms))
+        self.assertFalse(words.holds_terms("the plan", []))
+
+
 if __name__ == "__main__":
     unittest.main()
 

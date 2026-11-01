@@ -415,6 +415,38 @@ def cite_places(
     return sorted(places.values(), key=lambda place: place.rows[0])
 
 
+def search_terms(query: str) -> list[str]:
+    """The words of a search, each of which a hit has to hold."""
+    return query.lower().split()
+
+
+def holds_terms(text: str, terms: Sequence[str]) -> bool:
+    low = text.lower()
+    return bool(terms) and all(term in low for term in terms)
+
+
+def match_spans(text: str, terms: Sequence[str]) -> list[tuple[int, int]]:
+    """Where `terms` occur in `text`, in order and with overlaps joined.
+
+    Offsets count UTF-8 bytes, which is what Pango counts in.
+    """
+    found = sorted(
+        match.span()
+        for term in terms
+        for match in re.finditer(re.escape(term), text, re.IGNORECASE)
+    )
+    joined: list[tuple[int, int]] = []
+    for start, end in found:
+        if joined and start <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(joined[-1][1], end))
+        else:
+            joined.append((start, end))
+    return [
+        (len(text[:start].encode()), len(text[:end].encode()))
+        for start, end in joined
+    ]
+
+
 def escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 

@@ -138,6 +138,11 @@ class Window(Adw.ApplicationWindow):
         self.add_breakpoint(medium)
         self.add_breakpoint(narrow)
         self.connect("notify::current-breakpoint", lambda *_a: self._on_breakpoint())
+        # After the sidebar's own handler, which picks the meeting to show.
+        self.sidebar.search.connect(
+            "search-changed",
+            lambda _e: self.meeting.show_search(self.sidebar.query),
+        )
 
         self._install_actions()
         self.connect("close-request", self._on_close)

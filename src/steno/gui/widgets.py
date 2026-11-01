@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import gi
@@ -12,7 +12,9 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk, Pango
 
 from ..notes import load_notes, save_notes
+from . import words
 from .askmodel import AskModelButton
+from .style import palette
 
 NOTES_AUTOSAVE_S = 3
 
@@ -53,6 +55,26 @@ def wrapping_label(text: str = "", selectable: bool = True) -> Gtk.Label:
     label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
     label.set_selectable(selectable)
     return label
+
+
+def mark_matches(label: Gtk.Label, terms: Sequence[str]) -> None:
+    """Highlight `terms` where they occur in `label`; none clears it.
+
+    Attributes sit on top of the label's markup and leave its text alone.
+    """
+    spans = words.match_spans(label.get_text(), terms)
+    if not spans:
+        label.set_attributes(None)
+        return
+    colors = palette()
+    label.set_attributes(Pango.AttrList.from_string("\n".join(
+        f"{start} {end} {name} {value}"
+        for start, end in spans
+        for name, value in (
+            ("background", colors["yellow"]),
+            ("foreground", colors["crust"]),
+        )
+    )))
 
 
 class NotesBox(Gtk.Overlay):

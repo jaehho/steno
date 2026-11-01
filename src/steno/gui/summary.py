@@ -105,11 +105,13 @@ class SummaryView(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self._on_choose = on_choose
         self.sources: list[CiteSource] = []
+        self.labels: list[Gtk.Label] = []
 
     def clear(self) -> None:
         while (child := self.get_first_child()) is not None:
             self.remove(child)
         self.sources = []
+        self.labels = []
 
     def show(self, blocks: list[words.Block]) -> None:
         self.clear()
@@ -122,6 +124,7 @@ class SummaryView(Gtk.Box):
         label = wrapping_label()
         label.add_css_class("summary")
         label.set_markup(block.markup)
+        self.labels.append(label)
         if block.kind == "heading":
             # Air above a section, none above the first thing on it.
             label.set_margin_top(10 if self.get_first_child() else 0)
@@ -153,6 +156,7 @@ class SummaryView(Gtk.Box):
                 f"{count}</span>"
             )
         text.set_markup(markup)
+        self.labels.append(text)
         row.append(text)
 
         if cited:
