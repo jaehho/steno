@@ -281,6 +281,7 @@ back arrow brings the list back.
 previous match in the transcript (`Ctrl+N`/`Ctrl+P` while still typing), `Esc`
 clears · `Up`/`Down` in the search box next or previous meeting with a match ·
 `Ctrl+R` record · `Ctrl+Space` play ·
+`Space` pause or resume audio already playing, unless you are typing ·
 `Ctrl+` `+`/`-`/`0` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`
 quit (asks first, then stops listening) · `Ctrl+?` all of these
 
