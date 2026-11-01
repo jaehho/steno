@@ -365,10 +365,12 @@ class TestChoosingAnItem(CitedMeeting):
                 panel = scroller_of(self.page.transcript_list)
                 reading = scroller_of(self.view)
                 self.assertIsNot(panel, reading)
+                adjustment = panel.get_vadjustment()
                 self.assertTrue(
-                    wait_for(lambda: self.page._rows[-1].get_height() > 0
-                             and panel.get_vadjustment().get_upper()
-                             > panel.get_vadjustment().get_page_size()),
+                    wait_for(lambda adj=adjustment: (
+                        self.page._rows[-1].get_height() > 0
+                        and adj.get_upper() > adj.get_page_size()
+                    )),
                 )
                 self.page._clear_cites()
                 panel.get_vadjustment().set_value(0)
