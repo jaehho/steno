@@ -268,9 +268,11 @@ does Unarchive and then Archive in the window.
 A meeting about one of your projects is also kept in that project, as
 pages of its own; see Project notes, below.
 
-The layout follows the window: two columns when wide, one when narrower, and the
-list and the meeting as separate pages when the window is narrow — a tall window
-parked beside the call works.
+The layout follows the window. A past meeting's transcript has its own panel
+beside the summary, each scrolling on its own, so an item you click stays in view
+beside the line it came from. To-dos, notes and asking get a third panel when
+there is room, and sit under the summary when there isn't. When the window is
+narrow, the list and the meeting are separate pages and the meeting is one column.
 
 `Ctrl+G` ask · `Ctrl+F` search · `Ctrl+R` record · `Ctrl+Space` play ·
 `Ctrl+` `+`/`-`/`0` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`

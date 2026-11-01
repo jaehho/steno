@@ -358,9 +358,31 @@ class TestChoosingAnItem(CitedMeeting):
         self.assertEqual(self.lit(), OPENING)
         self.assertEqual(adjustment.get_value(), 0)
 
+    def test_choosing_an_item_moves_the_transcript_and_not_the_summary(self):
+        for layout in ("three", "two"):
+            with self.subTest(layout=layout):
+                self.page.set_layout(layout)
+                panel = scroller_of(self.page.transcript_list)
+                reading = scroller_of(self.view)
+                self.assertIsNot(panel, reading)
+                self.assertTrue(
+                    wait_for(lambda: self.page._rows[-1].get_height() > 0
+                             and panel.get_vadjustment().get_upper()
+                             > panel.get_vadjustment().get_page_size()),
+                )
+                self.page._clear_cites()
+                panel.get_vadjustment().set_value(0)
+                before = reading.get_vadjustment().get_value()
+                click(self.item("deposit").mark)
+                self.assertTrue(
+                    wait_for(lambda: on_screen(self.page._rows[DEPOSIT[0]]))
+                )
+                self.assertGreater(panel.get_vadjustment().get_value(), 0)
+                self.assertEqual(reading.get_vadjustment().get_value(), before)
+
     def test_the_stacked_layout_scrolls_its_own_scroller(self):
         wide = scroller_of(self.page.transcript_list)
-        self.page.set_stacked(True)
+        self.page.set_layout("stacked")
         stacked = scroller_of(self.page.transcript_list)
         self.assertIsNot(stacked, wide)
         adjustment = stacked.get_vadjustment()
@@ -1163,6 +1185,7 @@ class TestSidebarWidth(CitedMeeting):
         column may move for it.
         """
         split = self.window.split
+        self.page.set_layout("three")
         side = find_css(self.page, "side-column")  # the to-do column
         self.assertIsNotNone(side)
         target = next(

@@ -5,9 +5,9 @@ widgets and user gestures back into the engine, which the *app* owns. The window
 is closable, disposable, and often absent; closing it stops nothing.
 
 It is one `Adw.NavigationSplitView` whose shape follows the window's: a sidebar
-and a two-column meeting page when wide, the same page stacked into one column
-when narrower, and the list and the meeting as two pages you move between when
-the window is narrow - the tall one parked beside a call.
+and a meeting page in three panels when wide, two when narrower, and the list
+and the meeting as two pages you move between when the window is narrow - the
+tall one parked beside a call, where the meeting is one column.
 """
 from __future__ import annotations
 
@@ -58,6 +58,8 @@ if TYPE_CHECKING:  # the app imports the window lazily; this keeps the cycle unr
 
 # Below this the meeting stacks into one column; below NARROW the sidebar and
 # the meeting become separate pages.
+# The meeting page drops its third panel here; the live page has only two.
+ROOMY = "max-width: 1400sp"
 MEDIUM = "max-width: 1000sp"
 NARROW = "max-width: 600sp"
 # The meetings and the page they open fade in together once they are read.
@@ -132,11 +134,13 @@ class Window(Adw.ApplicationWindow):
         self.toasts.set_child(self.split)
         self.set_content(self.toasts)
 
+        self._roomy = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(ROOMY))
         medium = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(MEDIUM))
-        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW))
-        narrow.add_setter(self.split, "collapsed", True)
+        self._narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW))
+        self._narrow.add_setter(self.split, "collapsed", True)
+        self.add_breakpoint(self._roomy)
         self.add_breakpoint(medium)
-        self.add_breakpoint(narrow)
+        self.add_breakpoint(self._narrow)
         self.connect("notify::current-breakpoint", lambda *_a: self._on_breakpoint())
         # After the sidebar's own handler, which picks the meeting to show.
         self.sidebar.search.connect("search-changed", self._on_search_changed)
@@ -318,9 +322,14 @@ class Window(Adw.ApplicationWindow):
         mark_matches(self.page_title, words.search_phrase(self.sidebar.query))
 
     def _on_breakpoint(self) -> None:
-        stacked = self.get_current_breakpoint() is not None
-        self.meeting.set_stacked(stacked)
-        self.live.set_stacked(stacked)
+        current = self.get_current_breakpoint()
+        if current is None:
+            self.meeting.set_layout("three")
+        elif current == self._narrow:
+            self.meeting.set_layout("stacked")
+        else:
+            self.meeting.set_layout("two")
+        self.live.set_stacked(current is not None and current != self._roomy)
         self._update_header()
 
     def _on_select(self, item) -> None:
