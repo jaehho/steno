@@ -165,7 +165,7 @@ class MeetingPage(Gtk.Box):
         self._playing_index = -1
         # What the sidebar's search is looking for, and the lines that hold
         # it; both shown on the page wherever the words occur.
-        self._search_terms: list[str] = []
+        self._search_phrase = ""
         self._hits: list[int] = []
         # What was last asked where it was said, and the lines that answer.
         self._active: CiteSource | None = None
@@ -177,6 +177,7 @@ class MeetingPage(Gtk.Box):
         # The to-dos on the page that cite, to find the lit one again when
         # the list is rebuilt.
         self._todo_sources: list[CiteSource] = []
+        self._todo_labels: list[Gtk.Label] = []
         # The menu of the to-do row that asked for one (issue #22).
         self._row_menus = RowMenus()
         # Which to-dos are ticked, as last shown: a pull that finds
@@ -402,17 +403,20 @@ class MeetingPage(Gtk.Box):
                 self._rows[i].remove_css_class("line-hit")
                 _line_text(self._rows[i]).set_attributes(None)
         self._hits = []
-        self._search_terms = words.search_terms(query)
+        self._search_phrase = words.search_phrase(query)
         for i, record in enumerate(self._records):
-            if words.holds_terms(str(record.get("text", "")), self._search_terms):
+            if words.match_spans(str(record.get("text", "")), self._search_phrase):
                 self._hits.append(i)
                 self._rows[i].add_css_class("line-hit")
-                mark_matches(_line_text(self._rows[i]), self._search_terms)
+                mark_matches(_line_text(self._rows[i]), self._search_phrase)
         self._mark_summary()
+        for label in self._todo_labels:
+            mark_matches(label, self._search_phrase)
+        self.notes.mark(self._search_phrase)
 
     def _mark_summary(self) -> None:
         for label in self.summary_view.labels:
-            mark_matches(label, self._search_terms)
+            mark_matches(label, self._search_phrase)
 
     def _scroll_to_row(self, row: Gtk.ListBoxRow, give_up: int) -> bool:
         """Bring a transcript line to just under the top of whichever scroller
@@ -791,6 +795,7 @@ class MeetingPage(Gtk.Box):
         while (child := self.todo_box.get_first_child()) is not None:
             self.todo_box.remove(child)
         self._todo_sources = []
+        self._todo_labels = []
         self._ticks = _ticks(todos)
         yours = [t for t in todos if t.owner != "them"]
         theirs = [t for t in todos if t.owner == "them"]
@@ -878,6 +883,8 @@ class MeetingPage(Gtk.Box):
         check.set_hexpand(True)
 
         label = wrapping_label(todo.text, selectable=False)
+        self._todo_labels.append(label)
+        mark_matches(label, self._search_phrase)
         # Wrap at a column's width instead of asking for the whole sentence.
         label.set_max_width_chars(30)
         label.set_hexpand(True)

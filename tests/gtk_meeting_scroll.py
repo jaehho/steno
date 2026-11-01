@@ -177,6 +177,33 @@ class TestTranscriptScroll(OnTheShortMeeting):
         self.assertEqual(len(lit), 1)
         self.assertIn(NEEDLE, lit[0].get_text())
 
+    def test_the_search_is_lit_in_the_title_to_dos_and_notes(self):
+        folder = self.root / "20260110-090000"
+        (folder / "todos.json").write_text(json.dumps(
+            [{"text": f"check {NEEDLE} first", "owner": "you"}]
+        ))
+        (folder / "notes.md").write_text(f"ask about {NEEDLE}\n")
+        self.window.sidebar.refresh()
+        self.open_long_meeting()
+        self.window.page_title.set_text(f"Long {NEEDLE}")
+        self.window._mark_title()
+        notes = self.page.notes
+        buf = notes.view.get_buffer()
+        start = buf.get_iter_at_offset(len("ask about "))
+        self.assertTrue(start.has_tag(notes._hit_tag))
+        self.assertFalse(buf.get_start_iter().has_tag(notes._hit_tag))
+        self.assertFalse(notes._dirty)
+        self.assertIsNotNone(self.page._todo_labels[0].get_attributes())
+        self.assertIsNotNone(self.window.page_title.get_attributes())
+
+        self.window.sidebar.search.set_text("")
+        self.assertTrue(
+            wait_for(lambda: self.page._todo_labels[0].get_attributes() is None)
+        )
+        self.assertFalse(start.has_tag(notes._hit_tag))
+        self.assertIsNone(self.window.page_title.get_attributes())
+        self.assertFalse(notes._dirty)
+
     def test_a_search_hit_is_scrolled_to(self):
         scroller = self.open_long_meeting()
         hit = self.page._rows[HIT]

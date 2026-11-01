@@ -16,14 +16,13 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-import contextlib
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from .. import citations, projectnotes
 from ..cost import format_meter, prerecorded_cost, stream_cost
 from ..merge import previous_session
-from ..notes import ensure_todos, open_count
+from ..notes import ensure_todos, load_todos, open_count
 from ..summarize import (
     SUMMARY_FILENAME,
     duration_minutes,
@@ -67,14 +66,13 @@ class Session:
         self.minutes = duration_minutes(load_records(path))
         self.cost = _session_cost(path, self.minutes)
         self.stamp = session_stamp(path)
-        self._haystack: str | None = None
 
     @property
     def summary_path(self) -> Path:
         return self.dir / SUMMARY_FILENAME
 
     def matches(self, query: str) -> bool:
-        """Substring search over everything the meeting produced.
+        """Phrase search over everything the meeting produced.
 
         Reading the transcripts is fine at this scale and keeps the archive a
         directory of files rather than a database. If this ever gets slow, that
@@ -85,18 +83,17 @@ class Session:
     def locate(self, query: str) -> dict | None:
         """Where a query hit, or None. `{"where": label, "line": n}`.
 
-        `where` is the surface the reader cares about — summary, notes, or the
-        transcript — and `line` is a 0-based transcript line so the meeting
+        `where` is the surface the reader cares about — summary, notes, to-dos
+        or the transcript — and `line` is a 0-based transcript line so the meeting
         page can scroll to the sentence rather than just opening the meeting
         and leaving the reader to hunt for it.
         """
         if not query:
             return {"where": "", "line": 0}
-        words = query.lower().split()
+        phrase = words.search_phrase(query)
 
         def hit(text: str) -> bool:
-            low = text.lower()
-            return all(w in low for w in words)
+            return bool(words.match_spans(text, phrase))
 
         if hit(self.title or "") or hit(self.project or "") or hit(self.dir.name):
             return {"where": "title", "line": -1}
@@ -107,6 +104,8 @@ class Session:
                 continue
             if hit(text):
                 return {"where": label, "line": -1}
+        if any(hit(todo.text) for todo in load_todos(self.dir)):
+            return {"where": "to-dos", "line": -1}
         try:
             lines = (self.dir / "transcript.txt").read_text().splitlines()
         except OSError:
@@ -116,24 +115,16 @@ class Session:
         for i, line in enumerate(lines):
             if hit(line):
                 return {"where": "transcript", "line": i}
-        # A last resort: the jsonl is the same words as the txt, but a summary
-        # written before transcript.txt existed may be all there is.
-        if self._haystack is None:
-            parts = [self.title or "", self.project or "", self.dir.name]
-            for name in (SUMMARY_FILENAME, "notes.md", "transcript.txt"):
-                with contextlib.suppress(OSError):
-                    parts.append(_read_searchable(self.dir / name))
-            self._haystack = "\n".join(parts).lower()
-        if all(w in self._haystack for w in words):
-            return {"where": "meeting", "line": -1}
         return None
 
 
 def _read_searchable(path: Path) -> str:
     """A meeting file as search should see it: a citation marker is not a
-    word, and "cite" must not find every cited summary."""
+    word, and "cite" must not find every cited summary; bold and code marks
+    must not come between the words of a phrase."""
     text = path.read_text()
-    return citations.strip(text) if path.name == SUMMARY_FILENAME else text
+    text = citations.strip(text) if path.name == SUMMARY_FILENAME else text
+    return text.replace("**", "").replace("`", "")
 
 
 def _session_cost(path: Path, minutes: float) -> float:
@@ -649,7 +640,7 @@ class Sidebar(Gtk.Box):
         )
         if self.query:
             hit = s.locate(self.query)
-            if hit and hit["where"] in ("summary", "notes", "transcript"):
+            if hit and hit["where"] in ("summary", "notes", "to-dos", "transcript"):
                 parts.append(f"in {hit['where']}")
         meta = Gtk.Label(label="  ·  ".join(parts), xalign=0.0)
         meta.add_css_class("session-meta")

@@ -49,7 +49,7 @@ from .meeting import MeetingPage
 from .menu import meeting_menu_model
 from .sidebar import LIVE, Session, Sidebar
 from .style import palette, stylesheet
-from .widgets import AskBox
+from .widgets import AskBox, mark_matches
 
 log = logging.getLogger("steno.gui")
 
@@ -139,10 +139,7 @@ class Window(Adw.ApplicationWindow):
         self.add_breakpoint(narrow)
         self.connect("notify::current-breakpoint", lambda *_a: self._on_breakpoint())
         # After the sidebar's own handler, which picks the meeting to show.
-        self.sidebar.search.connect(
-            "search-changed",
-            lambda _e: self.meeting.show_search(self.sidebar.query),
-        )
+        self.sidebar.search.connect("search-changed", self._on_search_changed)
 
         self._install_actions()
         self.connect("close-request", self._on_close)
@@ -313,6 +310,13 @@ class Window(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------------- layout
 
+    def _on_search_changed(self, _entry) -> None:
+        self.meeting.show_search(self.sidebar.query)
+        self._mark_title()
+
+    def _mark_title(self) -> None:
+        mark_matches(self.page_title, words.search_phrase(self.sidebar.query))
+
     def _on_breakpoint(self) -> None:
         stacked = self.get_current_breakpoint() is not None
         self.meeting.set_stacked(stacked)
@@ -364,6 +368,7 @@ class Window(Adw.ApplicationWindow):
         else:
             title, subtitle = "", ""
         self.page_title.set_text(title)
+        self._mark_title()
         self.page_subtitle.set_text(subtitle)
         self.page_subtitle.set_visible(bool(subtitle))
         self.content_page.set_title(title or "Meeting")

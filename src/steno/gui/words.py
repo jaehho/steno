@@ -415,35 +415,28 @@ def cite_places(
     return sorted(places.values(), key=lambda place: place.rows[0])
 
 
-def search_terms(query: str) -> list[str]:
-    """The words of a search, each of which a hit has to hold."""
-    return query.lower().split()
+def search_phrase(query: str) -> str:
+    """What a search looks for: the words as typed, in order, together."""
+    return " ".join(query.split())
 
 
-def holds_terms(text: str, terms: Sequence[str]) -> bool:
-    low = text.lower()
-    return bool(terms) and all(term in low for term in terms)
+def match_spans(text: str, phrase: str) -> list[tuple[int, int]]:
+    """Where `phrase` occurs in `text`, by character.
 
-
-def match_spans(text: str, terms: Sequence[str]) -> list[tuple[int, int]]:
-    """Where `terms` occur in `text`, in order and with overlaps joined.
-
-    Offsets count UTF-8 bytes, which is what Pango counts in.
+    Case is ignored, and so is how the words are spaced, since a note or a
+    summary can break a line between them.
     """
-    found = sorted(
-        match.span()
-        for term in terms
-        for match in re.finditer(re.escape(term), text, re.IGNORECASE)
-    )
-    joined: list[tuple[int, int]] = []
-    for start, end in found:
-        if joined and start <= joined[-1][1]:
-            joined[-1] = (joined[-1][0], max(joined[-1][1], end))
-        else:
-            joined.append((start, end))
+    if not phrase:
+        return []
+    pattern = r"\s+".join(re.escape(word) for word in phrase.split())
+    return [m.span() for m in re.finditer(pattern, text, re.IGNORECASE)]
+
+
+def byte_spans(text: str, spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Character spans as UTF-8 byte offsets, which is what Pango counts."""
     return [
         (len(text[:start].encode()), len(text[:end].encode()))
-        for start, end in joined
+        for start, end in spans
     ]
 
 
