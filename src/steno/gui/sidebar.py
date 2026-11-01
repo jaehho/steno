@@ -178,6 +178,7 @@ class Sidebar(Gtk.Box):
         on_select: Callable[[Item | None], None],
         on_status_button: Callable[[str], None],
         on_activate: Callable[[], None],
+        on_search_enter: Callable[[], None],
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.root = root
@@ -221,6 +222,7 @@ class Sidebar(Gtk.Box):
         self.append(self.scroll)
 
         self._on_activate = on_activate
+        self._on_search_enter = on_search_enter
         self.append(self._build_owed())
 
         self.footer = hint_label()
@@ -695,7 +697,7 @@ class Sidebar(Gtk.Box):
             if row is None:
                 return
             self.list.select_row(row)
-        self._on_activate()
+        self._on_search_enter()
 
     def _on_search_key(
         self, _keys: Gtk.EventControllerKey, key: int, _code: int, _state

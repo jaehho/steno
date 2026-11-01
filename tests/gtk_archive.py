@@ -118,6 +118,7 @@ class TestTheList(unittest.TestCase):
             on_select=self.chosen.append,
             on_status_button=lambda _label: None,
             on_activate=self.count_activation,
+            on_search_enter=self.count_activation,
         )
         self.sidebar.refresh()
         self.host = Gtk.Window(child=self.sidebar)
@@ -411,6 +412,7 @@ class TestTheListScrolls(unittest.TestCase):
             on_select=lambda _item: None,
             on_status_button=lambda _label: None,
             on_activate=lambda: None,
+            on_search_enter=lambda: None,
         )
         self.sidebar.refresh()
         self.host = Gtk.Window(child=self.sidebar)
