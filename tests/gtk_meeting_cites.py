@@ -28,7 +28,7 @@ gi.require_version("Graphene", "1.0")
 
 from gi.repository import Gdk, Graphene, Gtk
 
-from steno.gui.meeting import MeetingPage
+from steno.gui.meeting import SIDE_WIDTH, MeetingPage
 from steno.gui.style import FALLBACK, stylesheet
 from steno.gui.window import Window
 from steno.notes import ensure_todos, load_todos
@@ -234,10 +234,39 @@ class TestHalfTheScreen(CitedMeeting):
             and focus.is_ancestor(self.page)
         )))
 
-    def test_searching_brings_the_list_back(self):
+    def test_ctrl_f_shows_the_search_box_alone_and_keeps_the_meeting(self):
+        search = self.window.sidebar.search
+        home = search.get_parent()
         self.window._focus_search()
-        self.assertFalse(self.window.split.get_show_content())
-        self.assertTrue(self.window.split.get_collapsed())
+        self.assertTrue(self.window.split.get_show_content())
+        self.assertIs(search.get_parent(), self.window.search_alone)
+        self.assertTrue(self.window.search_alone.get_visible())
+
+        search.set_text("deposit")
+        self.window.sidebar._on_search(search)
+        search.emit("stop-search")
+
+        self.assertEqual(search.get_text(), "")
+        self.assertIs(search.get_parent(), home)
+        self.assertFalse(self.window.search_alone.get_visible())
+        self.assertTrue(self.window.split.get_show_content())
+
+    def test_the_back_arrow_takes_the_box_back_to_the_list(self):
+        search = self.window.sidebar.search
+        home = search.get_parent()
+        self.window._focus_search()
+        self.window.split.set_show_content(False)
+        self.assertIs(search.get_parent(), home)
+        self.assertIsNone(self.window.sidebar.on_search_left)
+
+
+class TestSidePanelWidth(CitedMeeting):
+    def test_a_long_to_do_does_not_widen_the_column(self):
+        side = find_css(self.page, "side-column")
+        self.assertTrue(wait_for(lambda: side.get_width() > 0))
+        # Less its border.
+        self.assertLessEqual(side.get_width(), SIDE_WIDTH)
+        self.assertGreater(self.page.transcript_list.get_width(), SIDE_WIDTH)
 
 
 class TestSummaryRows(CitedMeeting):
@@ -413,6 +442,8 @@ class TestChoosingAnItem(CitedMeeting):
         self.page.set_layout("stacked")
         stacked = scroller_of(self.page.transcript_list)
         self.assertIsNot(stacked, wide)
+        self.assertIsNot(stacked, scroller_of(self.view))
+        self.assertIs(scroller_of(self.page.todo_box), scroller_of(self.view))
         adjustment = stacked.get_vadjustment()
         self.assertTrue(
             wait_for(

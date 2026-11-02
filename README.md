@@ -272,8 +272,10 @@ The layout follows the window. A past meeting's transcript has its own panel, so
 an item you click stays in view with the line it came from. On a wide window it
 sits under the summary, with to-dos, notes and asking in a column to the right.
 At half the screen the meeting list hides, opening on the meeting, and the
-transcript sits beside the summary; `Ctrl+F` or the back arrow brings the list
-back. When the window is narrow it opens on the list and the meeting is one column.
+transcript sits beside the summary. When the window is narrow it opens on the
+list, and the transcript sits under the rest of the meeting. With the list hidden,
+`Ctrl+F` shows just the search box above the meeting, `Esc` puts it away, and the
+back arrow brings the list back.
 
 `Ctrl+G` ask · `Ctrl+F` search · `Ctrl+R` record · `Ctrl+Space` play ·
 `Ctrl+` `+`/`-`/`0` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`

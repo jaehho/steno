@@ -4,8 +4,8 @@ Nothing is behind a tab. The summary leads, because a recording nobody replays
 is worse than none. The transcript has its own panel, so an item stays in view
 with the line it came from: under the summary on a wide window, with the to-dos,
 your notes and a question box in a column to the right; beside it on a window
-half the screen wide, with those under the summary. A narrow window stacks it
-all in one column. Every transcript line is a seek point, and
+half the screen wide, with those under the summary; below them on a narrow
+window. Every transcript line is a seek point, and
 the player stays pinned to the bottom, because the only honest fix for "did they
 really say that?" is to hear it.
 """
@@ -105,6 +105,7 @@ MIXES: tuple[tuple[str, dict[str, float]], ...] = (
 )
 
 SLOTS = ("summary", "todos", "notes", "ask", "transcript")
+SIDE_WIDTH = 340
 
 
 def slot(name: str) -> Adw.LayoutSlot:
@@ -260,25 +261,21 @@ class MeetingPage(Gtk.Box):
         below.add_css_class("panel-below")
         reading.append(below)
 
-        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        # A set width: left to its contents, one long to-do would widen the
+        # column and take the room from the reading.
+        rest = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        panel = self._panel("todos", "notes")
+        panel.set_vexpand(True)
+        rest.append(panel)
+        rest.append(self._ask_kept_in_view())
+        clamp = Adw.Clamp(maximum_size=SIDE_WIDTH, tightening_threshold=SIDE_WIDTH)
+        clamp.set_child(rest)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         side.add_css_class("side-column")
         side.add_css_class("beside")
-        side.set_size_request(300, -1)
-        # The notes view would otherwise pass its horizontal expansion up and
-        # take half the page from the reading.
+        side.set_size_request(SIDE_WIDTH, -1)
         side.set_hexpand(False)
-        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        inner.set_margin_top(18)
-        inner.set_margin_bottom(16)
-        inner.set_margin_start(16)
-        inner.set_margin_end(16)
-        inner.set_vexpand(True)
-        inner.append(slot("todos"))
-        notes = slot("notes")
-        notes.set_vexpand(True)
-        inner.append(notes)
-        inner.append(slot("ask"))
-        side.append(inner)
+        side.append(clamp)
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         row.append(reading)
@@ -287,23 +284,29 @@ class MeetingPage(Gtk.Box):
         layout.set_name("wide")
         return layout
 
-    def _beside_layout(self) -> Adw.Layout:
-        """The transcript beside everything else, with Ask kept in view."""
-        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        left.add_css_class("stacked")
-        panel = self._panel("summary", "todos", "notes")
-        panel.set_vexpand(True)
-        left.append(panel)
+    def _ask_kept_in_view(self) -> Gtk.Widget:
         ask = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         ask.set_margin_top(8)
         ask.set_margin_bottom(12)
         ask.set_margin_start(24)
         ask.set_margin_end(24)
         ask.append(slot("ask"))
-        left.append(ask)
+        return ask
 
+    def _beside_transcript(self) -> Gtk.Widget:
+        """All but the transcript, for the layouts that split the page in two."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.add_css_class("stacked")
+        panel = self._panel("summary", "todos", "notes")
+        panel.set_vexpand(True)
+        box.append(panel)
+        box.append(self._ask_kept_in_view())
+        return box
+
+    def _beside_layout(self) -> Adw.Layout:
+        """The transcript beside everything else."""
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, homogeneous=True)
-        row.append(left)
+        row.append(self._beside_transcript())
         beside = self._panel("transcript")
         beside.add_css_class("panel-beside")
         row.append(beside)
@@ -312,25 +315,18 @@ class MeetingPage(Gtk.Box):
         return layout
 
     def _stacked_layout(self) -> Adw.Layout:
-        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=26)
-        column.add_css_class("stacked")
-        column.set_margin_top(16)
-        column.set_margin_bottom(24)
-        column.set_margin_start(18)
-        column.set_margin_end(18)
-        for name in SLOTS:
-            column.append(slot(name))
-        clamp = Adw.Clamp(maximum_size=760, tightening_threshold=600)
-        clamp.set_child(column)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_child(clamp)
-        layout = Adw.Layout.new(scroll)
+        """Everything else over the transcript, for a tall, narrow window."""
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, homogeneous=True)
+        column.append(self._beside_transcript())
+        below = self._panel("transcript")
+        below.add_css_class("panel-below")
+        column.append(below)
+        layout = Adw.Layout.new(column)
         layout.set_name("stacked")
         return layout
 
     def set_layout(self, name: str) -> None:
-        """"wide", "beside", or "stacked" in one column."""
+        """"wide", "beside" or "stacked"."""
         self.layouts.set_layout_name(name)
 
     # ----------------------------------------------------------------- building
