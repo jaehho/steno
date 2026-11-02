@@ -285,6 +285,7 @@ def cmd_status(_args: argparse.Namespace) -> None:
 
 def cmd_sync(args: argparse.Namespace) -> None:
     """Push finished meetings to the remote in STENO_SYNC_REMOTE."""
+    load_dotenv(config_dir() / ".env")
     result = meeting_sync.sync(dry_run=args.dry_run)
     if result.off:
         print(f"sync is off: set {meeting_sync.REMOTE_ENV} in "

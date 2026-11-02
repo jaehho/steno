@@ -1,6 +1,7 @@
 """Pushing meetings to a remote: only finished ones, only once, never delete."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -10,7 +11,7 @@ from itertools import pairwise
 from pathlib import Path
 from unittest import mock
 
-from steno import sync
+from steno import cli, sync
 
 NOW = 1_800_000_000.0
 
@@ -145,6 +146,21 @@ class TestSync(SyncCase):
         sync.sync(self.root, now=NOW)
         saved = json.loads((sync.state_dir() / sync.STATE_FILENAME).read_text())
         self.assertEqual(saved["pushed"], {"20261101-100000": NOW - 3600})
+
+
+class TestCommand(SyncCase):
+    def test_the_command_reads_the_remote_from_the_env_file(self):
+        config = self.root.parent / "config"
+        (config / "steno").mkdir(parents=True)
+        (config / "steno" / ".env").write_text(
+            f"{sync.REMOTE_ENV}=nextcloud:Steno/from-file\n")
+        make_session(self.root, "20261101-100000")
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config)}):
+            os.environ.pop(sync.REMOTE_ENV)
+            with mock.patch.object(cli, "data_dir",
+                                   return_value=self.root.parent):
+                cli.cmd_sync(argparse.Namespace(dry_run=True))
+            self.assertEqual(sync.remote(), "nextcloud:Steno/from-file")
 
 
 if __name__ == "__main__":
