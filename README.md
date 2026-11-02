@@ -277,7 +277,9 @@ list, and the transcript sits under the rest of the meeting. With the list hidde
 `Ctrl+F` shows just the search box above the meeting, `Esc` puts it away, and the
 back arrow brings the list back.
 
-`Ctrl+G` ask · `Ctrl+F` search · `Ctrl+R` record · `Ctrl+Space` play ·
+`Ctrl+G` ask · `Ctrl+F` search · `F3`/`Shift+F3` next or previous match in the
+transcript · `Up`/`Down` in the search box next or previous meeting with a match ·
+`Ctrl+R` record · `Ctrl+Space` play ·
 `Ctrl+` `+`/`-`/`0` transcript size · `Ctrl+W` close (keeps listening) · `Ctrl+Q`
 quit (asks first, then stops listening) · `Ctrl+?` all of these
 

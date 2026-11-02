@@ -35,6 +35,7 @@ LINES = 200
 HIT = 150
 FOLLOWED = 120
 NEEDLE = "zanzibar"
+FOUND = (20, 90, 180)
 MEETINGS = {"20260110-090000": "Long", "20260111-090000": "Short"}
 
 
@@ -203,6 +204,46 @@ class TestTranscriptScroll(OnTheShortMeeting):
         self.assertFalse(start.has_tag(notes._hit_tag))
         self.assertIsNone(self.window.page_title.get_attributes())
         self.assertFalse(notes._dirty)
+
+    def test_f3_steps_through_the_matches_and_round_again(self):
+        folder = self.root / "20260110-090000"
+        records = [
+            {"speaker": "them", "text": f"{NEEDLE} at {n}" if n in FOUND else f"line {n}",
+             "ts": 1000.0 + 5 * n}
+            for n in range(LINES)
+        ]
+        (folder / "transcript.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records)
+        )
+        self.window.sidebar.refresh()
+        sidebar = self.window.sidebar
+        sidebar.search.set_text(NEEDLE)
+        self.assertTrue(
+            wait_for(lambda: [i.title for i in sidebar.items] == ["Long"])
+        )
+        sidebar.list.select_row(sidebar.list.get_row_at_index(0))
+        page = self.page
+        self.assertEqual(page._hits, list(FOUND))
+        self.assertEqual(page.hit_count.get_text(), "1 of 3  (F3, Shift+F3)")
+        current = page._rows[FOUND[0]]
+        self.assertTrue(current.has_css_class("line-hit-current"))
+
+        self.window._step_match(1)
+        self.assertEqual(page.hit_count.get_text(), "2 of 3  (F3, Shift+F3)")
+        self.assertFalse(current.has_css_class("line-hit-current"))
+        following = page._rows[FOUND[1]]
+        self.assertTrue(following.has_css_class("line-hit-current"))
+        self.assertTrue(wait_for(lambda: on_screen(following)))
+
+        self.window._step_match(-1)
+        self.window._step_match(-1)
+        self.assertEqual(page.hit_count.get_text(), "3 of 3  (F3, Shift+F3)")
+        self.assertTrue(wait_for(lambda: on_screen(page._rows[FOUND[2]])))
+
+        self.window.sidebar.search.set_text("")
+        self.assertTrue(wait_for(lambda: not page.hit_count.get_visible()))
+        self.assertFalse(page._rows[FOUND[2]].has_css_class("line-hit-current"))
+        self.assertFalse(page.step_hit(1))
 
     def test_a_search_hit_is_scrolled_to(self):
         scroller = self.open_long_meeting()

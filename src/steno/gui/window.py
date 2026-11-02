@@ -66,6 +66,8 @@ ARRIVE_MS = 240
 
 SHORTCUTS = (
     ("Ctrl+F", "Search meetings"),
+    ("Up / Down in search", "Previous or next meeting with a match"),
+    ("F3 / Shift+F3", "Next or previous match in the transcript"),
     ("Ctrl+G", "Ask about this meeting"),
     ("Ctrl+R", "Start or stop recording"),
     ("Ctrl+Space", "Play or pause a past meeting"),
@@ -280,6 +282,8 @@ class Window(Adw.ApplicationWindow):
         add("shortcuts", self._show_shortcuts, ["<Control>question"])
         add("ask", self._focus_ask, ["<Control>g"])
         add("find", self._focus_search, ["<Control>f"])
+        add("next-match", lambda: self._step_match(1), ["F3"])
+        add("previous-match", lambda: self._step_match(-1), ["<Shift>F3"])
         add("toggle-record", self.app.toggle_record, ["<Control>r"])
         add("play", self._toggle_play, ["<Control>space"])
         add("zoom-in", lambda: self._zoom(1), ["<Control>plus", "<Control>equal"])
@@ -332,6 +336,12 @@ class Window(Adw.ApplicationWindow):
         in_list = focus is None or focus.is_ancestor(self.sidebar)
         if in_list and self.stack.get_visible_child_name() == "meeting":
             self.meeting.focus_reading()
+
+    def _step_match(self, delta: int) -> None:
+        if self.stack.get_visible_child_name() == "meeting" and (
+            self.meeting.step_hit(delta)
+        ):
+            self.split.set_show_content(True)
 
     def _on_search_changed(self, entry) -> None:
         # With the list hidden, nothing else would say that nothing matched.
