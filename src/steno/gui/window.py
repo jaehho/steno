@@ -65,9 +65,12 @@ NARROW = "max-width: 600sp"
 ARRIVE_MS = 240
 
 SHORTCUTS = (
-    ("Ctrl+F", "Search meetings"),
+    ("/ or Ctrl+F", "Search meetings"),
+    ("Enter in search", "Go to the match, keyboard on the page"),
+    ("n / N", "Next or previous match in the transcript"),
+    ("Ctrl+N / Ctrl+P", "The same, while still typing in search"),
     ("Up / Down in search", "Previous or next meeting with a match"),
-    ("F3 / Shift+F3", "Next or previous match in the transcript"),
+    ("Esc", "Clear the search"),
     ("Ctrl+G", "Ask about this meeting"),
     ("Ctrl+R", "Start or stop recording"),
     ("Ctrl+Space", "Play or pause a past meeting"),
@@ -148,6 +151,11 @@ class Window(Adw.ApplicationWindow):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
+        escape = Gtk.EventControllerKey()
+        # Before the split view, which takes Esc as the back arrow.
+        escape.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        escape.connect("key-pressed", self._on_escape)
+        self.add_controller(escape)
 
         self._install_actions()
         self.connect("close-request", self._on_close)
@@ -282,8 +290,8 @@ class Window(Adw.ApplicationWindow):
         add("shortcuts", self._show_shortcuts, ["<Control>question"])
         add("ask", self._focus_ask, ["<Control>g"])
         add("find", self._focus_search, ["<Control>f"])
-        add("next-match", lambda: self._step_match(1), ["F3"])
-        add("previous-match", lambda: self._step_match(-1), ["<Shift>F3"])
+        add("next-match", lambda: self._step_match(1), ["<Control>n"])
+        add("previous-match", lambda: self._step_match(-1), ["<Control>p"])
         add("toggle-record", self.app.toggle_record, ["<Control>r"])
         add("play", self._toggle_play, ["<Control>space"])
         add("zoom-in", lambda: self._zoom(1), ["<Control>plus", "<Control>equal"])
@@ -360,6 +368,9 @@ class Window(Adw.ApplicationWindow):
         ):
             self.split.set_show_content(True)
             self._update_header()
+            # Enter and Space then act on the match the page is showing.
+            if not self._typing():
+                self.meeting.focus_reading()
 
     def _on_search_changed(self, entry) -> None:
         # With the list hidden, nothing else would say that nothing matched.
@@ -744,12 +755,44 @@ class Window(Adw.ApplicationWindow):
         else:
             self._return_search_to_list()
 
-    def _on_key(self, _keys, key: int, _code: int, _state) -> bool:
-        """Esc anywhere on the page puts a search box out on its own away."""
-        if key != Gdk.KEY_Escape or self.sidebar.on_search_left is None:
+    def _typing(self) -> bool:
+        """Whether a plain key press belongs to whatever has the keyboard."""
+        focus = self.get_focus()
+        return self.get_visible_dialog() is not None or (
+            focus is not None and (
+                isinstance(focus, Gtk.Editable | Gtk.TextView)
+                or focus.get_ancestor(Gtk.Popover) is not None
+            )
+        )
+
+    def _on_escape(self, _keys, key: int, _code: int, _state) -> bool:
+        """Esc clears a search from the page too, and puts away a box out
+        on its own. Other text fields and dialogs keep it for themselves.
+        """
+        search = self.sidebar.search
+        if key != Gdk.KEY_Escape or not (
+            self.sidebar.query or self.sidebar.on_search_left is not None
+        ):
             return False
-        self.sidebar.search.emit("stop-search")
+        focus = self.get_focus()
+        in_search = focus is not None and focus.is_ancestor(search)
+        if self._typing() and not in_search:
+            return False
+        search.emit("stop-search")
         return True
+
+    def _on_key(self, _keys, key: int, _code: int, state) -> bool:
+        """The search keys from vim: `/`, `n` and `N`, unless you are typing."""
+        modifiers = state & Gtk.accelerator_get_default_mod_mask()
+        if modifiers & ~Gdk.ModifierType.SHIFT_MASK or self._typing():
+            return False
+        if key == Gdk.KEY_slash:
+            self._focus_search()
+            return True
+        if key in (Gdk.KEY_n, Gdk.KEY_N) and self.meeting.match_note():
+            self._step_match(1 if key == Gdk.KEY_n else -1)
+            return True
+        return False
 
     def _realign(self, session_dir: Path, done) -> None:
         """Run a re-timing pass on the engine's loop, and report back on GTK's.

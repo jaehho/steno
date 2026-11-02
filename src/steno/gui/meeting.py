@@ -460,7 +460,7 @@ class MeetingPage(Gtk.Box):
         when a jump scrolls the transcript's heading away."""
         if self._hit_at < 0:
             return ""
-        return f"match {self._hit_at + 1} of {len(self._hits)} (F3, Shift+F3)"
+        return f"match {self._hit_at + 1} of {len(self._hits)} (n, N)"
 
     def step_hit(self, delta: int) -> bool:
         """Take the transcript to the next or previous line the search hit,
@@ -519,8 +519,8 @@ class MeetingPage(Gtk.Box):
         (issue #20). Never "Summarize now": one stray Enter there is a
         paid call.
         """
-        hit = next(
-            (r for r in self._rows if r.has_css_class("line-hit")), None
+        hit = (
+            self._rows[self._hits[self._hit_at]] if self._hit_at >= 0 else None
         )
         if hit is not None:
             self._attach_through(hit)
