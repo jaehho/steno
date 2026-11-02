@@ -50,7 +50,7 @@ from .meeting import MeetingPage
 from .menu import meeting_menu_model
 from .sidebar import LIVE, Session, Sidebar
 from .style import palette, stylesheet
-from .widgets import AskBox, mark_matches
+from .widgets import AskBox, TitleEntry, mark_matches
 
 log = logging.getLogger("steno.gui")
 
@@ -119,6 +119,7 @@ class Window(Adw.ApplicationWindow):
             on_session_changed=self._on_session_changed,
             on_toast=self._toast,
             on_summarize=self._summarize,
+            on_rename=self._edit_title,
             is_recording=self._is_recording,
             recording_dir=self._recording_dir,
             rewriter=app.rewriter,
@@ -160,6 +161,10 @@ class Window(Adw.ApplicationWindow):
         # not start a recording or split a meeting (issue #20).
         self.set_focus(self.sidebar.search)
         self.connect("realize", self._load_once_painted)
+        self.connect(
+            "notify::focus-widget",
+            lambda *_a: self.title_entry.focus_moved(self.get_focus()),
+        )
 
     # ----------------------------------------------------------------- building
 
@@ -204,8 +209,13 @@ class Window(Adw.ApplicationWindow):
         self.page_subtitle.set_ellipsize(Pango.EllipsizeMode.END)
         titles.append(self.page_title)
         titles.append(self.page_subtitle)
-        header.pack_start(titles)
         self.titles = titles
+        self.title_entry = TitleEntry(on_closed=self._on_title_edit_closed)
+        self.title_entry.set_margin_start(8)
+        self.title_stack = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)
+        self.title_stack.add_child(titles)
+        self.title_stack.add_child(self.title_entry)
+        header.pack_start(self.title_stack)
 
         self.meeting_menu = Gtk.MenuButton()
         self.meeting_menu.set_icon_name("view-more-symbolic")
@@ -377,6 +387,7 @@ class Window(Adw.ApplicationWindow):
             kept = focus is not None and (
                 focus.is_ancestor(self.meeting)
                 or focus.is_ancestor(self.search_alone)
+                or focus.is_ancestor(self.title_entry)
             )
             if (
                 not kept
@@ -425,7 +436,22 @@ class Window(Adw.ApplicationWindow):
         self.live.set_stacked(current is not None)
         self._update_header()
 
+    def _edit_title(self, text: str, on_text: Callable[[str], None]) -> None:
+        """The title in the page's header turns into a box to type in. A
+        row's menu is on the sidebar, which may be all that is showing."""
+        self.split.set_show_content(True)
+        self.title_stack.set_visible_child(self.title_entry)
+        self.title_entry.begin(text, on_text)
+
+    def _on_title_edit_closed(self) -> None:
+        focus = self.get_focus()
+        # The focus moved on by itself unless Enter or Esc closed the box.
+        if focus is not None and focus.is_ancestor(self.title_entry):
+            self.meeting_menu.grab_focus()
+        self.title_stack.set_visible_child(self.titles)
+
     def _on_select(self, item) -> None:
+        self.title_entry.close()
         if isinstance(item, Session):
             self.meeting.load(item)
             # Opened from a search: land on the sentence, not the top.

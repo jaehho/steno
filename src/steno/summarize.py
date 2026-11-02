@@ -389,6 +389,9 @@ def _store(
     session_dir: Path, summary: Summary, records: list[dict], model: str
 ) -> Summary:
     _write_atomic(session_dir / SUMMARY_FILENAME, summary.body + "\n")
+    # A name the user gave stays, as a project they set does.
+    if load_meta(session_dir).get("title_by_user"):
+        summary.title = load_title(session_dir) or summary.title
     # What the meeting is filed under, which is not always the guess.
     summary.project = write_meta(session_dir, summary, records, model)
     return summary
@@ -475,6 +478,11 @@ def update_meta(session_dir: Path, **changes: object) -> None:
     _write_atomic(
         session_dir / META_FILENAME, json.dumps(meta, indent=2) + "\n"
     )
+
+
+def save_title(session_dir: Path, title: str) -> None:
+    """Name a meeting by hand. Summarizing it again keeps this name."""
+    update_meta(session_dir, title=title, title_by_user=True)
 
 
 def save_project(session_dir: Path, project: str | None) -> None:

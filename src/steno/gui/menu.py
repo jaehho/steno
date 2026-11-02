@@ -22,6 +22,7 @@ def meeting_menu_model(
     menu = Gio.Menu()
     menu.append("Copy this meeting", "meeting.copy")
     menu.append("Save this meeting...", "meeting.save")
+    menu.append("Rename...", "meeting.rename")
     menu.append("Set project...", "meeting.project")
     if has_notes:
         menu.append("Show in project notes", "meeting.show-notes")

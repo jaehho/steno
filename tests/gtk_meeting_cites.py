@@ -260,6 +260,17 @@ class TestHalfTheScreen(CitedMeeting):
             and focus.is_ancestor(self.page)
         )))
 
+    def test_renaming_from_the_list_keeps_the_keyboard_in_the_title(self):
+        self.window.split.set_show_content(False)
+        settle()
+        self.window._edit_title("Cited", lambda _text: None)
+        settle()
+        self.assertTrue(self.window.split.get_show_content())
+        self.assertIs(
+            self.window.title_stack.get_visible_child(), self.window.title_entry
+        )
+        self.assertTrue(self.window.get_focus().is_ancestor(self.window.title_entry))
+
     def test_the_back_arrow_takes_the_box_back_to_the_list(self):
         search = self.window.sidebar.search
         home = search.get_parent()

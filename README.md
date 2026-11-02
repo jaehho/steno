@@ -301,7 +301,9 @@ writes this inside it.
 ```
 
 The project is the one the summary picked from `~/projects` (or
-`STENO_PROJECTS_DIR`); **Set project...** in the ⋯ menu changes it. Each page
+`STENO_PROJECTS_DIR`); **Set project...** in the ⋯ menu changes it, and
+**Rename...** there edits the title in place, which also renames the pages; a
+name you gave stays when the meeting is summarized again. Each page
 opens with a front matter block (title, date, time, length, project, the
 session it came from) and a line saying Steno generated it. The summary page
 is what `steno export` makes without the words: the summary with its
