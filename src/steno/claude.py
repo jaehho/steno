@@ -1,11 +1,11 @@
-"""One OpenAI-style chat-completions POST per model call.
+"""Every model call steno makes, to whichever provider is set.
 
-Endpoint, model, and key are config, not code, because the best model for a
-meeting summary changes often. Flip `STENO_MODEL` for the model,
-`STENO_EFFORT` for how hard it thinks, and `STENO_PROVIDER` (or
-`STENO_BASE_URL`) for where it is hosted. The default is Claude Sonnet at high
-effort through OpenRouter, using the same `~/.config/openrouter.env` key as
-`claude-open`; MiMo is still there by name.
+The default, `claude-code`, runs `claude -p` on the Claude subscription
+(claudecode.py). The others are one OpenAI-style chat-completions POST per
+call: `openrouter`, with the same `~/.config/openrouter.env` key as
+`claude-open`, and `mimo`. Model, effort and host are config, not code,
+because the best model for a meeting summary changes often: flip
+`STENO_MODEL`, `STENO_EFFORT` and `STENO_PROVIDER` (or `STENO_BASE_URL`).
 
 The only tools a call ever gets are three read-only ones scoped to a single
 directory: the transcript is other people's speech, and grounding must not
@@ -19,15 +19,24 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import TypeVar
 
 import httpx
+
+from . import claudecode
 
 # name -> how to reach a chat-completions endpoint and who to bill.
 # `base_url` may be a callable when it is derived from the key file (MiMo
 # hosts the OpenAI route beside its Anthropic one, and the plan picks the host).
 PROVIDERS: dict[str, dict] = {
+    # No key and no host: `claude -p` brings its own login.
+    "claude-code": {
+        "model": "claude-sonnet-5-5",
+        "effort": "high",
+        "presets": ("claude-opus-5-5", "claude-haiku-5-5"),
+    },
     "mimo": {
         "key_file": "~/.config/mimo.env",
         "key_name": "MIMO_API_KEY",
@@ -43,7 +52,9 @@ PROVIDERS: dict[str, dict] = {
         "effort": "high",
     },
 }
-DEFAULT_PROVIDER = "openrouter"
+CLAUDE_CODE = "claude-code"
+_T = TypeVar("_T")
+DEFAULT_PROVIDER = CLAUDE_CODE
 MAX_TOOL_ROUNDS = 8
 _RETRY_STATUSES = {408, 429, 500, 502, 503, 504, 522, 524}
 HTTP_OK = 200
@@ -137,11 +148,15 @@ def presets() -> list[str]:
 def api_key() -> str:
     if key := os.environ.get("STENO_API_KEY", "").strip():
         return key
+    if "key_file" not in _settings():
+        return ""
     return _read_kv(_key_file(), _key_name())
 
 
 def check_ready() -> str | None:
     """What a call would fail on, or None if one can be made now."""
+    if provider() == CLAUDE_CODE:
+        return claudecode.check_ready()
     if api_key():
         return None
     return f"no {_key_name()} in {_key_file()}"
@@ -271,6 +286,11 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
     timeout: float = 900.0,
 ) -> dict:
     """One call that must return an object matching `schema`. Raises ClaudeError."""
+    if provider() == CLAUDE_CODE:
+        return await _through_claude_code(claudecode.run_structured(
+            prompt, system=system, model=model, effort=effort(),
+            schema=schema, read_root=read_root, timeout=timeout,
+        ))
     messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
     tools = _tools(read_root) if read_root is not None else None
     async with httpx.AsyncClient(transport=_transport,
@@ -290,6 +310,14 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
         data = await _call(client, _thinking(
             _payload(model, messages, schema=schema), effort()))
         return parse_structured(_content(data["choices"][0]["message"]))
+
+
+async def _through_claude_code(call: Coroutine[object, object, _T]) -> _T:
+    """`call`, its failure told the way every provider's is."""
+    try:
+        return await call
+    except claudecode.ClaudeCodeError as e:
+        raise ClaudeError(str(e)) from None
 
 
 def parse_structured(text: str) -> dict:
@@ -349,8 +377,11 @@ async def list_models(timeout: float = 8.0) -> list[str]:
     """The active provider's models. Raises ClaudeError if it will not say.
 
     One try and a short timeout: this fills a menu, and a menu can wait
-    for the next open rather than for a retry.
+    for the next open rather than for a retry. `claude -p` lists nothing,
+    so its presets are the list.
     """
+    if provider() == CLAUDE_CODE:
+        return presets()
     try:
         url = models_url(base_url())
         async with httpx.AsyncClient(transport=_transport,
@@ -523,6 +554,11 @@ async def stream_text(
     timeout: float = 180.0,
 ) -> str:
     """One tool-less call, handing each piece of text to `on_delta` as it arrives."""
+    if provider() == CLAUDE_CODE:
+        return await _through_claude_code(claudecode.stream_text(
+            prompt, system=system, model=model, effort=effort(),
+            on_delta=on_delta, timeout=timeout,
+        ))
     payload = _thinking(_payload(
         model,
         [{"role": "system", "content": system},

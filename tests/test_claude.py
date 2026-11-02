@@ -392,9 +392,8 @@ class TestEffort(Keyed):
         with mock.patch.dict(os.environ, env):
             self.assertEqual(claude.effort(), "medium")
 
-    def test_openrouter_is_the_default(self):
-        with mock.patch.dict(os.environ, {"STENO_PROVIDER": ""}):
-            self.assertEqual(claude.provider(), "openrouter")
+    def test_openrouter_runs_sonnet_when_chosen(self):
+        with mock.patch.dict(os.environ, {"STENO_PROVIDER": "openrouter"}):
             self.assertEqual(claude.default_model(), "anthropic/claude-sonnet-5.5")
 
 

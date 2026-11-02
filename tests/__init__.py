@@ -25,6 +25,11 @@ os.environ["ASST_NO_REBUILD"] = "1"
 # STENO_OBSIDIAN_DIR at a scratch one.
 os.environ["STENO_OBSIDIAN_DIR"] = "/nonexistent/steno-tests-vault"
 
+# The default provider runs the real `claude` on the user's subscription.
+# Tests reach model hosts only through a mock transport, so they run on an
+# HTTP provider; the tests of `claude -p` put a fake `claude` on PATH.
+os.environ["STENO_PROVIDER"] = "openrouter"
+
 # The real `available`, for the test of the STENO_NO_ASST switch itself.
 real_available = asstlink.available
 

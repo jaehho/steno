@@ -57,13 +57,16 @@ Then set it up once:
 steno init         # writes ~/.config/steno/.env
 ```
 
-Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions are one
-OpenAI-style chat-completions request, by default to Claude Sonnet at high
-effort through OpenRouter, with its key in `~/.config/openrouter.env`
-(`OPENROUTER_API_KEY`). `STENO_PROVIDER=mimo` reads `~/.config/mimo.env`
-instead; `STENO_MODEL`, `STENO_EFFORT`, `STENO_BASE_URL` and `STENO_API_KEY`
-override the model, effort, endpoint and key (the template `steno init` writes
-lists them). `STENO_ASK_MODEL` does the same for the Ask box alone and
+Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions go to Claude
+Sonnet at high effort through headless Claude Code (`claude -p`), on your Claude
+subscription: install Claude Code and log in. An `ANTHROPIC_API_KEY` in the
+environment is never passed on, so a call cannot be billed to the API by
+accident. `STENO_PROVIDER=openrouter` sends one OpenAI-style chat-completions
+request to OpenRouter instead, with its key in `~/.config/openrouter.env`
+(`OPENROUTER_API_KEY`), and `STENO_PROVIDER=mimo` to MiMo with
+`~/.config/mimo.env`; `STENO_MODEL`, `STENO_EFFORT`, `STENO_BASE_URL` and
+`STENO_API_KEY` override the model, effort, endpoint and key (the template
+`steno init` writes lists them). `STENO_ASK_MODEL` does the same for the Ask box alone and
 wins over the model picked in the window (below); summaries keep
 `STENO_MODEL`. `STENO_NO_ASST=1` (any non-empty value, `0` included)
 stops Steno running `asst`, the task app your action items are filed in, so
@@ -470,7 +473,7 @@ transcribed in one pass when the meeting ends, which is cheaper and more
 accurate than streaming it.
 
 Audio leaves the machine only to Deepgram, and transcript text only to the
-model host you configured (MiMo by default, or OpenRouter; see above) for the
+model host you configured (Anthropic through Claude Code by default; see above) for the
 summary and for questions you ask. Emails, phone numbers and the like are
 scrubbed from the transcript on the way out. When a meeting is about one of the
 projects in `~/projects` (`STENO_PROJECTS_DIR`), the summary may read that
