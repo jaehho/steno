@@ -369,12 +369,7 @@ class MeetingPage(Gtk.Box):
         self.transcript_list.add_css_class("transcript-past")
         self.transcript_list.connect("row-activated", self._on_line_activated)
         self.transcript_hint = "Click a line to play from there"
-        self.hit_count = hint_label()
-        self.hit_count.set_visible(False)
-        self.transcript = section(
-            "Transcript", self.transcript_list,
-            hint=self.transcript_hint, beside=self.hit_count,
-        )
+        self.transcript = section("Transcript", self.transcript_list, hint=self.transcript_hint)
         return [summary, todos, notes, self.ask, self.transcript]
 
     def _build_player(self) -> Gtk.Widget:
@@ -460,6 +455,13 @@ class MeetingPage(Gtk.Box):
             mark_matches(label, self._search_phrase)
         self.notes.mark(self._search_phrase)
 
+    def match_note(self) -> str:
+        """Which match the page is on, for the header, which stays in view
+        when a jump scrolls the transcript's heading away."""
+        if self._hit_at < 0:
+            return ""
+        return f"match {self._hit_at + 1} of {len(self._hits)} (F3, Shift+F3)"
+
     def step_hit(self, delta: int) -> bool:
         """Take the transcript to the next or previous line the search hit,
         round to the other end. False if there are none to go to.
@@ -477,8 +479,6 @@ class MeetingPage(Gtk.Box):
         self._clear_hit()
         self._hit_at = index
         self._rows[self._hits[index]].add_css_class("line-hit-current")
-        self.hit_count.set_text(f"{index + 1} of {len(self._hits)}  (F3, Shift+F3)")
-        self.hit_count.set_visible(True)
 
     def _clear_hit(self) -> None:
         if 0 <= self._hit_at < len(self._hits):
@@ -486,7 +486,6 @@ class MeetingPage(Gtk.Box):
             if row < len(self._rows):
                 self._rows[row].remove_css_class("line-hit-current")
         self._hit_at = -1
-        self.hit_count.set_visible(False)
 
     def _mark_summary(self) -> None:
         for label in self.summary_view.labels:

@@ -342,6 +342,7 @@ class Window(Adw.ApplicationWindow):
             self.meeting.step_hit(delta)
         ):
             self.split.set_show_content(True)
+            self._update_header()
 
     def _on_search_changed(self, entry) -> None:
         # With the list hidden, nothing else would say that nothing matched.
@@ -352,7 +353,7 @@ class Window(Adw.ApplicationWindow):
         # A search that stays on this meeting moves the page too: no new
         # selection would do it.
         self.meeting.jump_to(self.sidebar.query)
-        self._mark_title()
+        self._update_header()
 
     def _mark_title(self) -> None:
         mark_matches(self.page_title, words.search_phrase(self.sidebar.query))
@@ -404,6 +405,8 @@ class Window(Adw.ApplicationWindow):
             subtitle = words.page_subtitle(
                 item.start, item.minutes, item.project, item.archived
             )
+            if note := self.meeting.match_note():
+                subtitle = f"{subtitle} · {note}"
         elif item == LIVE:
             title = "Meeting in progress"
             started = datetime.fromtimestamp(self._live_started)

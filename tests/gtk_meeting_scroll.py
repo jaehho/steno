@@ -224,12 +224,13 @@ class TestTranscriptScroll(OnTheShortMeeting):
         sidebar.list.select_row(sidebar.list.get_row_at_index(0))
         page = self.page
         self.assertEqual(page._hits, list(FOUND))
-        self.assertEqual(page.hit_count.get_text(), "1 of 3  (F3, Shift+F3)")
+        self.assertEqual(page.match_note(), "match 1 of 3 (F3, Shift+F3)")
         current = page._rows[FOUND[0]]
         self.assertTrue(current.has_css_class("line-hit-current"))
 
         self.window._step_match(1)
-        self.assertEqual(page.hit_count.get_text(), "2 of 3  (F3, Shift+F3)")
+        self.assertEqual(page.match_note(), "match 2 of 3 (F3, Shift+F3)")
+        self.assertIn("match 2 of 3", self.window.page_subtitle.get_text())
         self.assertFalse(current.has_css_class("line-hit-current"))
         following = page._rows[FOUND[1]]
         self.assertTrue(following.has_css_class("line-hit-current"))
@@ -237,11 +238,12 @@ class TestTranscriptScroll(OnTheShortMeeting):
 
         self.window._step_match(-1)
         self.window._step_match(-1)
-        self.assertEqual(page.hit_count.get_text(), "3 of 3  (F3, Shift+F3)")
+        self.assertEqual(page.match_note(), "match 3 of 3 (F3, Shift+F3)")
         self.assertTrue(wait_for(lambda: on_screen(page._rows[FOUND[2]])))
 
         self.window.sidebar.search.set_text("")
-        self.assertTrue(wait_for(lambda: not page.hit_count.get_visible()))
+        self.assertTrue(wait_for(lambda: page.match_note() == ""))
+        self.assertNotIn("match", self.window.page_subtitle.get_text())
         self.assertFalse(page._rows[FOUND[2]].has_css_class("line-hit-current"))
         self.assertFalse(page.step_hit(1))
 
