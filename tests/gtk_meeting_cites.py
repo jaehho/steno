@@ -147,6 +147,8 @@ def press(widget: Gtk.Widget, key: int) -> bool:
 class CitedMeeting(unittest.TestCase):
     """A window on a long meeting whose summary says where it was said."""
 
+    WIDTH = 0  # the window's own default
+
     def setUp(self):
         # PyGObject reports an exception in a signal handler or an idle
         # callback through sys.excepthook and carries on, so a handler
@@ -166,6 +168,8 @@ class CitedMeeting(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         self.window = Window(self.app, self.root)
+        if self.WIDTH:
+            self.window.set_default_size(self.WIDTH, 720)
         # The meetings, and the whole transcript, in the first frame, not
         # brought in by frames after it: every test here reads lines
         # anywhere in it, and Broadway with no browser draws one frame a
@@ -212,6 +216,28 @@ class CitedMeeting(unittest.TestCase):
 
     def scroll_top(self) -> None:
         scroller_of(self.page.transcript_list).get_vadjustment().set_value(0)
+
+
+class TestHalfTheScreen(CitedMeeting):
+    """A window at half the screen: the list hides and the page leads."""
+
+    WIDTH = 951
+
+    def test_it_opens_on_the_meeting_with_the_transcript_beside_the_summary(self):
+        self.assertEqual(self.page.layouts.get_layout_name(), "beside")
+        self.assertTrue(self.window.split.get_collapsed())
+        self.assertTrue(self.window.split.get_show_content())
+
+    def test_the_keyboard_is_on_the_page_not_the_list_out_of_sight(self):
+        self.assertTrue(wait_for(lambda: (
+            (focus := self.window.get_focus()) is not None
+            and focus.is_ancestor(self.page)
+        )))
+
+    def test_searching_brings_the_list_back(self):
+        self.window._focus_search()
+        self.assertFalse(self.window.split.get_show_content())
+        self.assertTrue(self.window.split.get_collapsed())
 
 
 class TestSummaryRows(CitedMeeting):
@@ -359,7 +385,7 @@ class TestChoosingAnItem(CitedMeeting):
         self.assertEqual(adjustment.get_value(), 0)
 
     def test_choosing_an_item_moves_the_transcript_and_not_the_summary(self):
-        for layout in ("three", "two"):
+        for layout in ("wide", "beside"):
             with self.subTest(layout=layout):
                 self.page.set_layout(layout)
                 panel = scroller_of(self.page.transcript_list)
@@ -564,12 +590,12 @@ class TestTheBar(CitedMeeting):
         self.assertIs(self.bar.get_parent(), self.page)
 
     def test_the_transcript_gives_it_room_and_takes_it_back(self):
-        adjustment = scroller_of(self.page.transcript_list).get_vadjustment()
-        before = adjustment.get_page_size()
+        reading = self.page.layouts
+        before = reading.get_height()
 
         def taken() -> float:
             # The border box: get_height() leaves out the bar's padding.
-            return before - adjustment.get_page_size()
+            return before - reading.get_height()
 
         click(self.item("Ship").mark)
         bar = self.bar.get_allocation().height
@@ -1187,7 +1213,7 @@ class TestSidebarWidth(CitedMeeting):
         column may move for it.
         """
         split = self.window.split
-        self.page.set_layout("three")
+        self.page.set_layout("wide")
         side = find_css(self.page, "side-column")  # the to-do column
         self.assertIsNotNone(side)
         target = next(

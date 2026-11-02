@@ -5,9 +5,9 @@ widgets and user gestures back into the engine, which the *app* owns. The window
 is closable, disposable, and often absent; closing it stops nothing.
 
 It is one `Adw.NavigationSplitView` whose shape follows the window's: a sidebar
-and a meeting page in three panels when wide, two when narrower, and the list
-and the meeting as two pages you move between when the window is narrow - the
-tall one parked beside a call, where the meeting is one column.
+and a meeting page when wide. Half the screen wide, the list and the meeting are
+two pages you move between, opening on the meeting. Narrower still, the tall one
+parked beside a call, it opens on the list and the meeting is one column.
 """
 from __future__ import annotations
 
@@ -58,8 +58,6 @@ if TYPE_CHECKING:  # the app imports the window lazily; this keeps the cycle unr
 
 # Below this the meeting stacks into one column; below NARROW the sidebar and
 # the meeting become separate pages.
-# The meeting page drops its third panel here; the live page has only two.
-ROOMY = "max-width: 1400sp"
 MEDIUM = "max-width: 1000sp"
 NARROW = "max-width: 600sp"
 # The meetings and the page they open fade in together once they are read.
@@ -134,12 +132,11 @@ class Window(Adw.ApplicationWindow):
         self.toasts.set_child(self.split)
         self.set_content(self.toasts)
 
-        self._roomy = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(ROOMY))
-        medium = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(MEDIUM))
+        self._medium = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(MEDIUM))
+        self._medium.add_setter(self.split, "collapsed", True)
         self._narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW))
         self._narrow.add_setter(self.split, "collapsed", True)
-        self.add_breakpoint(self._roomy)
-        self.add_breakpoint(medium)
+        self.add_breakpoint(self._medium)
         self.add_breakpoint(self._narrow)
         self.connect("notify::current-breakpoint", lambda *_a: self._on_breakpoint())
         # After the sidebar's own handler, which picks the meeting to show.
@@ -314,6 +311,17 @@ class Window(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------------- layout
 
+    def _show_page_first(self) -> None:
+        """Half the screen wide, the list gets out of the meeting's way, and
+        so the keyboard has to leave it: on a list out of sight, it would
+        land on whatever GTK picks next (issue #20).
+        """
+        self.split.set_show_content(True)
+        focus = self.get_focus()
+        in_list = focus is None or focus.is_ancestor(self.sidebar)
+        if in_list and self.stack.get_visible_child_name() == "meeting":
+            self.meeting.focus_reading()
+
     def _on_search_changed(self, _entry) -> None:
         self.meeting.show_search(self.sidebar.query)
         self._mark_title()
@@ -324,12 +332,13 @@ class Window(Adw.ApplicationWindow):
     def _on_breakpoint(self) -> None:
         current = self.get_current_breakpoint()
         if current is None:
-            self.meeting.set_layout("three")
+            self.meeting.set_layout("wide")
         elif current == self._narrow:
             self.meeting.set_layout("stacked")
         else:
-            self.meeting.set_layout("two")
-        self.live.set_stacked(current is not None and current != self._roomy)
+            self.meeting.set_layout("beside")
+            self._show_page_first()
+        self.live.set_stacked(current is not None)
         self._update_header()
 
     def _on_select(self, item) -> None:
@@ -515,6 +524,8 @@ class Window(Adw.ApplicationWindow):
             self._adopt_running_meeting()
         if self.stack.get_visible_child_name() == "loading":
             self._on_select(self.sidebar.selected)
+        if self.get_current_breakpoint() == self._medium:
+            self._show_page_first()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
 
         def settled() -> None:

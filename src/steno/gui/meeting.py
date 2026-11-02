@@ -1,10 +1,11 @@
 """A past meeting, on one page: what was decided, what you owe, what was said.
 
 Nothing is behind a tab. The summary leads, because a recording nobody replays
-is worse than none. The transcript has its own panel beside it, so an item stays
-in view beside the line it came from; the to-dos, your notes and a question box
-get a third panel on a wide window and sit under the summary otherwise. A narrow
-window stacks it all in one column. Every transcript line is a seek point, and
+is worse than none. The transcript has its own panel, so an item stays in view
+with the line it came from: under the summary on a wide window, with the to-dos,
+your notes and a question box in a column to the right; beside it on a window
+half the screen wide, with those under the summary. A narrow window stacks it
+all in one column. Every transcript line is a seek point, and
 the player stays pinned to the bottom, because the only honest fix for "did they
 really say that?" is to hear it.
 """
@@ -190,12 +191,12 @@ class MeetingPage(Gtk.Box):
 
         self.layouts = Adw.MultiLayoutView()
         self.layouts.set_vexpand(True)
-        self.layouts.add_layout(self._three_panels())
-        self.layouts.add_layout(self._two_panels())
+        self.layouts.add_layout(self._wide_layout())
+        self.layouts.add_layout(self._beside_layout())
         self.layouts.add_layout(self._stacked_layout())
         for name, widget in zip(SLOTS, self._build_slots(), strict=True):
             self.layouts.set_child(name, widget)
-        self.layouts.set_layout_name("three")
+        self.layouts.set_layout_name("wide")
         self.append(self.layouts)
         self.cite_bar = CiteBar(
             on_step=self._step_place,
@@ -250,24 +251,21 @@ class MeetingPage(Gtk.Box):
         scroll.set_hexpand(True)
         return scroll
 
-    def _transcript_panel(self) -> Gtk.ScrolledWindow:
-        scroll = self._panel("transcript")
-        scroll.add_css_class("transcript-panel")
-        return scroll
-
-    def _three_panels(self) -> Adw.Layout:
-        """Summary, transcript, and the rest in a column of its own."""
-        reading = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, homogeneous=True)
+    def _wide_layout(self) -> Adw.Layout:
+        """Summary over transcript, and the rest in a full-height column."""
+        reading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, homogeneous=True)
         reading.set_hexpand(True)
         reading.append(self._panel("summary"))
-        reading.append(self._transcript_panel())
+        below = self._panel("transcript")
+        below.add_css_class("panel-below")
+        reading.append(below)
 
         side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         side.add_css_class("side-column")
         side.add_css_class("beside")
         side.set_size_request(300, -1)
         # The notes view would otherwise pass its horizontal expansion up and
-        # take half the page from the panels.
+        # take half the page from the reading.
         side.set_hexpand(False)
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         inner.set_margin_top(18)
@@ -286,10 +284,10 @@ class MeetingPage(Gtk.Box):
         row.append(reading)
         row.append(side)
         layout = Adw.Layout.new(row)
-        layout.set_name("three")
+        layout.set_name("wide")
         return layout
 
-    def _two_panels(self) -> Adw.Layout:
+    def _beside_layout(self) -> Adw.Layout:
         """The transcript beside everything else, with Ask kept in view."""
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         left.add_css_class("stacked")
@@ -306,9 +304,11 @@ class MeetingPage(Gtk.Box):
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, homogeneous=True)
         row.append(left)
-        row.append(self._transcript_panel())
+        beside = self._panel("transcript")
+        beside.add_css_class("panel-beside")
+        row.append(beside)
         layout = Adw.Layout.new(row)
-        layout.set_name("two")
+        layout.set_name("beside")
         return layout
 
     def _stacked_layout(self) -> Adw.Layout:
@@ -330,7 +330,7 @@ class MeetingPage(Gtk.Box):
         return layout
 
     def set_layout(self, name: str) -> None:
-        """"three" or "two" panels, or "stacked" in one column."""
+        """"wide", "beside", or "stacked" in one column."""
         self.layouts.set_layout_name(name)
 
     # ----------------------------------------------------------------- building

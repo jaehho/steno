@@ -183,7 +183,8 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
     .side-column {{ background: {colors['crust']}; }}
     .side-column.below {{ border-top: 1px solid {colors['surface0']}; }}
     .side-column.beside {{ border-left: 1px solid {colors['surface0']}; }}
-    .transcript-panel {{ border-left: 1px solid {colors['surface0']}; }}
+    .panel-below {{ border-top: 1px solid {colors['surface0']}; }}
+    .panel-beside {{ border-left: 1px solid {colors['surface0']}; }}
 
     /* ---- notes: a plain sheet of paper ---- */
     .notes-frame {{ background: {colors['base']}; border-radius: 6px; }}
