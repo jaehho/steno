@@ -35,6 +35,7 @@ MENU_KEYS = ("Menu", "<Shift>F10")
 EXPECTED = [
     "meeting.copy",
     "meeting.save",
+    "meeting.rename",
     "meeting.project",
     "meeting.summarize",
     "meeting.realign",
@@ -106,6 +107,16 @@ def labels(menu: Gio.MenuModel) -> list[str]:
         section = menu.get_item_link(i, Gio.MENU_LINK_SECTION)
         if section is not None:
             found.extend(labels(section))
+    return found
+
+
+def labels_in(widget: Gtk.Widget) -> list[str]:
+    """The text of every label under a widget."""
+    found = [widget.get_text()] if isinstance(widget, Gtk.Label) else []
+    child = widget.get_first_child()
+    while child is not None:
+        found.extend(labels_in(child))
+        child = child.get_next_sibling()
     return found
 
 
@@ -369,6 +380,73 @@ class TestMenuInTheWindow(unittest.TestCase):
 
     def row(self, index: int) -> Gtk.ListBoxRow:
         return self.sidebar.list.get_row_at_index(index)
+
+    def rename(self, typed: str) -> None:
+        """Rename the open meeting from its menu, up to the typing."""
+        self.page.actions.activate_action("rename", None)
+        settle()
+        self.assertIs(
+            self.window.title_stack.get_visible_child(),
+            self.window.title_entry,
+        )
+        self.window.title_entry.set_text(typed)
+
+    def saved_title(self, stamp: str = "20260112-090000") -> str:
+        meta = json.loads((self.root / stamp / "meta.json").read_text())
+        return meta["title"]
+
+    def test_renaming_starts_from_the_title_with_the_focus_in_the_box(self):
+        self.page.actions.activate_action("rename", None)
+        settle()
+        entry = self.window.title_entry
+        self.assertEqual(entry.get_text(), "Charlie")
+        self.assertTrue(self.window.get_focus().is_ancestor(entry))
+
+    def test_enter_saves_the_title_everywhere_it_shows(self):
+        self.rename("  Vendor   call ")
+        self.window.title_entry.emit("activate")
+        settle()
+        self.assertEqual(self.saved_title(), "Vendor call")
+        self.assertEqual(self.window.page_title.get_text(), "Vendor call")
+        self.assertEqual(self.sidebar.selected.title, "Vendor call")
+        self.assertIn("Vendor call", labels_in(self.row(0)))
+        self.assertIs(
+            self.window.title_stack.get_visible_child(), self.window.titles
+        )
+        # Not the box that just went away, and not Record.
+        self.assertIs(self.window.get_focus().get_ancestor(Gtk.MenuButton),
+                      self.window.meeting_menu)
+
+    def test_esc_and_a_blank_title_change_nothing(self):
+        self.rename("Vendor call")
+        keys = controllers(self.window.title_entry, Gtk.EventControllerKey)[0]
+        keys.emit("key-pressed", Gdk.KEY_Escape, 0, 0)
+        settle()
+        self.assertEqual(self.saved_title(), "Charlie")
+        self.rename("   ")
+        self.window.title_entry.emit("activate")
+        settle()
+        self.assertEqual(self.saved_title(), "Charlie")
+        self.assertEqual(self.window.page_title.get_text(), "Charlie")
+
+    def test_opening_another_meeting_saves_to_the_one_being_renamed(self):
+        self.rename("Vendor call")
+        self.sidebar.list.select_row(self.row(2))
+        settle()
+        self.assertEqual(self.saved_title(), "Vendor call")
+        self.assertEqual(self.saved_title("20260110-090000"), "Alpha")
+        self.assertEqual(self.window.page_title.get_text(), "Alpha")
+
+    def test_the_window_losing_the_desktops_focus_keeps_the_box_open(self):
+        self.rename("Vendor call")
+        self.window.title_entry.focus_moved(self.window.get_focus())
+        self.assertIs(
+            self.window.title_stack.get_visible_child(),
+            self.window.title_entry,
+        )
+        self.window.sidebar.search.grab_focus()
+        settle()
+        self.assertEqual(self.saved_title(), "Vendor call")
 
     def test_it_opens_on_the_search_box_not_on_record(self):
         focus = self.window.get_focus()

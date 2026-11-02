@@ -68,6 +68,7 @@ from ..summarize import (
     load_title,
     projects_root,
     save_project,
+    save_title,
     set_archived,
 )
 from . import words
@@ -121,6 +122,7 @@ class MeetingPage(Gtk.Box):
         on_session_changed: Callable[[Session], None],
         on_toast: Callable[..., None],
         on_summarize: Callable[..., None] | None = None,
+        on_rename: Callable[[str, Callable[[str], None]], None] | None = None,
         is_recording: Callable[[], bool] | None = None,
         recording_dir: Callable[[], Path | None] | None = None,
         rewriter: Rewriter | None = None,
@@ -131,6 +133,8 @@ class MeetingPage(Gtk.Box):
         self._rewriter = rewriter
         self._on_ask = on_ask
         self._on_summarize = on_summarize
+        # Asks for a new title, starting from a text, and hands it back.
+        self._on_rename = on_rename
         self._is_recording = is_recording or (lambda: False)
         # The folder being recorded into, if any: the one meeting that
         # cannot be put away.
@@ -217,6 +221,7 @@ class MeetingPage(Gtk.Box):
         for name, handler in (
             ("copy", self._copy_meeting),
             ("save", self._save_meeting),
+            ("rename", self._rename),
             ("project", self._set_project),
             ("show-notes", self._show_notes),
             ("summarize", self._confirm_summarize),
@@ -1475,6 +1480,24 @@ class MeetingPage(Gtk.Box):
         root = self.get_root()
         parent = root if isinstance(root, Gtk.Window) else None
         dialog.save(parent, None, on_save)
+
+    def _rename(self) -> None:
+        s = self.current
+        if s is None or self._on_rename is None:
+            return
+        self._on_rename(s.title or "", lambda text: self._save_title(s, text))
+
+    def _save_title(self, s: Session, text: str) -> None:
+        """Give the meeting the title typed. Nothing typed keeps the old
+        one; a page in a project takes its file name from the title."""
+        title = " ".join(text.split())
+        if not title or title == s.title:
+            return
+        save_title(s.dir, title)
+        s.title = title
+        self._on_session_changed(s)
+        if self._rewriter is not None and projectnotes.read_record(s.dir):
+            self._rewriter.write(s.dir)
 
     def _set_project(self) -> None:
         s = self.current

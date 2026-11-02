@@ -35,6 +35,7 @@ from steno.summarize import (
     parse_summary,
     resolve_session,
     save_project,
+    save_title,
     set_archived,
     summarize_session,
 )
@@ -652,6 +653,18 @@ class TestResummarize(unittest.TestCase):
         )
         self.assertEqual(self.meta()["project"], "thesis")
         self.assertEqual(summary.project, "thesis")
+
+    def test_a_title_given_by_hand_is_not_overwritten(self):
+        save_title(self.dir, "Quote review")
+        summary = self.summarize(CITED_REPLY)
+        self.assertEqual(self.meta()["title"], "Quote review")
+        self.assertEqual(summary.title, "Quote review")
+
+    def test_a_title_the_model_gave_is_replaced_by_its_next_one(self):
+        self.summarize(CITED_REPLY)
+        summary = self.summarize("# Another Name\n\n" + CITED_REPLY)
+        self.assertEqual(self.meta()["title"], "Another Name")
+        self.assertEqual(summary.title, "Another Name")
 
     def test_a_blank_answer_does_not_clear_a_project(self):
         save_project(self.dir, "thesis")

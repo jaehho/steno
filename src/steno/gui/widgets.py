@@ -9,7 +9,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import GLib, Gtk, Pango
+from gi.repository import Gdk, GLib, Gtk, Pango
 
 from ..notes import load_notes, save_notes
 from . import words
@@ -183,6 +183,47 @@ class NotesBox(Gtk.Overlay):
         self._dirty = False
         if self._on_saved is not None:
             self._on_saved(self.session_dir)
+
+
+class TitleEntry(Gtk.Entry):
+    """A title edited in place: Enter or moving away keeps what was typed,
+    Esc puts it back. The window says when the focus moves, since a window
+    that merely loses the desktop's focus must not end the edit."""
+
+    def __init__(self, on_closed: Callable[[], None]) -> None:
+        super().__init__(width_chars=14, max_width_chars=44)
+        self._on_closed = on_closed
+        self._on_text: Callable[[str], None] | None = None
+        self.connect("activate", lambda _e: self.close())
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_key)
+        self.add_controller(keys)
+
+    def begin(self, text: str, on_text: Callable[[str], None]) -> None:
+        self.close()
+        self._on_text = on_text
+        self.set_text(text)
+        self.grab_focus()
+        self.select_region(0, -1)
+
+    def close(self, *, keep: bool = True) -> None:
+        """End the edit, if there is one."""
+        on_text, self._on_text = self._on_text, None
+        if on_text is None:
+            return
+        if keep:
+            on_text(self.get_text())
+        self._on_closed()
+
+    def focus_moved(self, focus: Gtk.Widget | None) -> None:
+        if focus is None or not focus.is_ancestor(self):
+            self.close()
+
+    def _on_key(self, _keys, keyval: int, *_a) -> bool:
+        if keyval != Gdk.KEY_Escape or self._on_text is None:
+            return False
+        self.close(keep=False)
+        return True
 
 
 class AskBox(Gtk.Box):
