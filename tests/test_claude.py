@@ -369,6 +369,35 @@ class TestProjects(unittest.TestCase):
         self.assertEqual(load_project(session), "thesis")
 
 
+class TestEffort(Keyed):
+    def test_the_effort_goes_with_every_kind_of_call(self):
+        seen = []
+        env = {"STENO_PROVIDER": "openrouter", "STENO_EFFORT": ""}
+        with mock.patch.dict(os.environ, env), self.serve(
+            _resp('{"a": "x"}'), seen=seen
+        ):
+            asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema={"type": "object",
+                "required": ["a"], "properties": {"a": {"type": "string"}}},
+                timeout=5))
+        self.assertEqual(seen[0]["reasoning"], {"effort": "high"})
+
+    def test_mimo_is_sent_none(self):
+        with mock.patch.dict(os.environ, {"STENO_PROVIDER": "mimo", "STENO_EFFORT": ""}):
+            self.assertEqual(claude.effort(), "")
+        self.assertNotIn("reasoning", claude._thinking({"model": "m"}, ""))
+
+    def test_steno_effort_wins(self):
+        env = {"STENO_PROVIDER": "openrouter", "STENO_EFFORT": "medium"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(claude.effort(), "medium")
+
+    def test_openrouter_is_the_default(self):
+        with mock.patch.dict(os.environ, {"STENO_PROVIDER": ""}):
+            self.assertEqual(claude.provider(), "openrouter")
+            self.assertEqual(claude.default_model(), "anthropic/claude-sonnet-5.5")
+
+
 class TestEndpointConfig(unittest.TestCase):
     """STENO_MODEL / STENO_PROVIDER / STENO_BASE_URL are how the endpoint moves."""
 
@@ -412,7 +441,7 @@ class TestEndpointConfig(unittest.TestCase):
     def test_default_model_follows_the_provider(self):
         self.assertEqual(claude.default_model(), "mimo-v2.6-flash")
         os.environ["STENO_PROVIDER"] = "openrouter"
-        self.assertEqual(claude.default_model(), "@preset/cc-flash-med")
+        self.assertEqual(claude.default_model(), "anthropic/claude-sonnet-5.5")
 
     def test_unknown_provider_raises(self):
         os.environ["STENO_PROVIDER"] = "nope"
@@ -423,7 +452,7 @@ class TestEndpointConfig(unittest.TestCase):
         self.assertEqual(claude.presets(),
                          ["mimo-v2.6-flash", "mimo-v2.6-pro[1m]"])
         os.environ["STENO_PROVIDER"] = "openrouter"
-        self.assertEqual(claude.presets(), ["@preset/cc-flash-med"])
+        self.assertEqual(claude.presets(), ["anthropic/claude-sonnet-5.5"])
 
 
 class TestModelList(unittest.TestCase):

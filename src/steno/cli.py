@@ -84,14 +84,14 @@ DEEPGRAM_API_KEY=
 
 # Model calls are one OpenAI-style chat-completions POST. Flip these whenever
 # the best model moves; nothing else needs touching.
-#   STENO_MODEL=mimo-v2.6-flash          (default)
-#   STENO_MODEL=mimo-v2.6-pro[1m]
-#   STENO_ASK_MODEL=mimo-v2.6-pro[1m]    (the Ask box only; summaries keep STENO_MODEL)
-#   STENO_PROVIDER=mimo|openrouter       (default: mimo)
+#   STENO_MODEL=anthropic/claude-sonnet-5.5   (default)
+#   STENO_EFFORT=high                         (default; low|medium|high)
+#   STENO_ASK_MODEL=anthropic/claude-opus-5   (the Ask box only; summaries keep STENO_MODEL)
+#   STENO_PROVIDER=openrouter|mimo            (default: openrouter)
 #   STENO_BASE_URL=https://.../v1/chat/completions   (one-off endpoint override)
 # Key: STENO_API_KEY, else the provider's file below (same as `claude-open`).
-#   mimo       -> ~/.config/mimo.env       MIMO_API_KEY
 #   openrouter -> ~/.config/openrouter.env OPENROUTER_API_KEY
+#   mimo       -> ~/.config/mimo.env       MIMO_API_KEY
 
 # Optional. Where your projects live, for tying a meeting to its codebase.
 # STENO_PROJECTS_DIR=~/projects

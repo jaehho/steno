@@ -58,11 +58,12 @@ steno init         # writes ~/.config/steno/.env
 ```
 
 Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions are one
-OpenAI-style chat-completions request to a model host, MiMo by default, with
-its key in `~/.config/mimo.env` (`MIMO_API_KEY`). `STENO_PROVIDER=openrouter`
-reads `~/.config/openrouter.env` instead; `STENO_MODEL`, `STENO_BASE_URL` and
-`STENO_API_KEY` override the model, endpoint and key (the template `steno init`
-writes lists them). `STENO_ASK_MODEL` does the same for the Ask box alone and
+OpenAI-style chat-completions request, by default to Claude Sonnet at high
+effort through OpenRouter, with its key in `~/.config/openrouter.env`
+(`OPENROUTER_API_KEY`). `STENO_PROVIDER=mimo` reads `~/.config/mimo.env`
+instead; `STENO_MODEL`, `STENO_EFFORT`, `STENO_BASE_URL` and `STENO_API_KEY`
+override the model, effort, endpoint and key (the template `steno init` writes
+lists them). `STENO_ASK_MODEL` does the same for the Ask box alone and
 wins over the model picked in the window (below); summaries keep
 `STENO_MODEL`. `STENO_NO_ASST=1` (any non-empty value, `0` included)
 stops Steno running `asst`, the task app your action items are filed in, so

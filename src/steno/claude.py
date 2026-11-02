@@ -1,12 +1,11 @@
 """One OpenAI-style chat-completions POST per model call.
 
 Endpoint, model, and key are config, not code, because the best model for a
-meeting summary changes often. Flip `STENO_MODEL` for the model;
-`STENO_PROVIDER` (or `STENO_BASE_URL`) for where it is hosted. Defaults are
-MiMo on the token plan, using the same `~/.config/mimo.env` key as
-`claude-open`. That host also speaks Anthropic Messages (`…/anthropic`) for
-Claude Code; this client uses its OpenAI route, which takes the same
-json_schema, tools, and SSE we already build.
+meeting summary changes often. Flip `STENO_MODEL` for the model,
+`STENO_EFFORT` for how hard it thinks, and `STENO_PROVIDER` (or
+`STENO_BASE_URL`) for where it is hosted. The default is Claude Sonnet at high
+effort through OpenRouter, using the same `~/.config/openrouter.env` key as
+`claude-open`; MiMo is still there by name.
 
 The only tools a call ever gets are three read-only ones scoped to a single
 directory: the transcript is other people's speech, and grounding must not
@@ -39,10 +38,12 @@ PROVIDERS: dict[str, dict] = {
         "base_url": "https://openrouter.ai/api/v1/chat/completions",
         "key_file": "~/.config/openrouter.env",
         "key_name": "OPENROUTER_API_KEY",
-        "model": "@preset/cc-flash-med",
+        "model": "anthropic/claude-sonnet-5.5",
+        # OpenRouter's `reasoning.effort`; MiMo has no such setting.
+        "effort": "high",
     },
 }
-DEFAULT_PROVIDER = "mimo"
+DEFAULT_PROVIDER = "openrouter"
 MAX_TOOL_ROUNDS = 8
 _RETRY_STATUSES = {408, 429, 500, 502, 503, 504, 522, 524}
 HTTP_OK = 200
@@ -121,6 +122,12 @@ def default_model() -> str:
     return _settings()["model"]
 
 
+def effort() -> str:
+    """How hard the model thinks: STENO_EFFORT, else the provider's own,
+    else nothing sent."""
+    return os.environ.get("STENO_EFFORT") or _settings().get("effort", "")
+
+
 def presets() -> list[str]:
     """Models worth picking by hand on the active provider, default first."""
     settings = _settings()
@@ -185,6 +192,11 @@ def _payload(model: str, messages: list[dict], *, schema: dict | None = None,
     if tools:
         payload["tools"] = tools
     return payload
+
+
+def _thinking(payload: dict, effort: str) -> dict:
+    """`payload` asking the model to think this hard; as it is for none."""
+    return {**payload, "reasoning": {"effort": effort}} if effort else payload
 
 
 def _error_text(status: int, body: str) -> str:
@@ -264,7 +276,8 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
     async with httpx.AsyncClient(transport=_transport,
                                  timeout=httpx.Timeout(timeout, connect=15.0)) as client:
         for _ in range(MAX_TOOL_ROUNDS):
-            data = await _call(client, _payload(model, messages, schema=schema, tools=tools))
+            data = await _call(client, _thinking(_payload(
+                model, messages, schema=schema, tools=tools), effort()))
             message = data["choices"][0]["message"]
             calls = message.get("tool_calls") or []
             if not calls or read_root is None:
@@ -274,7 +287,8 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
                              "tool_calls": calls})
             messages += [_tool_result(read_root, call) for call in calls]
         # Over the tool budget: one forced answer with the tools withdrawn.
-        data = await _call(client, _payload(model, messages, schema=schema))
+        data = await _call(client, _thinking(
+            _payload(model, messages, schema=schema), effort()))
         return parse_structured(_content(data["choices"][0]["message"]))
 
 
@@ -509,8 +523,12 @@ async def stream_text(
     timeout: float = 180.0,
 ) -> str:
     """One tool-less call, handing each piece of text to `on_delta` as it arrives."""
-    payload = _payload(model, [{"role": "system", "content": system},
-                               {"role": "user", "content": prompt}], stream=True)
+    payload = _thinking(_payload(
+        model,
+        [{"role": "system", "content": system},
+         {"role": "user", "content": prompt}],
+        stream=True,
+    ), effort())
     headers = {"Authorization": f"Bearer {api_key()}"}
     seen = False
 
