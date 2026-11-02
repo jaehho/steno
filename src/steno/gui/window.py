@@ -74,6 +74,7 @@ SHORTCUTS = (
     ("Ctrl+G", "Ask about this meeting"),
     ("Ctrl+R", "Start or stop recording"),
     ("Ctrl+Space", "Play or pause a past meeting"),
+    ("Space", "Pause or resume audio already playing, unless you are typing"),
     ("Ctrl+ + / - / 0", "Live transcript size (0 resets)"),
     ("Ctrl+W", "Close the window (keeps listening)"),
     ("Ctrl+Q", "Quit (stops listening)"),
@@ -148,16 +149,9 @@ class Window(Adw.ApplicationWindow):
         self.connect("notify::current-breakpoint", lambda *_a: self._on_breakpoint())
         # After the sidebar's own handler, which picks the meeting to show.
         self.sidebar.search.connect("search-changed", self._on_search_changed)
-        keys = Gtk.EventControllerKey()
-        keys.connect("key-pressed", self._on_key)
-        self.add_controller(keys)
-        escape = Gtk.EventControllerKey()
-        # Before the split view, which takes Esc as the back arrow.
-        escape.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        escape.connect("key-pressed", self._on_escape)
-        self.add_controller(escape)
 
         self._install_actions()
+        self._install_keys()
         self.connect("close-request", self._on_close)
         GLib.timeout_add_seconds(1, self._tick)
         self.set_state(app.status, app.detail)
@@ -303,6 +297,22 @@ class Window(Adw.ApplicationWindow):
         # app's own `quit` (`steno quit`, the tray) is deliberate and doesn't.
         add("quit", self.confirm_quit, ["<Control>q"])
 
+    def _install_keys(self) -> None:
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_key)
+        self.add_controller(keys)
+        escape = Gtk.EventControllerKey()
+        # Before the split view, which takes Esc as the back arrow.
+        escape.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        escape.connect("key-pressed", self._on_escape)
+        self.add_controller(escape)
+        space = Gtk.EventControllerKey()
+        # Before the widget with the keyboard, which would take it as a
+        # click: a transcript line would start over instead of pausing.
+        space.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        space.connect("key-pressed", self._on_space)
+        self.add_controller(space)
+
     def _recording_dir(self) -> Path | None:
         engine = self.app.engine
         current = None if engine is None else engine.current
@@ -316,6 +326,23 @@ class Window(Adw.ApplicationWindow):
         """Ctrl+Space plays a past meeting, and only while one is on the page."""
         if self.stack.get_visible_child_name() == "meeting":
             self.meeting.toggle_play()
+
+    def _on_space(self, _keys, key: int, _code: int, state) -> bool:
+        """Space pauses and resumes audio that has been started. With
+        none it stays an ordinary key, so a stray one plays nothing.
+        """
+        modifiers = state & Gtk.accelerator_get_default_mod_mask()
+        if key != Gdk.KEY_space or modifiers or not self._space_is_for_audio():
+            return False
+        self._toggle_play()
+        return True
+
+    def _space_is_for_audio(self) -> bool:
+        if self.stack.get_visible_child_name() != "meeting":
+            return False
+        if not self.meeting.player.tracks:
+            return False
+        return not self._typing()
 
     def _adopt_running_meeting(self) -> None:
         """Catch up if a meeting was already going when this window opened.
