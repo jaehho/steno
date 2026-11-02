@@ -349,7 +349,9 @@ class Window(Adw.ApplicationWindow):
             isinstance(item, Session) for item in self.sidebar.items
         )
         (entry.add_css_class if missed else entry.remove_css_class)("error")
-        self.meeting.show_search(self.sidebar.query)
+        # A search that stays on this meeting moves the page too: no new
+        # selection would do it.
+        self.meeting.jump_to(self.sidebar.query)
         self._mark_title()
 
     def _mark_title(self) -> None:

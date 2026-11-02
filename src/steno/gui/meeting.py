@@ -447,12 +447,9 @@ class MeetingPage(Gtk.Box):
             if i < len(self._rows):
                 self._rows[i].remove_css_class("line-hit")
                 _line_text(self._rows[i]).set_attributes(None)
-        # The same search shown again keeps its place among the matches.
-        phrase = words.search_phrase(query)
-        kept = self._hit_at if phrase == self._search_phrase else -1
         self._clear_hit()
         self._hits = []
-        self._search_phrase = phrase
+        self._search_phrase = words.search_phrase(query)
         for i, record in enumerate(self._records):
             if words.match_spans(str(record.get("text", "")), self._search_phrase):
                 self._hits.append(i)
@@ -462,8 +459,6 @@ class MeetingPage(Gtk.Box):
         for label in self._todo_labels:
             mark_matches(label, self._search_phrase)
         self.notes.mark(self._search_phrase)
-        if 0 <= kept < len(self._hits):
-            self._set_hit(kept)
 
     def step_hit(self, delta: int) -> bool:
         """Take the transcript to the next or previous line the search hit,
@@ -471,10 +466,7 @@ class MeetingPage(Gtk.Box):
         """
         if not self._hits:
             return False
-        if self._hit_at < 0:
-            self._set_hit(0 if delta > 0 else len(self._hits) - 1)
-        else:
-            self._set_hit((self._hit_at + delta) % len(self._hits))
+        self._set_hit((self._hit_at + delta) % len(self._hits))
         row = self._rows[self._hits[self._hit_at]]
         give_up = GLib.get_monotonic_time() + JUMP_GIVE_UP_US
         if self._scroll_to_row(row, give_up):
