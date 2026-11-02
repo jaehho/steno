@@ -5,9 +5,10 @@ widgets and user gestures back into the engine, which the *app* owns. The window
 is closable, disposable, and often absent; closing it stops nothing.
 
 It is one `Adw.NavigationSplitView` whose shape follows the window's: a sidebar
-and a two-column meeting page when wide, the same page stacked into one column
-when narrower, and the list and the meeting as two pages you move between when
-the window is narrow - the tall one parked beside a call.
+and a meeting page when wide. Half the screen wide, the list and the meeting are
+two pages you move between, opening on the meeting. Narrower still, the tall one
+parked beside a call, it opens on the list. With the list hidden, Ctrl+F shows
+the search box alone above the meeting.
 """
 from __future__ import annotations
 
@@ -126,20 +127,25 @@ class Window(Adw.ApplicationWindow):
         self.split.set_max_sidebar_width(480)
         self.split.set_sidebar(self._build_sidebar_page())
         self.split.set_content(self._build_content_page())
-        self.split.connect("notify::collapsed", lambda *_a: self._update_header())
+        self.split.connect("notify::collapsed", self._on_collapsed)
+        self.split.connect("notify::show-content", self._on_show_content)
 
         self.toasts = Adw.ToastOverlay()
         self.toasts.set_child(self.split)
         self.set_content(self.toasts)
 
-        medium = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(MEDIUM))
-        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW))
-        narrow.add_setter(self.split, "collapsed", True)
-        self.add_breakpoint(medium)
-        self.add_breakpoint(narrow)
+        self._medium = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(MEDIUM))
+        self._medium.add_setter(self.split, "collapsed", True)
+        self._narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(NARROW))
+        self._narrow.add_setter(self.split, "collapsed", True)
+        self.add_breakpoint(self._medium)
+        self.add_breakpoint(self._narrow)
         self.connect("notify::current-breakpoint", lambda *_a: self._on_breakpoint())
         # After the sidebar's own handler, which picks the meeting to show.
         self.sidebar.search.connect("search-changed", self._on_search_changed)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_key)
+        self.add_controller(keys)
 
         self._install_actions()
         self.connect("close-request", self._on_close)
@@ -224,8 +230,14 @@ class Window(Adw.ApplicationWindow):
         self.stack.add_named(Gtk.Box(), "loading")
         self.stack.set_visible_child_name("loading")
 
+        # The search box comes here when the list is out of sight.
+        self.search_alone = Gtk.Box()
+        self.search_alone.add_css_class("search-alone")
+        self.search_alone.set_visible(False)
+
         view = Adw.ToolbarView()
         view.add_top_bar(header)
+        view.add_top_bar(self.search_alone)
         view.set_content(self.stack)
         self.content_page = Adw.NavigationPage.new(view, "Meeting")
         return self.content_page
@@ -310,7 +322,23 @@ class Window(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------------- layout
 
-    def _on_search_changed(self, _entry) -> None:
+    def _show_page_first(self) -> None:
+        """Half the screen wide, the list gets out of the meeting's way, and
+        so the keyboard has to leave it: on a list out of sight, it would
+        land on whatever GTK picks next (issue #20).
+        """
+        self.split.set_show_content(True)
+        focus = self.get_focus()
+        in_list = focus is None or focus.is_ancestor(self.sidebar)
+        if in_list and self.stack.get_visible_child_name() == "meeting":
+            self.meeting.focus_reading()
+
+    def _on_search_changed(self, entry) -> None:
+        # With the list hidden, nothing else would say that nothing matched.
+        missed = self.sidebar.query and not any(
+            isinstance(item, Session) for item in self.sidebar.items
+        )
+        (entry.add_css_class if missed else entry.remove_css_class)("error")
         self.meeting.show_search(self.sidebar.query)
         self._mark_title()
 
@@ -318,9 +346,15 @@ class Window(Adw.ApplicationWindow):
         mark_matches(self.page_title, words.search_phrase(self.sidebar.query))
 
     def _on_breakpoint(self) -> None:
-        stacked = self.get_current_breakpoint() is not None
-        self.meeting.set_stacked(stacked)
-        self.live.set_stacked(stacked)
+        current = self.get_current_breakpoint()
+        if current is None:
+            self.meeting.set_layout("wide")
+        elif current == self._narrow:
+            self.meeting.set_layout("stacked")
+        else:
+            self.meeting.set_layout("beside")
+            self._show_page_first()
+        self.live.set_stacked(current is not None)
         self._update_header()
 
     def _on_select(self, item) -> None:
@@ -506,6 +540,8 @@ class Window(Adw.ApplicationWindow):
             self._adopt_running_meeting()
         if self.stack.get_visible_child_name() == "loading":
             self._on_select(self.sidebar.selected)
+        if self.get_current_breakpoint() == self._medium:
+            self._show_page_first()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
 
         def settled() -> None:
@@ -632,8 +668,54 @@ class Window(Adw.ApplicationWindow):
         self.meeting.focus_reading()
 
     def _focus_search(self) -> None:
-        self.split.set_show_content(False)
+        if self.split.get_collapsed() and self.split.get_show_content():
+            self._show_search_alone()
+        else:
+            self.split.set_show_content(False)
         self.sidebar.search.grab_focus()
+
+    def _show_search_alone(self) -> None:
+        """The box without the list, so the meeting stays on screen and
+        follows the search."""
+        search = self.sidebar.search
+        if search.get_parent() is self.search_alone:
+            return
+        self._search_after = search.get_prev_sibling()
+        self.sidebar.remove(search)
+        search.set_hexpand(True)
+        self.search_alone.append(search)
+        self.search_alone.set_visible(True)
+        self.sidebar.on_search_left = self._leave_search_alone
+
+    def _return_search_to_list(self) -> None:
+        search = self.sidebar.search
+        if search.get_parent() is not self.search_alone:
+            return
+        self.search_alone.remove(search)
+        self.search_alone.set_visible(False)
+        self.sidebar.insert_child_after(search, self._search_after)
+        self.sidebar.on_search_left = None
+
+    def _leave_search_alone(self) -> None:
+        self._return_search_to_list()
+        if self.stack.get_visible_child_name() == "meeting":
+            self.meeting.focus_reading()
+
+    def _on_collapsed(self, *_args) -> None:
+        if not self.split.get_collapsed():
+            self._return_search_to_list()
+        self._update_header()
+
+    def _on_show_content(self, *_args) -> None:
+        if not self.split.get_show_content():
+            self._return_search_to_list()
+
+    def _on_key(self, _keys, key: int, _code: int, _state) -> bool:
+        """Esc anywhere on the page puts a search box out on its own away."""
+        if key != Gdk.KEY_Escape or self.sidebar.on_search_left is None:
+            return False
+        self.sidebar.search.emit("stop-search")
+        return True
 
     def _realign(self, session_dir: Path, done) -> None:
         """Run a re-timing pass on the engine's loop, and report back on GTK's.

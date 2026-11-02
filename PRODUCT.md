@@ -74,9 +74,11 @@ something trustworthy is keeping the record.
   feed answers unprompted. That was tried — auto-triggered responses — and cut,
   because a suggestion arriving mid-sentence competes with the conversation
   instead of supporting it. Guidance is pulled, never pushed.
-- **The IDE / cockpit:** no dockable panels, no dense multi-pane layout, no
-  status bar of counters. Whatever is on screen during a call must be readable
-  in a one-second glance by someone mid-sentence.
+- **The IDE / cockpit:** no dockable panels, and no dense multi-pane layout or
+  status bar of counters during a call. Whatever is on screen during a call must
+  be readable in a one-second glance by someone mid-sentence. A past meeting is
+  read afterwards, so its summary and transcript get fixed panels of their own,
+  which keep an item in view beside the line it came from.
 - (Adjacent, also avoid:) the note-taking app as filing system — folders, tags,
   backlinks, an organizational scheme to maintain. Meetings arrive on their own
   and are found by when they happened and what they were about.

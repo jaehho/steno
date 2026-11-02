@@ -28,7 +28,7 @@ gi.require_version("Graphene", "1.0")
 
 from gi.repository import Gdk, Graphene, Gtk
 
-from steno.gui.meeting import MeetingPage
+from steno.gui.meeting import SIDE_WIDTH, MeetingPage
 from steno.gui.style import FALLBACK, stylesheet
 from steno.gui.window import Window
 from steno.notes import ensure_todos, load_todos
@@ -147,6 +147,8 @@ def press(widget: Gtk.Widget, key: int) -> bool:
 class CitedMeeting(unittest.TestCase):
     """A window on a long meeting whose summary says where it was said."""
 
+    WIDTH = 0  # the window's own default
+
     def setUp(self):
         # PyGObject reports an exception in a signal handler or an idle
         # callback through sys.excepthook and carries on, so a handler
@@ -166,6 +168,8 @@ class CitedMeeting(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         self.window = Window(self.app, self.root)
+        if self.WIDTH:
+            self.window.set_default_size(self.WIDTH, 720)
         # The meetings, and the whole transcript, in the first frame, not
         # brought in by frames after it: every test here reads lines
         # anywhere in it, and Broadway with no browser draws one frame a
@@ -212,6 +216,57 @@ class CitedMeeting(unittest.TestCase):
 
     def scroll_top(self) -> None:
         scroller_of(self.page.transcript_list).get_vadjustment().set_value(0)
+
+
+class TestHalfTheScreen(CitedMeeting):
+    """A window at half the screen: the list hides and the page leads."""
+
+    WIDTH = 951
+
+    def test_it_opens_on_the_meeting_with_the_transcript_beside_the_summary(self):
+        self.assertEqual(self.page.layouts.get_layout_name(), "beside")
+        self.assertTrue(self.window.split.get_collapsed())
+        self.assertTrue(self.window.split.get_show_content())
+
+    def test_the_keyboard_is_on_the_page_not_the_list_out_of_sight(self):
+        self.assertTrue(wait_for(lambda: (
+            (focus := self.window.get_focus()) is not None
+            and focus.is_ancestor(self.page)
+        )))
+
+    def test_ctrl_f_shows_the_search_box_alone_and_keeps_the_meeting(self):
+        search = self.window.sidebar.search
+        home = search.get_parent()
+        self.window._focus_search()
+        self.assertTrue(self.window.split.get_show_content())
+        self.assertIs(search.get_parent(), self.window.search_alone)
+        self.assertTrue(self.window.search_alone.get_visible())
+
+        search.set_text("deposit")
+        self.window.sidebar._on_search(search)
+        search.emit("stop-search")
+
+        self.assertEqual(search.get_text(), "")
+        self.assertIs(search.get_parent(), home)
+        self.assertFalse(self.window.search_alone.get_visible())
+        self.assertTrue(self.window.split.get_show_content())
+
+    def test_the_back_arrow_takes_the_box_back_to_the_list(self):
+        search = self.window.sidebar.search
+        home = search.get_parent()
+        self.window._focus_search()
+        self.window.split.set_show_content(False)
+        self.assertIs(search.get_parent(), home)
+        self.assertIsNone(self.window.sidebar.on_search_left)
+
+
+class TestSidePanelWidth(CitedMeeting):
+    def test_a_long_to_do_does_not_widen_the_column(self):
+        side = find_css(self.page, "side-column")
+        self.assertTrue(wait_for(lambda: side.get_width() > 0))
+        # Less its border.
+        self.assertLessEqual(side.get_width(), SIDE_WIDTH)
+        self.assertGreater(self.page.transcript_list.get_width(), SIDE_WIDTH)
 
 
 class TestSummaryRows(CitedMeeting):
@@ -358,11 +413,37 @@ class TestChoosingAnItem(CitedMeeting):
         self.assertEqual(self.lit(), OPENING)
         self.assertEqual(adjustment.get_value(), 0)
 
+    def test_choosing_an_item_moves_the_transcript_and_not_the_summary(self):
+        for layout in ("wide", "beside"):
+            with self.subTest(layout=layout):
+                self.page.set_layout(layout)
+                panel = scroller_of(self.page.transcript_list)
+                reading = scroller_of(self.view)
+                self.assertIsNot(panel, reading)
+                adjustment = panel.get_vadjustment()
+                self.assertTrue(
+                    wait_for(lambda adj=adjustment: (
+                        self.page._rows[-1].get_height() > 0
+                        and adj.get_upper() > adj.get_page_size()
+                    )),
+                )
+                self.page._clear_cites()
+                panel.get_vadjustment().set_value(0)
+                before = reading.get_vadjustment().get_value()
+                click(self.item("deposit").mark)
+                self.assertTrue(
+                    wait_for(lambda: on_screen(self.page._rows[DEPOSIT[0]]))
+                )
+                self.assertGreater(panel.get_vadjustment().get_value(), 0)
+                self.assertEqual(reading.get_vadjustment().get_value(), before)
+
     def test_the_stacked_layout_scrolls_its_own_scroller(self):
         wide = scroller_of(self.page.transcript_list)
-        self.page.set_stacked(True)
+        self.page.set_layout("stacked")
         stacked = scroller_of(self.page.transcript_list)
         self.assertIsNot(stacked, wide)
+        self.assertIsNot(stacked, scroller_of(self.view))
+        self.assertIs(scroller_of(self.page.todo_box), scroller_of(self.view))
         adjustment = stacked.get_vadjustment()
         self.assertTrue(
             wait_for(
@@ -540,12 +621,12 @@ class TestTheBar(CitedMeeting):
         self.assertIs(self.bar.get_parent(), self.page)
 
     def test_the_transcript_gives_it_room_and_takes_it_back(self):
-        adjustment = scroller_of(self.page.transcript_list).get_vadjustment()
-        before = adjustment.get_page_size()
+        reading = self.page.layouts
+        before = reading.get_height()
 
         def taken() -> float:
             # The border box: get_height() leaves out the bar's padding.
-            return before - adjustment.get_page_size()
+            return before - reading.get_height()
 
         click(self.item("Ship").mark)
         bar = self.bar.get_allocation().height
@@ -1163,6 +1244,7 @@ class TestSidebarWidth(CitedMeeting):
         column may move for it.
         """
         split = self.window.split
+        self.page.set_layout("wide")
         side = find_css(self.page, "side-column")  # the to-do column
         self.assertIsNotNone(side)
         target = next(

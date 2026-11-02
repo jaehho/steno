@@ -178,6 +178,8 @@ class Sidebar(Gtk.Box):
         self.sessions: list[Session] = []
         self.items: list[Item] = []
         self.query = ""
+        # Set while the search box is shown without the list.
+        self.on_search_left: Callable[[], None] | None = None
         # Whether the archived meetings are in the list. Not kept: a
         # window that opens on its archive every time has no archive.
         self.show_archived = False
@@ -669,7 +671,16 @@ class Sidebar(Gtk.Box):
     def _on_stop_search(self, entry) -> None:
         """Esc in the search box: clear it, or with nothing left to
         clear, hand the keyboard to the selected row (issue #20). A
-        SearchEntry takes Esc as `stop-search` and never lets it go."""
+        SearchEntry takes Esc as `stop-search` and never lets it go.
+
+        Out on its own with the list hidden, the box has nothing to go
+        back to, so one Esc clears it and puts it away.
+        """
+        if self.on_search_left is not None:
+            entry.set_text("")
+            self._on_search(entry)
+            self.on_search_left()
+            return
         if entry.get_text():
             entry.set_text("")
             self._on_search(entry)
