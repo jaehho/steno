@@ -251,6 +251,15 @@ class TestHalfTheScreen(CitedMeeting):
         self.assertFalse(self.window.search_alone.get_visible())
         self.assertTrue(self.window.split.get_show_content())
 
+    def test_coming_back_from_the_list_puts_the_keyboard_on_the_page(self):
+        self.window.split.set_show_content(False)
+        settle()
+        self.window.split.set_show_content(True)
+        self.assertTrue(wait_for(lambda: (
+            (focus := self.window.get_focus()) is not None
+            and focus.is_ancestor(self.page)
+        )))
+
     def test_the_back_arrow_takes_the_box_back_to_the_list(self):
         search = self.window.sidebar.search
         home = search.get_parent()

@@ -327,15 +327,32 @@ class Window(Adw.ApplicationWindow):
     # ------------------------------------------------------------------- layout
 
     def _show_page_first(self) -> None:
-        """Half the screen wide, the list gets out of the meeting's way, and
-        so the keyboard has to leave it: on a list out of sight, it would
-        land on whatever GTK picks next (issue #20).
-        """
+        """Half the screen wide, the list gets out of the meeting's way."""
         self.split.set_show_content(True)
-        focus = self.get_focus()
-        in_list = focus is None or focus.is_ancestor(self.sidebar)
-        if in_list and self.stack.get_visible_child_name() == "meeting":
-            self.meeting.focus_reading()
+        self._keyboard_to_page()
+
+    def _keyboard_to_page(self) -> None:
+        """With the list gone the keyboard has to leave it, or GTK picks the
+        next thing it finds: the back arrow, where a stray Space or Enter
+        takes the meeting away again (issue #20). After the page has
+        settled, since showing it is when GTK moves the focus.
+        """
+        def move() -> bool:
+            focus = self.get_focus()
+            kept = focus is not None and (
+                focus.is_ancestor(self.meeting)
+                or focus.is_ancestor(self.search_alone)
+            )
+            if (
+                not kept
+                and self.split.get_collapsed()
+                and self.split.get_show_content()
+                and self.stack.get_visible_child_name() == "meeting"
+            ):
+                self.meeting.focus_reading()
+            return GLib.SOURCE_REMOVE
+
+        GLib.idle_add(move)
 
     def _step_match(self, delta: int) -> None:
         if self.stack.get_visible_child_name() == "meeting" and (
@@ -722,7 +739,9 @@ class Window(Adw.ApplicationWindow):
         self._update_header()
 
     def _on_show_content(self, *_args) -> None:
-        if not self.split.get_show_content():
+        if self.split.get_show_content():
+            self._keyboard_to_page()
+        else:
             self._return_search_to_list()
 
     def _on_key(self, _keys, key: int, _code: int, _state) -> bool:
