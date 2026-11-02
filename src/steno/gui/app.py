@@ -50,6 +50,8 @@ from ..retention import prune_audio
 from ..session import paused_until, set_pause
 from ..state import clear_state, write_state
 from ..summarize import sessions_root
+from ..sync import remote as sync_remote
+from ..sync import sync as sync_meetings
 from . import words
 from .bridge import EngineBridge
 from .rewrite import Rewriter
@@ -59,6 +61,10 @@ log = logging.getLogger(__name__)
 
 RECORDING_NOTIFICATION = "recording"
 REPUBLISH_S = 20
+# How often finished meetings are pushed, when STENO_SYNC_REMOTE is set. The
+# first push waits a minute so it does not compete with start-up.
+SYNC_FIRST_S = 60
+SYNC_EVERY_S = 600
 TRAY_ENV = "STENO_TRAY"
 # Failures that mean a meeting did not turn into notes (or could not start).
 # With the window closed, which is the usual state, a toast is never seen.
@@ -98,6 +104,7 @@ class App(Adw.Application):
         # edited in the window; lives as long as the app, not the window.
         self.rewriter = Rewriter(on_problem=self._notes_problem)
         self.tray: Tray | None = None
+        self._sync_workers: list[threading.Thread] = []
 
     # ------------------------------------------------------------------ startup
 
@@ -134,6 +141,7 @@ class App(Adw.Application):
         # can be swept, or overwritten by a second instance, and an indicator
         # stuck on `off` while the mic is open is the one lie it must not tell.
         GLib.timeout_add_seconds(REPUBLISH_S, self._republish)
+        GLib.timeout_add_seconds(SYNC_FIRST_S, self._sync_first)
 
     def do_activate(self) -> None:
         # `--background` is the autostart path: come up listening, silently,
@@ -385,6 +393,33 @@ class App(Adw.Application):
         the window if it is up, and in the log either way."""
         if text and self._window is not None:
             self._window._toast(text)
+
+    def _sync_first(self) -> bool:
+        self._sync_tick()
+        GLib.timeout_add_seconds(SYNC_EVERY_S, self._sync_tick)
+        return GLib.SOURCE_REMOVE
+
+    def _sync_tick(self) -> bool:
+        """Push finished meetings off the main thread. Never raises."""
+        if sync_remote() and not any(
+            w.is_alive() for w in self._sync_workers
+        ):
+            worker = threading.Thread(
+                target=self._sync_work, name="steno-sync", daemon=True
+            )
+            self._sync_workers = [worker]
+            worker.start()
+        return GLib.SOURCE_CONTINUE
+
+    @staticmethod
+    def _sync_work() -> None:
+        try:
+            result = sync_meetings()
+        except Exception:
+            log.exception("sync")
+            return
+        if result.pushed or result.failed:
+            log.info("sync: pushed %s, failed %s", result.pushed, result.failed)
 
     def _republish(self) -> bool:
         """Re-assert what we are doing, and notice a pause that has lapsed."""

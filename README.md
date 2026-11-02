@@ -501,6 +501,8 @@ and re-transcribes the far side in a single pass, which is both exact and
 usually more accurate than the live stream was; it prints the cost first and
 keeps the old transcript beside the new one. Newer recordings need none of this.
 
+**Syncing to a server.** Set `STENO_SYNC_REMOTE` in `~/.config/steno/.env` to an rclone remote and folder (`nextcloud:Steno/sessions`) and Steno pushes each finished meeting there, audio and transcript included and unencrypted, a minute after it starts and every ten minutes after. `steno sync` does it now and `steno sync --dry-run` lists what it would send. Unset, nothing is sent and nothing here applies. The remote is an archive: the push only adds and replaces, so `STENO_KEEP_AUDIO_DAYS` and deleting a meeting stay on this machine. A meeting being recorded, or written to in the last five minutes, waits for the next round, and `meta.json` is uploaded last so a reader can take its presence to mean the meeting is complete. Whoever can read that folder can read your meetings; the project-notes warning about synced folders applies to it too. (Decision: issue #37.)
+
 An hour of meeting is roughly 200 MB of audio. Set
 `STENO_KEEP_AUDIO_DAYS=30` in your `.env` to drop the WAVs after a month and
 keep the text; it is off by default, and it will never touch a session whose

@@ -35,6 +35,7 @@ from . import (
     model_default,
     projectnotes,
 )
+from . import sync as meeting_sync
 from .brief import BRIEF_FILENAME, brief_age_days, estimate_tokens, load_brief
 from .claude import check_ready
 from .control import activate, show, toggle_record
@@ -104,6 +105,11 @@ DEEPGRAM_API_KEY=
 # Optional. 0 stops steno copying a meeting's summary and transcript into
 # its project's notes/meetings folder. On by default.
 # STENO_PROJECT_NOTES=0
+
+# Optional. An rclone remote and folder to push finished meetings to, audio
+# included and unencrypted: STENO_SYNC_REMOTE=nextcloud:Steno/sessions
+# Unset (the default), nothing leaves this machine. `steno sync` runs it now.
+# STENO_SYNC_REMOTE=
 
 # Optional. Any value stops steno running `asst`: no to-do is filed, ticked
 # or removed in the task app. For scratch runs; "0" does not undo it.
@@ -275,6 +281,30 @@ def cmd_status(_args: argparse.Namespace) -> None:
     # The same one line the app logs at startup: what the bar and
     # swaync will find when they resolve the app icon.
     print(f"icon: {icon_host_report(icon_theme_dir())}")
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    """Push finished meetings to the remote in STENO_SYNC_REMOTE."""
+    result = meeting_sync.sync(dry_run=args.dry_run)
+    if result.off:
+        print(f"sync is off: set {meeting_sync.REMOTE_ENV} in "
+              "~/.config/steno/.env (an rclone remote and folder)")
+        return
+    if result.locked:
+        print("another sync is running")
+        return
+    verb, tally = ("would push", "to push") if args.dry_run else ("pushed", "pushed")
+    for name in result.pushed:
+        print(f"{verb} {name}")
+    for name in result.busy:
+        print(f"waiting {name} (still recording or written to a moment ago)")
+    for name, why in result.failed.items():
+        print(f"failed  {name}: {why}")
+    print(f"{len(result.pushed)} {tally}, "
+          f"{result.unchanged} unchanged, {len(result.busy)} waiting, "
+          f"{len(result.failed)} failed")
+    if result.failed:
+        sys.exit(1)
 
 
 def cmd_pause(args: argparse.Namespace) -> None:
@@ -1369,6 +1399,13 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
         "status", help="Pause state, archived and unsummarized sessions"
     )
     p_status.set_defaults(func=cmd_status)
+
+    p_sync = sub.add_parser(
+        "sync", help="Push finished meetings to STENO_SYNC_REMOTE (rclone)"
+    )
+    p_sync.add_argument("--dry-run", action="store_true",
+                        help="List what would be pushed; send nothing")
+    p_sync.set_defaults(func=cmd_sync)
 
     p_pause = sub.add_parser("pause", help="Suspend meeting detection for a while")
     p_pause.add_argument("duration", nargs="?", default="60m",
