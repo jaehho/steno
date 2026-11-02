@@ -35,6 +35,7 @@ LINES = 200
 HIT = 150
 FOLLOWED = 120
 NEEDLE = "zanzibar"
+FOUND = (20, 90, 180)
 MEETINGS = {"20260110-090000": "Long", "20260111-090000": "Short"}
 
 
@@ -203,6 +204,93 @@ class TestTranscriptScroll(OnTheShortMeeting):
         self.assertFalse(start.has_tag(notes._hit_tag))
         self.assertIsNone(self.window.page_title.get_attributes())
         self.assertFalse(notes._dirty)
+
+    def test_n_steps_through_the_matches_and_round_again(self):
+        folder = self.root / "20260110-090000"
+        records = [
+            {"speaker": "them", "text": f"{NEEDLE} at {n}" if n in FOUND else f"line {n}",
+             "ts": 1000.0 + 5 * n}
+            for n in range(LINES)
+        ]
+        (folder / "transcript.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records)
+        )
+        self.window.sidebar.refresh()
+        sidebar = self.window.sidebar
+        sidebar.search.set_text(NEEDLE)
+        self.assertTrue(
+            wait_for(lambda: [i.title for i in sidebar.items] == ["Long"])
+        )
+        sidebar.list.select_row(sidebar.list.get_row_at_index(0))
+        page = self.page
+        self.assertEqual(page._hits, list(FOUND))
+        self.assertEqual(page.match_note(), "match 1 of 3 (n, N)")
+        current = page._rows[FOUND[0]]
+        self.assertTrue(current.has_css_class("line-hit-current"))
+
+        self.window._step_match(1)
+        self.assertEqual(page.match_note(), "match 2 of 3 (n, N)")
+        self.assertIn("match 2 of 3", self.window.page_subtitle.get_text())
+        self.assertFalse(current.has_css_class("line-hit-current"))
+        following = page._rows[FOUND[1]]
+        self.assertTrue(following.has_css_class("line-hit-current"))
+        self.assertTrue(wait_for(lambda: on_screen(following)))
+
+        self.window._step_match(-1)
+        self.window._step_match(-1)
+        self.assertEqual(page.match_note(), "match 3 of 3 (n, N)")
+        self.assertTrue(wait_for(lambda: on_screen(page._rows[FOUND[2]])))
+
+        self.window.sidebar.search.set_text("")
+        self.assertTrue(wait_for(lambda: page.match_note() == ""))
+        self.assertNotIn("match", self.window.page_subtitle.get_text())
+        self.assertFalse(page._rows[FOUND[2]].has_css_class("line-hit-current"))
+        self.assertFalse(page.step_hit(1))
+
+    def press(self, key: int, state: Gdk.ModifierType | None = None) -> bool:
+        settle()
+        return self.window._on_key(
+            None, key, 0, state or Gdk.ModifierType(0)
+        )
+
+    def test_the_vim_keys_are_only_keys_while_you_are_typing(self):
+        self.open_long_meeting()
+        page, sidebar = self.page, self.window.sidebar
+        self.window.set_focus(sidebar.search)
+        self.assertFalse(self.press(Gdk.KEY_n))
+        self.assertFalse(self.press(Gdk.KEY_slash))
+        self.window.set_focus(page.notes.view)
+        self.assertFalse(self.press(Gdk.KEY_n))
+
+        page.focus_reading()
+        self.assertTrue(self.press(Gdk.KEY_n))
+        self.assertTrue(self.press(Gdk.KEY_N))
+        self.assertFalse(self.press(Gdk.KEY_n, Gdk.ModifierType.CONTROL_MASK))
+
+    def test_n_is_an_ordinary_key_with_no_search(self):
+        self.window.set_focus(self.page.transcript_list)
+        self.assertFalse(self.press(Gdk.KEY_n))
+
+    def test_slash_goes_to_the_search_box(self):
+        self.page.focus_reading()
+        self.assertTrue(self.press(Gdk.KEY_slash))
+        focus = self.window.get_focus()
+        self.assertTrue(focus.is_ancestor(self.window.sidebar.search))
+
+    def test_esc_on_the_page_clears_the_search(self):
+        self.open_long_meeting()
+        self.page.focus_reading()
+        escape = self.window._on_escape
+        self.assertTrue(escape(None, Gdk.KEY_Escape, 0, 0))
+        self.assertEqual(self.window.sidebar.search.get_text(), "")
+        self.assertFalse(escape(None, Gdk.KEY_Escape, 0, 0))
+
+    def test_esc_stays_with_the_notes_while_you_type_in_them(self):
+        self.open_long_meeting()
+        self.window.set_focus(self.page.notes.view)
+        settle()
+        self.assertFalse(self.window._on_escape(None, Gdk.KEY_Escape, 0, 0))
+        self.assertNotEqual(self.window.sidebar.search.get_text(), "")
 
     def test_a_search_hit_is_scrolled_to(self):
         scroller = self.open_long_meeting()

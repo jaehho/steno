@@ -171,6 +171,7 @@ class MeetingPage(Gtk.Box):
         # it; both shown on the page wherever the words occur.
         self._search_phrase = ""
         self._hits: list[int] = []
+        self._hit_at = -1  # the one in `_hits` the page was last taken to
         # What was last asked where it was said, and the lines that answer.
         self._active: CiteSource | None = None
         self._cited: list[int] = []
@@ -421,6 +422,7 @@ class MeetingPage(Gtk.Box):
         self.show_search(query)
         if not self._hits:
             return
+        self._set_hit(0)
         first = self._hits[0]
         # The rows were only just added, and the page may not be on screen
         # yet. The frame clock lays them out when it next runs, which can
@@ -440,6 +442,7 @@ class MeetingPage(Gtk.Box):
             if i < len(self._rows):
                 self._rows[i].remove_css_class("line-hit")
                 _line_text(self._rows[i]).set_attributes(None)
+        self._clear_hit()
         self._hits = []
         self._search_phrase = words.search_phrase(query)
         for i, record in enumerate(self._records):
@@ -451,6 +454,38 @@ class MeetingPage(Gtk.Box):
         for label in self._todo_labels:
             mark_matches(label, self._search_phrase)
         self.notes.mark(self._search_phrase)
+
+    def match_note(self) -> str:
+        """Which match the page is on, for the header, which stays in view
+        when a jump scrolls the transcript's heading away."""
+        if self._hit_at < 0:
+            return ""
+        return f"match {self._hit_at + 1} of {len(self._hits)} (n, N)"
+
+    def step_hit(self, delta: int) -> bool:
+        """Take the transcript to the next or previous line the search hit,
+        round to the other end. False if there are none to go to.
+        """
+        if not self._hits:
+            return False
+        self._set_hit((self._hit_at + delta) % len(self._hits))
+        row = self._rows[self._hits[self._hit_at]]
+        give_up = GLib.get_monotonic_time() + JUMP_GIVE_UP_US
+        if self._scroll_to_row(row, give_up):
+            GLib.timeout_add(JUMP_POLL_MS, self._scroll_to_row, row, give_up)
+        return True
+
+    def _set_hit(self, index: int) -> None:
+        self._clear_hit()
+        self._hit_at = index
+        self._rows[self._hits[index]].add_css_class("line-hit-current")
+
+    def _clear_hit(self) -> None:
+        if 0 <= self._hit_at < len(self._hits):
+            row = self._hits[self._hit_at]
+            if row < len(self._rows):
+                self._rows[row].remove_css_class("line-hit-current")
+        self._hit_at = -1
 
     def _mark_summary(self) -> None:
         for label in self.summary_view.labels:
@@ -484,8 +519,8 @@ class MeetingPage(Gtk.Box):
         (issue #20). Never "Summarize now": one stray Enter there is a
         paid call.
         """
-        hit = next(
-            (r for r in self._rows if r.has_css_class("line-hit")), None
+        hit = (
+            self._rows[self._hits[self._hit_at]] if self._hit_at >= 0 else None
         )
         if hit is not None:
             self._attach_through(hit)

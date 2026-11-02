@@ -166,6 +166,10 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
         background: alpha({colors['yellow']}, 0.18);
         box-shadow: inset 2px 0 0 {colors['yellow']};
     }}
+    list.transcript-past row.line-hit-current {{
+        box-shadow: inset 2px 0 0 {colors['yellow']};
+        background: {colors['surface0']};
+    }}
     list.transcript-past row.line-cited:hover {{
         background: alpha({colors['yellow']}, 0.26);
     }}

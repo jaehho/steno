@@ -65,7 +65,12 @@ NARROW = "max-width: 600sp"
 ARRIVE_MS = 240
 
 SHORTCUTS = (
-    ("Ctrl+F", "Search meetings"),
+    ("/ or Ctrl+F", "Search meetings"),
+    ("Enter in search", "Go to the match, keyboard on the page"),
+    ("n / N", "Next or previous match in the transcript"),
+    ("Ctrl+N / Ctrl+P", "The same, while still typing in search"),
+    ("Up / Down in search", "Previous or next meeting with a match"),
+    ("Esc", "Clear the search"),
     ("Ctrl+G", "Ask about this meeting"),
     ("Ctrl+R", "Start or stop recording"),
     ("Ctrl+Space", "Play or pause a past meeting"),
@@ -146,6 +151,11 @@ class Window(Adw.ApplicationWindow):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
+        escape = Gtk.EventControllerKey()
+        # Before the split view, which takes Esc as the back arrow.
+        escape.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        escape.connect("key-pressed", self._on_escape)
+        self.add_controller(escape)
 
         self._install_actions()
         self.connect("close-request", self._on_close)
@@ -280,6 +290,8 @@ class Window(Adw.ApplicationWindow):
         add("shortcuts", self._show_shortcuts, ["<Control>question"])
         add("ask", self._focus_ask, ["<Control>g"])
         add("find", self._focus_search, ["<Control>f"])
+        add("next-match", lambda: self._step_match(1), ["<Control>n"])
+        add("previous-match", lambda: self._step_match(-1), ["<Control>p"])
         add("toggle-record", self.app.toggle_record, ["<Control>r"])
         add("play", self._toggle_play, ["<Control>space"])
         add("zoom-in", lambda: self._zoom(1), ["<Control>plus", "<Control>equal"])
@@ -323,15 +335,42 @@ class Window(Adw.ApplicationWindow):
     # ------------------------------------------------------------------- layout
 
     def _show_page_first(self) -> None:
-        """Half the screen wide, the list gets out of the meeting's way, and
-        so the keyboard has to leave it: on a list out of sight, it would
-        land on whatever GTK picks next (issue #20).
-        """
+        """Half the screen wide, the list gets out of the meeting's way."""
         self.split.set_show_content(True)
-        focus = self.get_focus()
-        in_list = focus is None or focus.is_ancestor(self.sidebar)
-        if in_list and self.stack.get_visible_child_name() == "meeting":
-            self.meeting.focus_reading()
+        self._keyboard_to_page()
+
+    def _keyboard_to_page(self) -> None:
+        """With the list gone the keyboard has to leave it, or GTK picks the
+        next thing it finds: the back arrow, where a stray Space or Enter
+        takes the meeting away again (issue #20). After the page has
+        settled, since showing it is when GTK moves the focus.
+        """
+        def move() -> bool:
+            focus = self.get_focus()
+            kept = focus is not None and (
+                focus.is_ancestor(self.meeting)
+                or focus.is_ancestor(self.search_alone)
+            )
+            if (
+                not kept
+                and self.split.get_collapsed()
+                and self.split.get_show_content()
+                and self.stack.get_visible_child_name() == "meeting"
+            ):
+                self.meeting.focus_reading()
+            return GLib.SOURCE_REMOVE
+
+        GLib.idle_add(move)
+
+    def _step_match(self, delta: int) -> None:
+        if self.stack.get_visible_child_name() == "meeting" and (
+            self.meeting.step_hit(delta)
+        ):
+            self.split.set_show_content(True)
+            self._update_header()
+            # Enter and Space then act on the match the page is showing.
+            if not self._typing():
+                self.meeting.focus_reading()
 
     def _on_search_changed(self, entry) -> None:
         # With the list hidden, nothing else would say that nothing matched.
@@ -339,8 +378,10 @@ class Window(Adw.ApplicationWindow):
             isinstance(item, Session) for item in self.sidebar.items
         )
         (entry.add_css_class if missed else entry.remove_css_class)("error")
-        self.meeting.show_search(self.sidebar.query)
-        self._mark_title()
+        # A search that stays on this meeting moves the page too: no new
+        # selection would do it.
+        self.meeting.jump_to(self.sidebar.query)
+        self._update_header()
 
     def _mark_title(self) -> None:
         mark_matches(self.page_title, words.search_phrase(self.sidebar.query))
@@ -392,6 +433,8 @@ class Window(Adw.ApplicationWindow):
             subtitle = words.page_subtitle(
                 item.start, item.minutes, item.project, item.archived
             )
+            if note := self.meeting.match_note():
+                subtitle = f"{subtitle} · {note}"
         elif item == LIVE:
             title = "Meeting in progress"
             started = datetime.fromtimestamp(self._live_started)
@@ -707,15 +750,49 @@ class Window(Adw.ApplicationWindow):
         self._update_header()
 
     def _on_show_content(self, *_args) -> None:
-        if not self.split.get_show_content():
+        if self.split.get_show_content():
+            self._keyboard_to_page()
+        else:
             self._return_search_to_list()
 
-    def _on_key(self, _keys, key: int, _code: int, _state) -> bool:
-        """Esc anywhere on the page puts a search box out on its own away."""
-        if key != Gdk.KEY_Escape or self.sidebar.on_search_left is None:
+    def _typing(self) -> bool:
+        """Whether a plain key press belongs to whatever has the keyboard."""
+        focus = self.get_focus()
+        return self.get_visible_dialog() is not None or (
+            focus is not None and (
+                isinstance(focus, Gtk.Editable | Gtk.TextView)
+                or focus.get_ancestor(Gtk.Popover) is not None
+            )
+        )
+
+    def _on_escape(self, _keys, key: int, _code: int, _state) -> bool:
+        """Esc clears a search from the page too, and puts away a box out
+        on its own. Other text fields and dialogs keep it for themselves.
+        """
+        search = self.sidebar.search
+        if key != Gdk.KEY_Escape or not (
+            self.sidebar.query or self.sidebar.on_search_left is not None
+        ):
             return False
-        self.sidebar.search.emit("stop-search")
+        focus = self.get_focus()
+        in_search = focus is not None and focus.is_ancestor(search)
+        if self._typing() and not in_search:
+            return False
+        search.emit("stop-search")
         return True
+
+    def _on_key(self, _keys, key: int, _code: int, state) -> bool:
+        """The search keys from vim: `/`, `n` and `N`, unless you are typing."""
+        modifiers = state & Gtk.accelerator_get_default_mod_mask()
+        if modifiers & ~Gdk.ModifierType.SHIFT_MASK or self._typing():
+            return False
+        if key == Gdk.KEY_slash:
+            self._focus_search()
+            return True
+        if key in (Gdk.KEY_n, Gdk.KEY_N) and self.meeting.match_note():
+            self._step_match(1 if key == Gdk.KEY_n else -1)
+            return True
+        return False
 
     def _realign(self, session_dir: Path, done) -> None:
         """Run a re-timing pass on the engine's loop, and report back on GTK's.
