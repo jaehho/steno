@@ -12,7 +12,9 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk, Pango
 
 from ..notes import load_notes, save_notes
+from . import words
 from .askmodel import AskModelButton
+from .style import palette
 
 NOTES_AUTOSAVE_S = 3
 
@@ -55,6 +57,27 @@ def wrapping_label(text: str = "", selectable: bool = True) -> Gtk.Label:
     return label
 
 
+def mark_matches(label: Gtk.Label, phrase: str) -> None:
+    """Highlight `phrase` where it occurs in `label`; none clears it.
+
+    Attributes sit on top of the label's markup and leave its text alone.
+    """
+    text = label.get_text()
+    spans = words.byte_spans(text, words.match_spans(text, phrase))
+    if not spans:
+        label.set_attributes(None)
+        return
+    colors = palette()
+    label.set_attributes(Pango.AttrList.from_string("\n".join(
+        f"{start} {end} {name} {value}"
+        for start, end in spans
+        for name, value in (
+            ("background", colors["yellow"]),
+            ("foreground", colors["crust"]),
+        )
+    )))
+
+
 class NotesBox(Gtk.Overlay):
     """The user's notes for one meeting: a plain sheet, saved as they type.
 
@@ -78,6 +101,13 @@ class NotesBox(Gtk.Overlay):
         self.view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.view.add_css_class("notes")
         self.view.get_buffer().connect("changed", self._on_changed)
+        colors = palette()
+        self._hit_tag = self.view.get_buffer().create_tag(
+            "search-hit",
+            background=colors["yellow"],
+            foreground=colors["crust"],
+        )
+        self._phrase = ""
 
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -110,10 +140,32 @@ class NotesBox(Gtk.Overlay):
         buf.handler_unblock_by_func(self._on_changed)
         self.hint.set_visible(buf.get_char_count() == 0)
         self._dirty = False
+        self._apply_marks()
+
+    def mark(self, phrase: str) -> None:
+        """Highlight a search in the notes. A tag is no change to the
+        text, so it neither saves nor reaches `notes.md`.
+        """
+        self._phrase = phrase
+        self._apply_marks()
+
+    def _apply_marks(self) -> None:
+        buf = self.view.get_buffer()
+        start, end = buf.get_bounds()
+        buf.remove_tag(self._hit_tag, start, end)
+        for first, last in words.match_spans(
+            buf.get_text(start, end, True), self._phrase
+        ):
+            buf.apply_tag(
+                self._hit_tag,
+                buf.get_iter_at_offset(first),
+                buf.get_iter_at_offset(last),
+            )
 
     def _on_changed(self, buf) -> None:
         self._dirty = True
         self.hint.set_visible(buf.get_char_count() == 0)
+        self._apply_marks()
         if self._timer is None:
             self._timer = GLib.timeout_add_seconds(NOTES_AUTOSAVE_S, self._autosave)
 

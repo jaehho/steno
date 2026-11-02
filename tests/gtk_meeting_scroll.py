@@ -27,7 +27,7 @@ gi.require_version("Graphene", "1.0")
 
 from gi.repository import Gdk, GLib, Graphene, Gtk
 
-from steno.gui.meeting import FIRST_LINES, LINES_PER_FRAME, MeetingPage
+from steno.gui.meeting import FIRST_LINES, LINES_PER_FRAME, MeetingPage, _line_text
 from steno.gui.window import Window
 from tests.gtk_sidebar_menu import StubApp, settle
 
@@ -154,6 +154,55 @@ class TestTranscriptScroll(OnTheShortMeeting):
             "the transcript was never laid out",
         )
         return scroller
+
+    def test_the_searched_word_is_lit_and_cleared_with_the_search(self):
+        self.open_long_meeting()
+        label = _line_text(self.page._rows[HIT])
+        lit = label.get_attributes().to_string()
+        self.assertIn(f"0 {len(NEEDLE)} background", lit)
+        self.assertIsNone(_line_text(self.page._rows[0]).get_attributes())
+        self.window.sidebar.search.set_text("")
+        self.assertTrue(wait_for(lambda: label.get_attributes() is None))
+        self.assertEqual(self.page._hits, [])
+
+    def test_the_searched_word_is_lit_in_the_summary(self):
+        (self.root / "20260110-090000" / "summary.md").write_text(
+            f"# Long\n\n## Decisions\n\n- We picked {NEEDLE} today\n"
+        )
+        self.open_long_meeting()
+        lit = [
+            label for label in self.page.summary_view.labels
+            if label.get_attributes() is not None
+        ]
+        self.assertEqual(len(lit), 1)
+        self.assertIn(NEEDLE, lit[0].get_text())
+
+    def test_the_search_is_lit_in_the_title_to_dos_and_notes(self):
+        folder = self.root / "20260110-090000"
+        (folder / "todos.json").write_text(json.dumps(
+            [{"text": f"check {NEEDLE} first", "owner": "you"}]
+        ))
+        (folder / "notes.md").write_text(f"ask about {NEEDLE}\n")
+        self.window.sidebar.refresh()
+        self.open_long_meeting()
+        self.window.page_title.set_text(f"Long {NEEDLE}")
+        self.window._mark_title()
+        notes = self.page.notes
+        buf = notes.view.get_buffer()
+        start = buf.get_iter_at_offset(len("ask about "))
+        self.assertTrue(start.has_tag(notes._hit_tag))
+        self.assertFalse(buf.get_start_iter().has_tag(notes._hit_tag))
+        self.assertFalse(notes._dirty)
+        self.assertIsNotNone(self.page._todo_labels[0].get_attributes())
+        self.assertIsNotNone(self.window.page_title.get_attributes())
+
+        self.window.sidebar.search.set_text("")
+        self.assertTrue(
+            wait_for(lambda: self.page._todo_labels[0].get_attributes() is None)
+        )
+        self.assertFalse(start.has_tag(notes._hit_tag))
+        self.assertIsNone(self.window.page_title.get_attributes())
+        self.assertFalse(notes._dirty)
 
     def test_a_search_hit_is_scrolled_to(self):
         scroller = self.open_long_meeting()

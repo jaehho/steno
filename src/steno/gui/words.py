@@ -415,6 +415,31 @@ def cite_places(
     return sorted(places.values(), key=lambda place: place.rows[0])
 
 
+def search_phrase(query: str) -> str:
+    """What a search looks for: the words as typed, in order, together."""
+    return " ".join(query.split())
+
+
+def match_spans(text: str, phrase: str) -> list[tuple[int, int]]:
+    """Where `phrase` occurs in `text`, by character.
+
+    Case is ignored, and so is how the words are spaced, since a note or a
+    summary can break a line between them.
+    """
+    if not phrase:
+        return []
+    pattern = r"\s+".join(re.escape(word) for word in phrase.split())
+    return [m.span() for m in re.finditer(pattern, text, re.IGNORECASE)]
+
+
+def byte_spans(text: str, spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Character spans as UTF-8 byte offsets, which is what Pango counts."""
+    return [
+        (len(text[:start].encode()), len(text[:end].encode()))
+        for start, end in spans
+    ]
+
+
 def escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 

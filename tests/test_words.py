@@ -2,6 +2,7 @@
 """The window's wording, worked out without a display."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import datetime
@@ -299,6 +300,38 @@ class TestCitePlaces(unittest.TestCase):
         self.assertTrue(place.quote.endswith("word…"), place.quote)
 
 
+
+class TestSearchMatches(unittest.TestCase):
+    def test_finds_every_occurrence_whatever_its_case(self):
+        self.assertEqual(
+            words.match_spans("Budget and budget", "budget"), [(0, 6), (11, 17)]
+        )
+
+    def test_two_words_are_one_phrase(self):
+        self.assertEqual(
+            words.match_spans("the budget review, not review budget", "budget review"),
+            [(4, 17)],
+        )
+
+    def test_spacing_between_the_words_does_not_matter(self):
+        self.assertEqual(words.match_spans("budget\n  review", "budget review"), [(0, 15)])
+
+    def test_the_query_is_taken_literally(self):
+        self.assertEqual(words.match_spans("a.b axb", "a.b"), [(0, 3)])
+
+    def test_no_phrase_means_no_spans(self):
+        self.assertEqual(words.match_spans("anything", ""), [])
+
+    def test_a_typed_query_loses_only_its_extra_spaces(self):
+        self.assertEqual(words.search_phrase("  Budget   review "), "Budget review")
+
+    def test_pango_counts_bytes(self):
+        text = "café budget"
+        self.assertEqual(
+            words.byte_spans(text, words.match_spans(text, "budget")), [(6, 12)]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -358,9 +391,22 @@ class TestSearchLocate(unittest.TestCase):
         self.assertFalse(self.session.matches("quantum"))
         self.assertTrue(self.session.matches(""))
 
-    def test_all_words_must_match(self):
-        self.assertTrue(self.session.matches("budget fine"))
-        self.assertFalse(self.session.matches("budget quantum"))
+    def test_two_words_must_be_together_and_in_order(self):
+        self.assertTrue(self.session.matches("budget is fine"))
+        self.assertFalse(self.session.matches("fine budget"))
+        self.assertFalse(self.session.matches("budget roadmap"))
+
+    def test_a_phrase_reads_through_bold_in_the_summary(self):
+        (self.dir / "summary.md").write_text("# Chat\n\nThe **quarterly** plan.")
+        session = type(self.session)(self.dir)
+        self.assertEqual(session.locate("quarterly plan")["where"], "summary")
+
+    def test_to_do_hit_is_labelled(self):
+        (self.dir / "todos.json").write_text(json.dumps(
+            [{"text": "renew the certificate", "owner": "you"}]
+        ))
+        session = type(self.session)(self.dir)
+        self.assertEqual(session.locate("renew the")["where"], "to-dos")
 
 
 class TestSummaryMissing(unittest.TestCase):
