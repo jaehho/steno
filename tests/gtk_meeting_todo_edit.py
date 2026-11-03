@@ -393,11 +393,13 @@ class TestRemoving(TodoEditCase):
 
 
 class TestAdding(TodoEditCase):
-    def test_it_is_at_the_end_of_the_section(self):
-        last = self.page.todo_box.get_last_child()
-        self.assertIs(last, self.page.add_todo_button)
+    def test_it_closes_your_group_not_the_list(self):
+        """Under "Waiting on them" it read as adding to theirs."""
+        add = self.page.add_todo_button
+        self.assertIs(add.get_prev_sibling(), self.row(DRAFT))
+        self.assertEqual(add.get_next_sibling().get_label(), "Waiting on them")
         labels_ = [
-            w.get_label() for w in walk(last) if isinstance(w, Gtk.Label)
+            w.get_label() for w in walk(add) if isinstance(w, Gtk.Label)
         ]
         self.assertEqual(labels_, ["Add a to-do"])
 
@@ -421,7 +423,8 @@ class TestAdding(TodoEditCase):
             ))
         )
         self.assertIs(
-            self.page.todo_box.get_last_child(), self.page.add_todo_button
+            self.page.add_todo_button.get_prev_sibling(),
+            self.row("Email the committee"),
         )
 
     def test_focus_is_on_the_new_row_and_stays_when_it_comes_back_filed(self):

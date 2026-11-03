@@ -943,15 +943,17 @@ class MeetingPage(Gtk.Box):
                 note = hint_label(line)
                 note.set_wrap(True)
                 self.todo_box.append(note)
-        if yours:
+        # Add files one of yours, so it closes your group, not the list:
+        # under "Waiting on them" it would read as adding to theirs.
+        if yours or not s.archived:
             self.todo_box.append(self._group_label("For you"))
             for todo in yours:
                 self.todo_box.append(self._todo_row(s, todo))
+            self._append_add_row(s)
         if theirs:
             self.todo_box.append(self._group_label("Waiting on them"))
             for todo in theirs:
                 self.todo_box.append(self._todo_row(s, todo))
-        self._append_add_row(s)
         self._keep_todo_cite()
 
     def _append_add_row(self, s: Session) -> None:
