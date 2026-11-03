@@ -85,7 +85,7 @@ class TestRequestShape(Keyed):
         with self.serve(_resp('{"a": null}'), seen=seen):
             out = asyncio.run(claude.run_structured(
                 "p", system="s", model="@preset/x", schema=schema, timeout=5))
-        self.assertEqual(out, {"a": None})
+        self.assertEqual(out.content, {"a": None})
         req = seen[0]
         self.assertEqual(req["model"], "@preset/x")
         self.assertEqual([m["role"] for m in req["messages"]], ["system", "user"])
@@ -100,7 +100,7 @@ class TestStructured(Keyed):
     def test_string_content(self):
         with self.serve(_resp('{"a": "x"}')):
             self.assertEqual(asyncio.run(claude.run_structured(
-                "p", system="s", model="m", schema=SCHEMA, timeout=5)), {"a": "x"})
+                "p", system="s", model="m", schema=SCHEMA, timeout=5)).content, {"a": "x"})
 
     def test_parts_join_and_reasoning_ignored(self):
         body = _completion([{"type": "text", "text": '{"a": '},
@@ -108,19 +108,29 @@ class TestStructured(Keyed):
                            reasoning="thinking out loud")
         with self.serve(httpx.Response(200, json=body)):
             self.assertEqual(asyncio.run(claude.run_structured(
-                "p", system="s", model="m", schema=SCHEMA, timeout=5)), {"a": "x"})
+                "p", system="s", model="m", schema=SCHEMA, timeout=5)).content, {"a": "x"})
+
+    def test_the_model_is_the_one_the_host_names(self):
+        named = httpx.Response(200, json={**_completion('{"a": "x"}'),
+                                          "model": "anthropic/claude-sonnet-5.5"})
+        for resp, model in ((named, "anthropic/claude-sonnet-5.5"),
+                            (_resp('{"a": "x"}'), "m")):
+            with self.serve(resp):
+                self.assertEqual(asyncio.run(claude.run_structured(
+                    "p", system="s", model="m", schema=SCHEMA,
+                    timeout=5)).model, model)
 
     def test_fenced_content_parses(self):
         with self.serve(_resp('```json\n{"a": "x"}\n```')):
             self.assertEqual(asyncio.run(claude.run_structured(
-                "p", system="s", model="m", schema=SCHEMA, timeout=5)), {"a": "x"})
+                "p", system="s", model="m", schema=SCHEMA, timeout=5)).content, {"a": "x"})
 
 
 class TestRetries(Keyed):
     def test_429_then_success(self):
         with self.serve(httpx.Response(429, json={}), _resp('{"a": "x"}')):
             self.assertEqual(asyncio.run(claude.run_structured(
-                "p", system="s", model="m", schema=SCHEMA, timeout=5)), {"a": "x"})
+                "p", system="s", model="m", schema=SCHEMA, timeout=5)).content, {"a": "x"})
 
     def test_empty_content_is_retried_then_raises(self):
         with (self.serve(_resp("")),
@@ -236,7 +246,7 @@ class TestToolLoop(Keyed):
         with mock.patch.object(claude, "_transport", httpx.MockTransport(handler)):
             out = asyncio.run(claude.run_structured(
                 "p", system="s", model="m", schema=SCHEMA, read_root=projects, timeout=5))
-        self.assertEqual(out, {"a": "x"})
+        self.assertEqual(out.content, {"a": "x"})
         tools = [m for m in seen[1]["messages"] if m["role"] == "tool"]
         self.assertTrue(tools[0]["content"].startswith("error:"))
 
@@ -295,7 +305,7 @@ class TestToolLoop(Keyed):
         with mock.patch.object(claude, "_transport", httpx.MockTransport(handler)):
             out = asyncio.run(claude.run_structured(
                 "p", system="s", model="m", schema=SCHEMA, read_root=projects, timeout=5))
-        self.assertEqual(out, {"a": "x"})
+        self.assertEqual(out.content, {"a": "x"})
         self.assertEqual(len(seen), claude.MAX_TOOL_ROUNDS + 1)
         self.assertNotIn("tools", seen[-1])
 
@@ -369,6 +379,34 @@ class TestProjects(unittest.TestCase):
         self.assertEqual(load_project(session), "thesis")
 
 
+class TestEffort(Keyed):
+    def test_the_effort_goes_with_every_kind_of_call(self):
+        seen = []
+        env = {"STENO_PROVIDER": "openrouter", "STENO_EFFORT": ""}
+        with mock.patch.dict(os.environ, env), self.serve(
+            _resp('{"a": "x"}'), seen=seen
+        ):
+            asyncio.run(claude.run_structured(
+                "p", system="s", model="m", schema={"type": "object",
+                "required": ["a"], "properties": {"a": {"type": "string"}}},
+                timeout=5))
+        self.assertEqual(seen[0]["reasoning"], {"effort": "high"})
+
+    def test_mimo_is_sent_none(self):
+        with mock.patch.dict(os.environ, {"STENO_PROVIDER": "mimo", "STENO_EFFORT": ""}):
+            self.assertEqual(claude.effort(), "")
+        self.assertNotIn("reasoning", claude._thinking({"model": "m"}, ""))
+
+    def test_steno_effort_wins(self):
+        env = {"STENO_PROVIDER": "openrouter", "STENO_EFFORT": "medium"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(claude.effort(), "medium")
+
+    def test_openrouter_runs_sonnet_when_chosen(self):
+        with mock.patch.dict(os.environ, {"STENO_PROVIDER": "openrouter"}):
+            self.assertEqual(claude.default_model(), "anthropic/claude-sonnet-5.5")
+
+
 class TestEndpointConfig(unittest.TestCase):
     """STENO_MODEL / STENO_PROVIDER / STENO_BASE_URL are how the endpoint moves."""
 
@@ -412,7 +450,7 @@ class TestEndpointConfig(unittest.TestCase):
     def test_default_model_follows_the_provider(self):
         self.assertEqual(claude.default_model(), "mimo-v2.6-flash")
         os.environ["STENO_PROVIDER"] = "openrouter"
-        self.assertEqual(claude.default_model(), "@preset/cc-flash-med")
+        self.assertEqual(claude.default_model(), "anthropic/claude-sonnet-5.5")
 
     def test_unknown_provider_raises(self):
         os.environ["STENO_PROVIDER"] = "nope"
@@ -423,7 +461,7 @@ class TestEndpointConfig(unittest.TestCase):
         self.assertEqual(claude.presets(),
                          ["mimo-v2.6-flash", "mimo-v2.6-pro[1m]"])
         os.environ["STENO_PROVIDER"] = "openrouter"
-        self.assertEqual(claude.presets(), ["@preset/cc-flash-med"])
+        self.assertEqual(claude.presets(), ["anthropic/claude-sonnet-5.5"])
 
 
 class TestModelList(unittest.TestCase):

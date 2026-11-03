@@ -82,16 +82,18 @@ ENV_TEMPLATE = """\
 # steno config - required keys
 DEEPGRAM_API_KEY=
 
-# Model calls are one OpenAI-style chat-completions POST. Flip these whenever
-# the best model moves; nothing else needs touching.
-#   STENO_MODEL=mimo-v2.6-flash          (default)
-#   STENO_MODEL=mimo-v2.6-pro[1m]
-#   STENO_ASK_MODEL=mimo-v2.6-pro[1m]    (the Ask box only; summaries keep STENO_MODEL)
-#   STENO_PROVIDER=mimo|openrouter       (default: mimo)
+# Model calls go to `claude -p` on the Claude subscription, or as one
+# OpenAI-style chat-completions POST to the other providers.
+#   STENO_PROVIDER=claude-code|openrouter|mimo  (default: claude-code, the
+#                                            `claude -p` subscription login)
+#   STENO_MODEL=sonnet                       (default: the newest Sonnet;
+#                                            anthropic/... on openrouter)
+#   STENO_EFFORT=high                        (default; low|medium|high)
+#   STENO_ASK_MODEL=opus                     (the Ask box only; summaries keep STENO_MODEL)
 #   STENO_BASE_URL=https://.../v1/chat/completions   (one-off endpoint override)
-# Key: STENO_API_KEY, else the provider's file below (same as `claude-open`).
-#   mimo       -> ~/.config/mimo.env       MIMO_API_KEY
+# Key for the HTTP providers: STENO_API_KEY, else the file below.
 #   openrouter -> ~/.config/openrouter.env OPENROUTER_API_KEY
+#   mimo       -> ~/.config/mimo.env       MIMO_API_KEY
 
 # Optional. Where your projects live, for tying a meeting to its codebase.
 # STENO_PROJECTS_DIR=~/projects
@@ -443,7 +445,7 @@ def cmd_summarize(args: argparse.Namespace) -> None:
               file=sys.stderr)
         sys.exit(1)
     if err := check_ready():
-        print(f"{err} -- summaries run through the chat-completions endpoint.", file=sys.stderr)
+        print(f"{err} -- summaries need it.", file=sys.stderr)
         sys.exit(1)
 
     model = model_default()
@@ -1135,7 +1137,7 @@ def _preflight() -> None:
 
     if err := check_ready():
         _cannot_start(
-            f"{err} -- summaries and questions run through the chat-completions endpoint."
+            f"{err} -- summaries and questions need it."
         )
 
 

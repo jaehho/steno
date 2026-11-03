@@ -137,17 +137,17 @@ class AskModel(unittest.TestCase):
             i += 1
         return found
 
-    def rows(self) -> list[tuple[str | None, str]]:
+    def rows(self) -> list[tuple[str, str]]:
         return [(row.value, row.label) for row in self.row_widgets()]
 
-    def marked(self) -> list[str | None]:
+    def marked(self) -> list[str]:
         """The rows that carry the tick for being in force."""
         return [
             row.value for row in self.row_widgets()
             if isinstance(row.get_child().get_last_child(), Gtk.Image)
         ]
 
-    def tagged(self) -> list[str | None]:
+    def tagged(self) -> list[str]:
         """The rows that say they follow the default."""
         found = []
         for row in self.row_widgets():
@@ -158,10 +158,10 @@ class AskModel(unittest.TestCase):
                 part = part.get_next_sibling()
         return found
 
-    def values(self) -> list[str | None]:
+    def values(self) -> list[str]:
         return [value for value, _label in self.rows()]
 
-    def choose(self, value: str | None) -> None:
+    def choose(self, value: str) -> None:
         """Activate the row for `value`, as a click or Enter on it would."""
         i = self.values().index(value)
         row = self.button.choices.get_row_at_index(i)
@@ -204,19 +204,17 @@ class AskModel(unittest.TestCase):
 
     # --------------------------------------------------------------- the menu
 
-    def test_the_default_the_presets_and_custom_are_there_before_the_list(self):
+    def test_the_default_and_the_presets_are_there_before_the_list(self):
         self.release.clear()
         self.open_menu()
         self.assertEqual(
-            self.rows(),
-            [("", DEFAULT), (PRESETS[1], PRESETS[1]), (None, "Custom…")],
-        )
+            self.rows(), [("", DEFAULT), (PRESETS[1], PRESETS[1])])
         self.assertFalse(self.button.note.get_visible())
 
         self.release.set()
         self.assertTrue(wait_for(lambda: LISTED[0] in self.values()))
         self.assertEqual(
-            self.values(), ["", PRESETS[1], *LISTED, None])
+            self.values(), ["", PRESETS[1], *LISTED])
 
     def test_a_model_is_one_row_and_only_the_default_one_is_tagged(self):
         """The default is a preset too, and the provider lists it: it is
@@ -250,7 +248,7 @@ class AskModel(unittest.TestCase):
         self.open_menu()
         self.assertTrue(wait_for(lambda: self.fetches == 1))
         settle()
-        self.assertEqual(self.values(), ["", PRESETS[1], None])
+        self.assertEqual(self.values(), ["", PRESETS[1]])
         self.assertFalse(self.button.note.get_visible())
 
         self.button.popover.popdown()
@@ -290,24 +288,6 @@ class AskModel(unittest.TestCase):
         self.open_menu()
         self.assertEqual(self.marked(), [""])
 
-    def test_a_model_can_be_typed_in(self):
-        self.open_menu()
-        self.assertFalse(self.button.custom_entry.get_visible())
-        self.choose(None)
-        self.assertTrue(self.button.custom_entry.get_visible())
-        self.assertTrue(self.button.popover.get_visible())
-
-        self.button.custom_entry.emit("activate")   # nothing typed yet
-        self.assertEqual(prefs.ask_model(), "")
-        self.assertTrue(self.button.popover.get_visible())
-
-        self.button.custom_entry.set_text("  my/model  ")
-        self.button.custom_entry.emit("activate")
-        settle()
-        self.assertEqual(prefs.ask_model(), "my/model")
-        self.assertEqual(self.shown(), "my/model")
-        self.assertFalse(self.button.popover.get_visible())
-
     def test_a_long_list_gets_a_filter(self):
         self.listing = [f"model-{n:02d}" for n in range(30)]
         self.open_menu()
@@ -318,9 +298,8 @@ class AskModel(unittest.TestCase):
         self.button.filter_entry.set_text("model-2")
         self.assertTrue(wait_for(lambda: "model-05" not in self.visible()))
         self.assertIn("model-25", self.visible())
-        self.assertIn(None, self.visible())   # "Custom…" is not filtered away
 
-    def visible(self) -> list[str | None]:
+    def visible(self) -> list[str]:
         return [
             row.value for row in self.row_widgets() if row.get_child_visible()
         ]

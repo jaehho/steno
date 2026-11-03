@@ -57,12 +57,19 @@ Then set it up once:
 steno init         # writes ~/.config/steno/.env
 ```
 
-Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions are one
-OpenAI-style chat-completions request to a model host, MiMo by default, with
-its key in `~/.config/mimo.env` (`MIMO_API_KEY`). `STENO_PROVIDER=openrouter`
-reads `~/.config/openrouter.env` instead; `STENO_MODEL`, `STENO_BASE_URL` and
-`STENO_API_KEY` override the model, endpoint and key (the template `steno init`
-writes lists them). `STENO_ASK_MODEL` does the same for the Ask box alone and
+Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions go to Claude
+Sonnet at high effort through headless Claude Code (`claude -p`), on your Claude
+subscription: install Claude Code and log in. Steno asks for `sonnet`, Claude
+Code's name for its newest Sonnet, so a new model arrives with a Claude Code
+update and an old one's retirement breaks nothing; each summary records the
+exact model that wrote it (`summary_model` in `meta.json`). An
+`ANTHROPIC_API_KEY` in the environment is never passed on, so a call cannot be
+billed to the API by accident. `STENO_PROVIDER=openrouter` sends one OpenAI-style chat-completions
+request to OpenRouter instead, with its key in `~/.config/openrouter.env`
+(`OPENROUTER_API_KEY`), and `STENO_PROVIDER=mimo` to MiMo with
+`~/.config/mimo.env`; `STENO_MODEL`, `STENO_EFFORT`, `STENO_BASE_URL` and
+`STENO_API_KEY` override the model, effort, endpoint and key (the template
+`steno init` writes lists them). `STENO_ASK_MODEL` does the same for the Ask box alone and
 wins over the model picked in the window (below); summaries keep
 `STENO_MODEL`. `STENO_NO_ASST=1` (any non-empty value, `0` included)
 stops Steno running `asst`, the task app your action items are filed in, so
@@ -136,14 +143,13 @@ goes to the trash; the summary is written again so its citations match.
 
 The Ask box answers with the model named under it, the summary's model until
 you choose another. Click the name for the choices, a row for each model: the
-summary's model, tagged *default*, then the provider's presets, the models it
-lists at its `/models` endpoint, and **Custom…** for an id you type. The
-*default* row follows the summary's model: choose it and the Ask box changes
-with it when `STENO_MODEL` or the provider's default does. Any other row, or an
-id you type, pins that model: it answers every question until you choose again,
-whatever the default becomes. (Pinning the model that is the default today is
-typing its id under Custom…; the menu shows that as the default row, because
-the two answer alike.) The list is fetched once per run, the first time the
+summary's model, tagged *default*, then the provider's presets (on Claude Code
+`opus`, `fable` and `haiku`, each the newest of its kind) and the models it
+lists at its `/models` endpoint. The *default* row follows the summary's model:
+choose it and the Ask box changes with it when `STENO_MODEL` or the provider's
+default does. Any other row pins that model: it answers every question until
+you choose again, whatever the default becomes. A model no row offers is set
+with `STENO_ASK_MODEL`. The list is fetched once per run, the first time the
 menu is opened and off the window's thread; if the provider will not give it,
 the presets are all there is and nothing says why. Speech models (`tts`, `asr`)
 are left out of it. The choice is kept in `gui.json` under
@@ -469,7 +475,7 @@ transcribed in one pass when the meeting ends, which is cheaper and more
 accurate than streaming it.
 
 Audio leaves the machine only to Deepgram, and transcript text only to the
-model host you configured (MiMo by default, or OpenRouter; see above) for the
+model host you configured (Anthropic through Claude Code by default; see above) for the
 summary and for questions you ask. Emails, phone numbers and the like are
 scrubbed from the transcript on the way out. When a meeting is about one of the
 projects in `~/projects` (`STENO_PROJECTS_DIR`), the summary may read that

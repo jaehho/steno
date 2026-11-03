@@ -1,12 +1,11 @@
-"""One OpenAI-style chat-completions POST per model call.
+"""Every model call steno makes, to whichever provider is set.
 
-Endpoint, model, and key are config, not code, because the best model for a
-meeting summary changes often. Flip `STENO_MODEL` for the model;
-`STENO_PROVIDER` (or `STENO_BASE_URL`) for where it is hosted. Defaults are
-MiMo on the token plan, using the same `~/.config/mimo.env` key as
-`claude-open`. That host also speaks Anthropic Messages (`…/anthropic`) for
-Claude Code; this client uses its OpenAI route, which takes the same
-json_schema, tools, and SSE we already build.
+The default, `claude-code`, runs `claude -p` on the Claude subscription
+(claudecode.py). The others are one OpenAI-style chat-completions POST per
+call: `openrouter`, with the same `~/.config/openrouter.env` key as
+`claude-open`, and `mimo`. Model, effort and host are config, not code,
+because the best model for a meeting summary changes often: flip
+`STENO_MODEL`, `STENO_EFFORT` and `STENO_PROVIDER` (or `STENO_BASE_URL`).
 
 The only tools a call ever gets are three read-only ones scoped to a single
 directory: the transcript is other people's speech, and grounding must not
@@ -20,15 +19,27 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import TypeVar
 
 import httpx
+
+from . import claudecode
+from .claudecode import Reply
 
 # name -> how to reach a chat-completions endpoint and who to bill.
 # `base_url` may be a callable when it is derived from the key file (MiMo
 # hosts the OpenAI route beside its Anthropic one, and the plan picks the host).
 PROVIDERS: dict[str, dict] = {
+    # No key and no host: `claude -p` brings its own login. Its aliases
+    # name the newest model of each kind, so a new release needs a newer
+    # Claude Code, not a change here; the reply says which model it was.
+    "claude-code": {
+        "model": "sonnet",
+        "effort": "high",
+        "presets": ("opus", "fable", "haiku"),
+    },
     "mimo": {
         "key_file": "~/.config/mimo.env",
         "key_name": "MIMO_API_KEY",
@@ -39,10 +50,14 @@ PROVIDERS: dict[str, dict] = {
         "base_url": "https://openrouter.ai/api/v1/chat/completions",
         "key_file": "~/.config/openrouter.env",
         "key_name": "OPENROUTER_API_KEY",
-        "model": "@preset/cc-flash-med",
+        "model": "anthropic/claude-sonnet-5.5",
+        # OpenRouter's `reasoning.effort`; MiMo has no such setting.
+        "effort": "high",
     },
 }
-DEFAULT_PROVIDER = "mimo"
+CLAUDE_CODE = "claude-code"
+_T = TypeVar("_T")
+DEFAULT_PROVIDER = CLAUDE_CODE
 MAX_TOOL_ROUNDS = 8
 _RETRY_STATUSES = {408, 429, 500, 502, 503, 504, 522, 524}
 HTTP_OK = 200
@@ -121,6 +136,12 @@ def default_model() -> str:
     return _settings()["model"]
 
 
+def effort() -> str:
+    """How hard the model thinks: STENO_EFFORT, else the provider's own,
+    else nothing sent."""
+    return os.environ.get("STENO_EFFORT") or _settings().get("effort", "")
+
+
 def presets() -> list[str]:
     """Models worth picking by hand on the active provider, default first."""
     settings = _settings()
@@ -130,11 +151,15 @@ def presets() -> list[str]:
 def api_key() -> str:
     if key := os.environ.get("STENO_API_KEY", "").strip():
         return key
+    if "key_file" not in _settings():
+        return ""
     return _read_kv(_key_file(), _key_name())
 
 
 def check_ready() -> str | None:
     """What a call would fail on, or None if one can be made now."""
+    if provider() == CLAUDE_CODE:
+        return claudecode.check_ready()
     if api_key():
         return None
     return f"no {_key_name()} in {_key_file()}"
@@ -185,6 +210,11 @@ def _payload(model: str, messages: list[dict], *, schema: dict | None = None,
     if tools:
         payload["tools"] = tools
     return payload
+
+
+def _thinking(payload: dict, effort: str) -> dict:
+    """`payload` asking the model to think this hard; as it is for none."""
+    return {**payload, "reasoning": {"effort": effort}} if effort else payload
 
 
 def _error_text(status: int, body: str) -> str:
@@ -257,25 +287,47 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
     schema: dict,
     read_root: Path | None = None,
     timeout: float = 900.0,
-) -> dict:
-    """One call that must return an object matching `schema`. Raises ClaudeError."""
+) -> Reply:
+    """One call that must return an object matching `schema`, and the
+    model that wrote it. Raises ClaudeError."""
+    if provider() == CLAUDE_CODE:
+        return await _through_claude_code(claudecode.run_structured(
+            prompt, system=system, model=model, effort=effort(),
+            schema=schema, read_root=read_root, timeout=timeout,
+        ))
     messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
     tools = _tools(read_root) if read_root is not None else None
     async with httpx.AsyncClient(transport=_transport,
                                  timeout=httpx.Timeout(timeout, connect=15.0)) as client:
         for _ in range(MAX_TOOL_ROUNDS):
-            data = await _call(client, _payload(model, messages, schema=schema, tools=tools))
+            data = await _call(client, _thinking(_payload(
+                model, messages, schema=schema, tools=tools), effort()))
             message = data["choices"][0]["message"]
             calls = message.get("tool_calls") or []
             if not calls or read_root is None:
                 # No tools were offered, so none can come back.
-                return parse_structured(_content(message))
+                return _reply(data, model)
             messages.append({"role": "assistant", "content": _content(message),
                              "tool_calls": calls})
             messages += [_tool_result(read_root, call) for call in calls]
         # Over the tool budget: one forced answer with the tools withdrawn.
-        data = await _call(client, _payload(model, messages, schema=schema))
-        return parse_structured(_content(data["choices"][0]["message"]))
+        data = await _call(client, _thinking(
+            _payload(model, messages, schema=schema), effort()))
+        return _reply(data, model)
+
+
+def _reply(data: dict, asked: str) -> Reply:
+    """A chat completion's object, and the model the host says it used."""
+    return Reply(parse_structured(_content(data["choices"][0]["message"])),
+                 data.get("model") or asked)
+
+
+async def _through_claude_code(call: Coroutine[object, object, _T]) -> _T:
+    """`call`, its failure told the way every provider's is."""
+    try:
+        return await call
+    except claudecode.ClaudeCodeError as e:
+        raise ClaudeError(str(e)) from None
 
 
 def parse_structured(text: str) -> dict:
@@ -335,8 +387,11 @@ async def list_models(timeout: float = 8.0) -> list[str]:
     """The active provider's models. Raises ClaudeError if it will not say.
 
     One try and a short timeout: this fills a menu, and a menu can wait
-    for the next open rather than for a retry.
+    for the next open rather than for a retry. `claude -p` lists nothing,
+    so its presets are the list.
     """
+    if provider() == CLAUDE_CODE:
+        return presets()
     try:
         url = models_url(base_url())
         async with httpx.AsyncClient(transport=_transport,
@@ -509,8 +564,17 @@ async def stream_text(
     timeout: float = 180.0,
 ) -> str:
     """One tool-less call, handing each piece of text to `on_delta` as it arrives."""
-    payload = _payload(model, [{"role": "system", "content": system},
-                               {"role": "user", "content": prompt}], stream=True)
+    if provider() == CLAUDE_CODE:
+        return await _through_claude_code(claudecode.stream_text(
+            prompt, system=system, model=model, effort=effort(),
+            on_delta=on_delta, timeout=timeout,
+        ))
+    payload = _thinking(_payload(
+        model,
+        [{"role": "system", "content": system},
+         {"role": "user", "content": prompt}],
+        stream=True,
+    ), effort())
     headers = {"Authorization": f"Bearer {api_key()}"}
     seen = False
 

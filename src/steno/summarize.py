@@ -353,9 +353,11 @@ async def summarize_session(
     # A heading-only reply is a known flake, not a short meeting: ask again.
     # So is a reply with no usable citation or one that stops short, but
     # only once: the better of two flawed replies beats no summary.
-    flawed: list[tuple[int, Summary]] = []
+    flawed: list[tuple[int, Summary, str]] = []
     for _ in range(ATTEMPTS):
-        out = await claude.run_structured(
+        # `model` may be an alias; the reply names the model behind it,
+        # and that is what the meeting records as having written it.
+        out, wrote = await claude.run_structured(
             transcript,
             system=system,
             model=model,
@@ -373,14 +375,14 @@ async def summarize_session(
         project = out.get("project")
         summary.project = project if project in known else None
         if not (flaws := _flaws(summary)):
-            return _store(session_dir, summary, records, model)
-        flawed.append((flaws, summary))
+            return _store(session_dir, summary, records, wrote)
+        flawed.append((flaws, summary, wrote))
         if len(flawed) == FLAWED_ATTEMPTS:
             break
     if flawed:
         # The least flawed; of equals, the later.
-        _, best = min(reversed(flawed), key=lambda pair: pair[0])
-        return _store(session_dir, best, records, model)
+        _, best, wrote = min(reversed(flawed), key=lambda entry: entry[0])
+        return _store(session_dir, best, records, wrote)
     msg = f"the model returned only a title, after {ATTEMPTS} attempts"
     raise claude.ClaudeError(msg)
 
