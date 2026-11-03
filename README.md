@@ -121,10 +121,12 @@ what someone else promised, kept as a reminder. Only the first is counted, in
 the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
 still owe across every meeting; a row opens its meeting. The model's action
 items are the weakest part, so each to-do row has a menu (right-click, or
-`Menu` / `Shift+F10`): **Edit** the wording, **Remove** a wrong one, and, when
-asst holds the task, **Open in asst** (the list name beside the row does the
-same) and **Move to list**. **Add a to-do** at the end of the section files
-one the model missed under the meeting's project list. Edit and Remove reach
+the `Menu` key): **Edit** the wording, **Remove** a wrong one, and, when asst
+holds the task, **Open in asst** (the list name beside the row does the same)
+and **Move to list**. On the row that has the focus a letter does each, as in
+LazyVim's file explorer: `r` edit, `d` remove, `o` open, `m` move, and `a` adds
+a to-do. **Add a to-do** at the end of your group files one the model missed
+under the meeting's project list. Edit and Remove reach
 asst too (`asst edit`, `asst rm`); a row that never reached asst, and what
 others owe, stay here. A title changed in asst comes back to the row. A
 re-summarize words every row as the model does, yours included, here and in

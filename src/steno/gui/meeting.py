@@ -1076,6 +1076,7 @@ class MeetingPage(Gtk.Box):
                 "remove": lambda: self._confirm_remove_todo(s, todo),
                 "open": lambda: self._open_todo(todo),
                 "move": lambda: self._move_todo(s, todo),
+                "add": lambda: self._add_todo(s),
             })
         return row
 

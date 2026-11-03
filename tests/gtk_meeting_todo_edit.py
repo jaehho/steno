@@ -24,7 +24,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Gdk, Gio, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk
 
 from steno.gui.meeting import MeetingPage
 from steno.gui.window import Window
@@ -193,16 +193,51 @@ class TestTheMenu(TodoEditCase):
         popover = self.right_click(SEND)
         self.assertEqual(labels(popover.get_menu_model())[-1], "Remove…")
 
+    def shortcuts(self, text: str) -> dict[str, Gtk.Shortcut]:
+        (keys,) = controllers(self.row(text), Gtk.ShortcutController)
+        return {s.get_trigger().to_string(): s for s in keys}
+
+    def press(self, text: str, key: str) -> bool:
+        flags = Gtk.ShortcutActionFlags.EXCLUSIVE
+        action = self.shortcuts(text)[key].get_action()
+        return action.activate(flags, self.row(text), None)
+
     def test_the_menu_key_opens_it_on_the_row_with_the_focus(self):
         row = self.row(SEND)
-        (keys,) = controllers(row, Gtk.ShortcutController)
-        triggers = [s.get_trigger().to_string() for s in keys]
-        self.assertEqual(triggers, ["Menu", "<Shift>F10"])
-        flags = Gtk.ShortcutActionFlags.EXCLUSIVE
-        for shortcut in keys:
+        for key in ("Menu", "<Shift>F10"):
             self.page._row_menus.drop()
-            self.assertTrue(shortcut.get_action().activate(flags, row, None))
+            self.assertTrue(self.press(SEND, key))
             self.assertIs(self.page._row_menus.popover.get_parent(), row)
+
+    def test_each_item_has_a_letter_as_in_lazyvims_explorer(self):
+        self.assertLessEqual(
+            {"r", "d", "m", "o", "a"}, set(self.shortcuts(SEND)))
+        # A row asst does not hold has nothing to open or move there.
+        self.assertEqual(
+            {"r", "d", "a"}, set(self.shortcuts(THEIRS)) - {"Menu", "<Shift>F10"})
+
+    def test_r_edits_d_removes_and_a_adds(self):
+        asked = self.answers("ask_text", "Send the Q3 usage figures")
+        self.assertTrue(self.press(SEND, "r"))
+        self.assertEqual(asked[-1]["heading"], "Edit to-do")
+        self.assertIn("Send the Q3 usage figures", self.rows())
+        with mock.patch.object(self.page, "_dialog") as dialog:
+            self.assertTrue(self.press(DRAFT, "d"))
+        self.assertEqual(dialog.call_args.args[0], "Remove this to-do?")
+        self.answers("ask_text", "Book the room")
+        self.assertTrue(self.press(THEIRS, "a"))
+        self.assertIn("Book the room", self.rows())
+
+    def test_the_menu_shows_each_items_letter(self):
+        model = self.right_click(SEND).get_menu_model()
+        accels = []
+        for i in range(model.get_n_items()):
+            section = model.get_item_link(i, Gio.MENU_LINK_SECTION)
+            for j in range(section.get_n_items()):
+                accel = section.get_item_attribute_value(
+                    j, "accel", GLib.VariantType.new("s"))
+                accels.append(accel.get_string())
+        self.assertEqual(accels, ["r", "o", "m", "d"])
 
     def test_a_meeting_put_away_is_read_not_edited(self):
         set_archived(self.dir, True)

@@ -2,8 +2,9 @@
 
 A row offers Edit, Remove and, when asst holds the task, Open in asst and
 Move to list. The page owns what each does; this is the widget side: the
-menu model, how it is opened (right-click, long press, Menu and
-Shift+F10 on the row that has the focus), and the text and list prompts.
+menu model, how it is opened (right-click, long press, the Menu key on
+the row that has the focus), a letter for each item, and the text and
+list prompts.
 """
 from __future__ import annotations
 
@@ -13,6 +14,10 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 GROUP = "todo"
 MENU_KEYS = ("Menu", "<Shift>F10")
+# A key for each item on the row that has the focus, as LazyVim's file
+# explorer has them (snacks.nvim: a add, r rename, d delete, m move,
+# o open), so nothing needs the menu, or a function key, to be reached.
+ITEM_KEYS = {"edit": "r", "remove": "d", "move": "m", "open": "o", "add": "a"}
 
 
 def todo_menu_model(filed: bool) -> Gio.Menu:
@@ -20,15 +25,33 @@ def todo_menu_model(filed: bool) -> Gio.Menu:
     opening it there, moving it and removing it there need."""
     menu = Gio.Menu()
     own = Gio.Menu()
-    own.append("Edit…", f"{GROUP}.edit")
+    own.append_item(_item("Edit…", "edit"))
     if filed:
-        own.append("Open in asst", f"{GROUP}.open")
-        own.append("Move to list…", f"{GROUP}.move")
+        own.append_item(_item("Open in asst", "open"))
+        own.append_item(_item("Move to list…", "move"))
     menu.append_section(None, own)
     gone = Gio.Menu()
-    gone.append("Remove…", f"{GROUP}.remove")
+    gone.append_item(_item("Remove…", "remove"))
     menu.append_section(None, gone)
     return menu
+
+
+def offered(filed: bool) -> set[str]:
+    """The items a row has: the menu's, and Add, which has no menu item."""
+    return {"edit", "remove", "add"} | ({"open", "move"} if filed else set())
+
+
+def _item(label: str, name: str) -> Gio.MenuItem:
+    """A menu item that shows the key that does the same."""
+    item = Gio.MenuItem.new(label, f"{GROUP}.{name}")
+    item.set_attribute_value("accel", GLib.Variant.new_string(ITEM_KEYS[name]))
+    return item
+
+
+def _done(run: Callable[[Callable[[], None]], None], fn: Callable[[], None]) -> bool:
+    """Run an item for its key, and say the key was taken."""
+    run(fn)
+    return True
 
 
 class RowMenus:
@@ -78,6 +101,14 @@ class RowMenus:
                     lambda *_a: self.popup(row, home, filed)
                 ),
             ))
+        for name, key in ITEM_KEYS.items():
+            if name in handlers and name in offered(filed):
+                keys.add_shortcut(Gtk.Shortcut.new(
+                    Gtk.ShortcutTrigger.parse_string(key),
+                    Gtk.CallbackAction.new(
+                        lambda *_a, fn=handlers[name]: _done(run, fn)
+                    ),
+                ))
         row.add_controller(keys)
 
     def popup(
