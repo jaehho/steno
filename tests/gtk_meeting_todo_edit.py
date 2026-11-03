@@ -24,7 +24,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Gdk, Gio, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk
 
 from steno.gui.meeting import MeetingPage
 from steno.gui.window import Window
@@ -120,6 +120,13 @@ class TodoEditCase(unittest.TestCase):
     def row(self, text: str) -> Gtk.Box:
         return self.rows()[text]
 
+    def box(self, text: str) -> Gtk.CheckButton:
+        """The tick box of the row with these words."""
+        return self.page._todo_rows[" ".join(text.lower().split())][1]
+
+    def focus(self) -> Gtk.Widget | None:
+        return self.window.get_focus()
+
     def right_click(self, text: str) -> Gtk.PopoverMenu:
         row = self.row(text)
         secondary = [
@@ -186,16 +193,51 @@ class TestTheMenu(TodoEditCase):
         popover = self.right_click(SEND)
         self.assertEqual(labels(popover.get_menu_model())[-1], "Remove…")
 
+    def shortcuts(self, text: str) -> dict[str, Gtk.Shortcut]:
+        (keys,) = controllers(self.row(text), Gtk.ShortcutController)
+        return {s.get_trigger().to_string(): s for s in keys}
+
+    def press(self, text: str, key: str) -> bool:
+        flags = Gtk.ShortcutActionFlags.EXCLUSIVE
+        action = self.shortcuts(text)[key].get_action()
+        return action.activate(flags, self.row(text), None)
+
     def test_the_menu_key_opens_it_on_the_row_with_the_focus(self):
         row = self.row(SEND)
-        (keys,) = controllers(row, Gtk.ShortcutController)
-        triggers = [s.get_trigger().to_string() for s in keys]
-        self.assertEqual(triggers, ["Menu", "<Shift>F10"])
-        flags = Gtk.ShortcutActionFlags.EXCLUSIVE
-        for shortcut in keys:
+        for key in ("Menu", "<Shift>F10"):
             self.page._row_menus.drop()
-            self.assertTrue(shortcut.get_action().activate(flags, row, None))
+            self.assertTrue(self.press(SEND, key))
             self.assertIs(self.page._row_menus.popover.get_parent(), row)
+
+    def test_each_item_has_a_letter_as_in_lazyvims_explorer(self):
+        self.assertLessEqual(
+            {"r", "d", "m", "o", "a"}, set(self.shortcuts(SEND)))
+        # A row asst does not hold has nothing to open or move there.
+        self.assertEqual(
+            {"r", "d", "a"}, set(self.shortcuts(THEIRS)) - {"Menu", "<Shift>F10"})
+
+    def test_r_edits_d_removes_and_a_adds(self):
+        asked = self.answers("ask_text", "Send the Q3 usage figures")
+        self.assertTrue(self.press(SEND, "r"))
+        self.assertEqual(asked[-1]["heading"], "Edit to-do")
+        self.assertIn("Send the Q3 usage figures", self.rows())
+        with mock.patch.object(self.page, "_dialog") as dialog:
+            self.assertTrue(self.press(DRAFT, "d"))
+        self.assertEqual(dialog.call_args.args[0], "Remove this to-do?")
+        self.answers("ask_text", "Book the room")
+        self.assertTrue(self.press(THEIRS, "a"))
+        self.assertIn("Book the room", self.rows())
+
+    def test_the_menu_shows_each_items_letter(self):
+        model = self.right_click(SEND).get_menu_model()
+        accels = []
+        for i in range(model.get_n_items()):
+            section = model.get_item_link(i, Gio.MENU_LINK_SECTION)
+            for j in range(section.get_n_items()):
+                accel = section.get_item_attribute_value(
+                    j, "accel", GLib.VariantType.new("s"))
+                accels.append(accel.get_string())
+        self.assertEqual(accels, ["r", "o", "m", "d"])
 
     def test_a_meeting_put_away_is_read_not_edited(self):
         set_archived(self.dir, True)
@@ -213,6 +255,37 @@ class TestTheMenu(TodoEditCase):
                 for w in walk(self.page.todo_box)
             )
         )
+
+    def test_closing_it_leaves_focus_on_its_row(self):
+        popover = self.right_click(DRAFT)
+        settle()
+        popover.popdown()
+        settle()
+        self.assertIs(self.focus(), self.box(DRAFT))
+
+    def test_an_item_puts_focus_on_its_row_before_it_asks(self):
+        seen = []
+        patch = mock.patch(
+            "steno.gui.meeting.ask_text",
+            lambda *_a, **_k: seen.append(self.focus()),
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+        popover = self.right_click(DRAFT)
+        popover.activate_action("todo.edit", None)
+        self.assertEqual(seen, [self.box(DRAFT)])
+
+    def test_rebuilding_the_list_keeps_focus_on_the_same_row(self):
+        self.box(DRAFT).grab_focus()
+        self.page._refresh_todos(self.page.current)
+        self.assertIs(self.focus(), self.box(DRAFT))
+
+    def test_rebuilding_the_list_leaves_focus_elsewhere_alone(self):
+        search = self.window.sidebar.search
+        search.grab_focus()
+        before = self.focus()
+        self.page._refresh_todos(self.page.current)
+        self.assertIs(self.focus(), before)
 
     def test_rebuilding_the_list_takes_the_menu_down(self):
         popover = self.right_click(SEND)
@@ -241,6 +314,36 @@ class TestEditing(TodoEditCase):
             "asst never heard the new wording",
         )
         self.assertEqual(self.toasts, [])
+
+    def test_capitals_alone_are_a_change_that_reaches_asst(self):
+        self.answers("ask_text", SEND.upper())
+        uid = self.local(SEND).uid
+        self.right_click(SEND).activate_action("todo.edit", None)
+        self.assertIn(SEND.upper(), self.rows())
+        self.assertTrue(
+            wait_for(lambda: self.task(uid).get("title") == SEND.upper()),
+            "asst never heard the new capitals",
+        )
+
+    def test_focus_is_on_the_row_that_took_the_new_words(self):
+        self.answers("ask_text", "Send the Q3 usage figures")
+        self.right_click(SEND).activate_action("todo.edit", None)
+        self.assertIs(self.focus(), self.box("Send the Q3 usage figures"))
+
+    def test_summarize_again_warns_that_your_words_go(self):
+        self.answers("ask_text", "Send the Q3 usage figures")
+        self.right_click(SEND).activate_action("todo.edit", None)
+        with mock.patch.object(self.page, "_dialog") as dialog:
+            self.page._confirm_summarize()
+        _heading, body, _confirm, _go = dialog.call_args.args
+        self.assertIn("You reworded 1 to-do,", body)
+        self.assertTrue(dialog.call_args.kwargs["destructive"])
+
+    def test_without_words_of_yours_summarize_again_does_not_warn(self):
+        with mock.patch.object(self.page, "_dialog") as dialog:
+            self.page._confirm_summarize()
+        self.assertNotIn("reworded", dialog.call_args.args[1])
+        self.assertFalse(dialog.call_args.kwargs["destructive"])
 
     def test_the_same_words_change_nothing_and_call_nothing(self):
         self.answers("ask_text", SEND)
@@ -311,6 +414,13 @@ class TestRemoving(TodoEditCase):
         )
         self.assertEqual(self.toasts, [])
 
+    def test_focus_moves_to_the_row_after_it_or_to_add(self):
+        self.confirm()
+        self.right_click(SEND).activate_action("todo.remove", None)
+        self.assertIs(self.focus(), self.box(DRAFT))
+        self.right_click(THEIRS).activate_action("todo.remove", None)
+        self.assertIs(self.focus(), self.page.add_todo_button)
+
     def test_the_count_follows(self):
         self.confirm()
         self.assertEqual(self.window.sidebar.sessions[0].open_todos, 2)
@@ -333,11 +443,13 @@ class TestRemoving(TodoEditCase):
 
 
 class TestAdding(TodoEditCase):
-    def test_it_is_at_the_end_of_the_section(self):
-        last = self.page.todo_box.get_last_child()
-        self.assertIs(last, self.page.add_todo_button)
+    def test_it_closes_your_group_not_the_list(self):
+        """Under "Waiting on them" it read as adding to theirs."""
+        add = self.page.add_todo_button
+        self.assertIs(add.get_prev_sibling(), self.row(DRAFT))
+        self.assertEqual(add.get_next_sibling().get_label(), "Waiting on them")
         labels_ = [
-            w.get_label() for w in walk(last) if isinstance(w, Gtk.Label)
+            w.get_label() for w in walk(add) if isinstance(w, Gtk.Label)
         ]
         self.assertEqual(labels_, ["Add a to-do"])
 
@@ -361,8 +473,22 @@ class TestAdding(TodoEditCase):
             ))
         )
         self.assertIs(
-            self.page.todo_box.get_last_child(), self.page.add_todo_button
+            self.page.add_todo_button.get_prev_sibling(),
+            self.row("Email the committee"),
         )
+
+    def test_focus_is_on_the_new_row_and_stays_when_it_comes_back_filed(self):
+        self.answers("ask_text", "Book the room")
+        self.page.add_todo_button.emit("clicked")
+        self.assertIs(self.focus(), self.box("Book the room"))
+        self.assertTrue(wait_for(lambda: self.local("Book the room").uid))
+        self.assertTrue(wait_for(
+            lambda: any(
+                w.has_css_class("todo-list")
+                for w in walk(self.row("Book the room"))
+            )
+        ))
+        self.assertIs(self.focus(), self.box("Book the room"))
 
     def test_nothing_else_waiting_is_filed_with_it(self):
         self.asst.down = True

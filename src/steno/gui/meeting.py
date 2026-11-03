@@ -192,6 +192,9 @@ class MeetingPage(Gtk.Box):
         self._todo_labels: list[Gtk.Label] = []
         # The menu of the to-do row that asked for one (issue #22).
         self._row_menus = RowMenus()
+        # Each to-do's row and its box, by key, in the order they are shown.
+        self._todo_rows: dict[str, tuple[Gtk.Widget, Gtk.Widget]] = {}
+        self.add_todo_button: Gtk.Button | None = None
         # Which to-dos are ticked, as last shown: a pull that finds
         # another state changed something the project's copy shows.
         self._ticks: dict[str, bool] = {}
@@ -764,17 +767,24 @@ class MeetingPage(Gtk.Box):
             + ", with a citation on each point it can support. It costs about "
             f"{format_usd(self._summary_cost(s))}."
         )
+        reworded = 0
         if again:
             body += (
                 "\n\nThe new summary replaces this one. Your notes, the "
                 "project and the to-dos you ticked are kept."
             )
+            reworded = sum(
+                t.edited and not t.dropped for t in load_todos(s.dir)
+            )
+        if reworded:
+            body += "\n\n" + words.reworded_warning(reworded)
         self._dialog(
             "Summarize this meeting again?" if again else "Write the summary?",
             body,
             "Summarize",
             lambda: self._summarize(s),
-            destructive=False,
+            # Words of yours are lost to it: say so in the button too.
+            destructive=bool(reworded),
         )
 
     def stop_pull(self) -> None:
@@ -880,12 +890,38 @@ class MeetingPage(Gtk.Box):
             self._rewriter.changed(session_dir)
 
     def _load_todos(self, s: Session, todos: list[Todo]) -> None:
+        """Draw the list again. Focus in it stays on the same row: left to
+        GTK it moves on to whatever is next in the window, which a stray
+        key then presses (Pause listening, or a tick that reaches asst)."""
+        root = self.get_root()
+        focus = root.get_focus() if root is not None else None
+        held = focus is not None and focus.is_ancestor(self.todo_box)
+        key = next((
+            k for k, (row, _box) in self._todo_rows.items()
+            if held and (focus is row or focus.is_ancestor(row))
+        ), None)
+        self._fill_todos(s, todos)
+        if held:
+            self._focus_todo(key)
+
+    def _focus_todo(self, key: str | None) -> None:
+        """Focus on that row's box; on Add when there is no such row."""
+        target = (
+            self._todo_rows[key][1] if key in self._todo_rows
+            else self.add_todo_button
+        )
+        if target is not None:
+            target.grab_focus()
+
+    def _fill_todos(self, s: Session, todos: list[Todo]) -> None:
         # Parented to a row that is about to go.
         self._row_menus.drop()
         while (child := self.todo_box.get_first_child()) is not None:
             self.todo_box.remove(child)
         self._todo_sources = []
         self._todo_labels = []
+        self._todo_rows = {}
+        self.add_todo_button = None
         self._ticks = _ticks(todos)
         yours = [t for t in todos if t.owner != "them"]
         theirs = [t for t in todos if t.owner == "them"]
@@ -914,15 +950,17 @@ class MeetingPage(Gtk.Box):
                 note = hint_label(line)
                 note.set_wrap(True)
                 self.todo_box.append(note)
-        if yours:
+        # Add files one of yours, so it closes your group, not the list:
+        # under "Waiting on them" it would read as adding to theirs.
+        if yours or not s.archived:
             self.todo_box.append(self._group_label("For you"))
             for todo in yours:
                 self.todo_box.append(self._todo_row(s, todo))
+            self._append_add_row(s)
         if theirs:
             self.todo_box.append(self._group_label("Waiting on them"))
             for todo in theirs:
                 self.todo_box.append(self._todo_row(s, todo))
-        self._append_add_row(s)
         self._keep_todo_cite()
 
     def _append_add_row(self, s: Session) -> None:
@@ -1031,12 +1069,14 @@ class MeetingPage(Gtk.Box):
             self._on_session_changed(s)
 
         check.connect("toggled", toggled)
+        self._todo_rows[todo.key] = (row, check)
         if not s.archived:
-            self._row_menus.attach(row, bool(todo.uid), {
+            self._row_menus.attach(row, check, bool(todo.uid), {
                 "edit": lambda: self._edit_todo(s, todo),
                 "remove": lambda: self._confirm_remove_todo(s, todo),
                 "open": lambda: self._open_todo(todo),
                 "move": lambda: self._move_todo(s, todo),
+                "add": lambda: self._add_todo(s),
             })
         return row
 
@@ -1090,16 +1130,19 @@ class MeetingPage(Gtk.Box):
         )
 
     def _reword_todo(self, s: Session, todo: Todo, text: str) -> None:
-        if Todo(text=text).key == todo.key:
+        # The words, not the key: a key ignores capitals, and "sso" to
+        # "SSO" is a fix.
+        if " ".join(text.split()) == todo.text:
             return
         row = rename_todo(s.dir, todo.key, text)
         if row is None:
             self._toast("That is empty, or already on the list")
             return
         self._todos_changed(s)
+        self._focus_todo(row.key)
         if todo.uid:
             self._in_asst(
-                s, lambda: deliver_title(todo.uid, row.text),
+                s, lambda: deliver_title(s.dir, todo.uid, row.text),
                 "asst did not take the new wording; its task keeps the old",
             )
 
@@ -1111,9 +1154,12 @@ class MeetingPage(Gtk.Box):
         )
 
     def _remove_todo(self, s: Session, todo: Todo) -> None:
+        shown = list(self._todo_rows)
+        after = shown[shown.index(todo.key) + 1:] if todo.key in shown else []
         if remove_todo(s.dir, todo.key) is None:
             return
         self._todos_changed(s)
+        self._focus_todo(after[0] if after else None)
         if todo.uid:
             self._in_asst(
                 s, lambda: deliver_remove(todo.uid),
@@ -1132,6 +1178,7 @@ class MeetingPage(Gtk.Box):
             self._toast("That is empty, or already on the list")
             return
         self._todos_changed(s)
+        self._focus_todo(row.key)
 
         def file() -> bool:
             # Only this one: filing is for what was asked for, not for

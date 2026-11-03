@@ -227,6 +227,15 @@ def todo_count(n: int) -> str:
     return f"{n} to do" if n else ""
 
 
+def reworded_warning(n: int) -> str:
+    """What Summarize again does to `n` to-dos whose words are yours."""
+    which = "1 to-do" if n == 1 else f"{n} to-dos"
+    return (
+        f"You reworded {which}, here or in asst. The new summary words "
+        "every to-do as the model does, yours included, here and in asst."
+    )
+
+
 def owed_label(n: int) -> str:
     """The sidebar's cross-meeting count: what you still owe, everywhere."""
     return f"{n} to-do{'' if n == 1 else 's'} open"

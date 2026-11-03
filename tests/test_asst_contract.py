@@ -75,9 +75,11 @@ class TestSamples(unittest.TestCase):
         self.assertEqual(out, {
             prefix + "send the usage figures to alice": {
                 "id": "5f3a", "completed": False, "list": "thesis",
+                "title": "Send the usage figures to Alice",
             },
             prefix + "book the room for the review": {
                 "id": "a1d0", "completed": True, "list": "Inbox",
+                "title": "Book the room for the review",
             },
         })
 
