@@ -183,15 +183,15 @@ def archived(session_dir: Path) -> bool:
 def origin_note(
     session_name: str, title: str | None, started_at: float | None
 ) -> str:
-    """A task's way back: which meeting it came from, and the command
-    that opens it."""
+    """Which meeting a task came from, for wherever it is read, the
+    phone included. asst opens the meeting itself (Open meeting, from
+    the task's source), so the note names it and no more."""
     when = (
         datetime.fromtimestamp(started_at).strftime("%B %-d, %Y")
         if started_at else ""
     )
     origin = ", ".join(part for part in (title, when) if part)
-    back = f"steno show {session_name}"
-    return f"From {origin}. {back}" if origin else back
+    return f"From {origin or 'meeting ' + session_name}."
 
 
 def _note_for(session_dir: Path) -> str:

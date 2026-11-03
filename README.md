@@ -121,9 +121,9 @@ what someone else promised, kept as a reminder. Only the first is counted, in
 the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
 still owe across every meeting; a row opens its meeting. A task reaches asst
 with the date the meeting gave it, if it gave one, worked out from the day of
-the meeting, and a note that says which meeting it came from and how to open it
-(`steno show NAME`). A date you change in asst stays changed; Steno sends it
-only once. The model's action
+the meeting, and a note that says which meeting it came from. asst's **Open
+meeting** opens it, and so does `steno show NAME`. A date you change in asst
+stays changed; Steno sends it only once. The model's action
 items are the weakest part, so each to-do row has a menu (right-click, or
 the `Menu` key): **Edit** the wording, **Remove** a wrong one, and, when asst
 holds the task, **Open in asst** (the list name beside the row does the same)

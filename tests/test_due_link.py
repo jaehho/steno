@@ -75,18 +75,17 @@ class TestParse(unittest.TestCase):
 
 
 class TestOriginNote(unittest.TestCase):
-    def test_title_date_and_command(self):
+    def test_title_and_date(self):
         self.assertEqual(
             asstlink.origin_note("20261012-100000", "Vendor call", STARTED),
-            "From Vendor call, October 12, 2026. steno show 20261012-100000",
+            "From Vendor call, October 12, 2026.",
         )
 
     def test_what_is_missing_is_left_out(self):
         self.assertEqual(
-            asstlink.origin_note("s", None, STARTED),
-            "From October 12, 2026. steno show s",
-        )
-        self.assertEqual(asstlink.origin_note("s", None, None), "steno show s")
+            asstlink.origin_note("s", None, STARTED), "From October 12, 2026.")
+        self.assertEqual(
+            asstlink.origin_note("s", None, None), "From meeting s.")
 
 
 class TestDuePrompt(unittest.TestCase):
@@ -113,7 +112,8 @@ class TestDuePrompt(unittest.TestCase):
             "project": None,
         }
         with mock.patch.object(
-            claude, "run_structured", new=mock.AsyncMock(return_value=reply)
+            claude, "run_structured",
+            new=mock.AsyncMock(return_value=claude.Reply(reply, "m")),
         ) as run:
             asyncio.run(summarize.summarize_session(
                 session, "m", None, session / "no-projects"
@@ -140,10 +140,7 @@ class TestFiling(unittest.TestCase):
         self.assertEqual(room["due"], "")
         for task in (send, room):
             self.assertEqual(
-                task["note"],
-                "From Vendor call, October 12, 2026. "
-                "steno show 20261012-100000",
-            )
+                task["note"], "From Vendor call, October 12, 2026.")
 
     def test_a_row_added_by_hand_has_the_way_back_too(self):
         (self.dir / "todos.json").write_text("[]\n")
@@ -151,7 +148,7 @@ class TestFiling(unittest.TestCase):
         sync_todos(self.dir, "")
         (task,) = self.asst.tasks()
         self.assertEqual(task["due"], "")
-        self.assertIn("steno show 20261012-100000", task["note"])
+        self.assertEqual(task["note"], "From Vendor call, October 12, 2026.")
 
     def test_a_date_changed_in_asst_stays_changed(self):
         sync_todos(self.dir, SUMMARY)
