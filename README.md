@@ -207,8 +207,10 @@ summarized) is called by it on the meeting page, in the bar of places, and in
 what the Ask box sends the model; any other far-side voice is "Them". While a
 meeting is being recorded there are no names yet. The search box reads the
 title, project, speakers' names, summary, notes, to-dos, the spoken words and
-the date ("monday", "october 12"), not the time of a line or the folder name,
-and a row says where it hit: `in speaker`, `in transcript`, and so on.
+the date ("monday", "october 12"), not the time of a line or the folder name.
+A hit in the title, date or project is highlighted in the meeting's row, which
+spells its date out for a date hit; a hit anywhere else is named instead (`in
+speaker`, `in transcript`, and so on).
 Searching for a person opens their first line, and `n` steps through the rest.
 
 A meeting that no longer matters can be put away instead of deleted.

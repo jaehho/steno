@@ -228,9 +228,29 @@ class TestSpeakerNames(OnTheShortMeeting):
             [True, False, False, True],
         )
 
-    def test_a_search_of_the_title_says_so(self):
+    def row_labels(self, row: Gtk.ListBoxRow) -> tuple[Gtk.Label, Gtk.Label]:
+        """A row's title and the line under it."""
+        title = row.get_child().get_first_child()
+        return title, title.get_next_sibling().get_first_child()
+
+    def test_a_title_hit_is_lit_in_the_title(self):
         row = self.search("named")
-        self.assertIn("in title", " ".join(label_texts(row)))
+        title, meta = self.row_labels(row)
+        self.assertIsNotNone(title.get_attributes())
+        self.assertNotIn("in title", meta.get_text())
+
+    def test_a_date_hit_spells_the_date_out_and_lights_it(self):
+        row = self.search("january 9")
+        title, meta = self.row_labels(row)
+        self.assertTrue(meta.get_text().startswith("Friday, January 9"))
+        self.assertIsNotNone(meta.get_attributes())
+        self.assertNotIn("in date", meta.get_text())
+        self.assertIsNone(title.get_attributes())
+
+    def test_a_hit_the_row_cannot_show_is_named(self):
+        _title, meta = self.row_labels(self.search("priya"))
+        self.assertIn("in speaker", meta.get_text())
+        self.assertIsNone(meta.get_attributes())
 
 
 class TestTranscriptScroll(OnTheShortMeeting):

@@ -39,9 +39,11 @@ from ..summarize import (
 )
 from . import words
 from .menu import meeting_menu_model
-from .widgets import hint_label
+from .widgets import hint_label, mark_matches, mark_spans
 
 LIVE = "live"
+# Between the date, length and project under a meeting's title.
+META_SEP = "  ·  "
 # The last row of the list, which shows or hides the archived meetings.
 ARCHIVE = "archive"
 STATES = ("idle", "recording", "finalizing", "paused")
@@ -675,14 +677,28 @@ class Sidebar(Gtk.Box):
         parts = words.row_meta(
             s.start, now, s.minutes, s.project, summarized=s.summary_path.is_file()
         )
-        if self.query:
-            hit = s.locate(self.query)
-            if hit and hit["where"]:
-                parts.append(f"in {hit['where']}")
-        meta = Gtk.Label(label="  ·  ".join(parts), xalign=0.0)
+        # A hit in what the row shows is lit there; one elsewhere is named.
+        phrase = words.search_phrase(self.query)
+        hit = s.locate(self.query) if self.query else None
+        where = hit["where"] if hit else ""
+        lit: list[int] = []
+        if where == "title":
+            mark_matches(title, phrase)
+        elif where == "date":
+            # Spelled out as it was searched: "Oct 20" holds no "october".
+            parts[0] = words.search_date(s.start)
+            lit = [0]
+        elif where == "project":
+            lit = [parts.index(s.project)]
+        elif where:
+            parts.append(f"in {where}")
+        meta = Gtk.Label(label=META_SEP.join(parts), xalign=0.0)
         meta.add_css_class("session-meta")
         meta.set_hexpand(True)
         meta.set_ellipsize(Pango.EllipsizeMode.END)
+        if lit:
+            mark_spans(meta, words.spans_in_parts(
+                parts, phrase, lit=lit, sep=META_SEP))
         line.append(meta)
         if s.open_todos:
             badge = Gtk.Label(label=words.todo_count(s.open_todos), xalign=1.0)

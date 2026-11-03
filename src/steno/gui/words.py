@@ -451,6 +451,21 @@ def match_spans(text: str, phrase: str) -> list[tuple[int, int]]:
     return [m.span() for m in re.finditer(pattern, text, re.IGNORECASE)]
 
 
+def spans_in_parts(
+    parts: Sequence[str], phrase: str, *, lit: Sequence[int], sep: str,
+) -> list[tuple[int, int]]:
+    """Where `phrase` occurs in the parts numbered `lit`, by character in
+    `sep.join(parts)`. The rest of the line is not searched: a row lights
+    what the meeting was found by, not every "min" in "45 min"."""
+    spans: list[tuple[int, int]] = []
+    at = 0
+    for i, part in enumerate(parts):
+        if i in lit:
+            spans += [(at + a, at + b) for a, b in match_spans(part, phrase)]
+        at += len(part) + len(sep)
+    return spans
+
+
 def byte_spans(text: str, spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
     """Character spans as UTF-8 byte offsets, which is what Pango counts."""
     return [

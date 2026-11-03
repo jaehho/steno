@@ -454,6 +454,16 @@ class TestSearchLocate(unittest.TestCase):
         self.assertFalse(self.session.matches("quantum"))
         self.assertTrue(self.session.matches(""))
 
+    def test_only_the_lit_parts_of_a_row_are_searched(self):
+        parts = ["Friday, January 9", "45 min", "lab"]
+        line = "  ·  ".join(parts)
+        spans = words.spans_in_parts(parts, "january 9", lit=[0], sep="  ·  ")
+        self.assertEqual([line[a:b] for a, b in spans], ["January 9"])
+        spans = words.spans_in_parts(parts, "lab", lit=[2], sep="  ·  ")
+        self.assertEqual([line[a:b] for a, b in spans], ["lab"])
+        self.assertEqual(
+            words.spans_in_parts(parts, "min", lit=[0, 2], sep="  ·  "), [])
+
     def test_two_words_must_be_together_and_in_order(self):
         self.assertTrue(self.session.matches("budget is fine"))
         self.assertFalse(self.session.matches("fine budget"))
