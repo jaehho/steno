@@ -266,9 +266,22 @@ RECORDS = [
 OFFSETS = [10, 14, 20, 75]
 
 
+class TestSpeakerTags(unittest.TestCase):
+    def test_a_place_says_who_when_the_voice_has_a_name(self):
+        record = {"speaker": "them", "who": "speaker_0", "text": "hi"}
+        (place,) = words.cite_places([(10, 10)], [record], [10], {"speaker_0": "Priya"})
+        self.assertEqual(place.speaker, "Priya")
+
+    def test_the_column_fits_its_longest_tag_within_limits(self):
+        self.assertEqual(words.tag_chars(["You", "Them"]), words.TAG_MIN_CHARS)
+        self.assertEqual(words.tag_chars(["You", "Marcus"]), len("Marcus"))
+        self.assertEqual(words.tag_chars(["x" * 40]), words.TAG_MAX_CHARS)
+        self.assertEqual(words.tag_chars([]), words.TAG_MIN_CHARS)
+
+
 class TestCitePlaces(unittest.TestCase):
     def places(self, *cites):
-        return words.cite_places(cites, RECORDS, OFFSETS)
+        return words.cite_places(cites, RECORDS, OFFSETS, {})
 
     def test_a_range_is_one_place_with_the_lines_that_follow_the_first(self):
         (place,) = self.places((10, 14))
@@ -291,7 +304,7 @@ class TestCitePlaces(unittest.TestCase):
     def test_a_cite_before_the_first_line_is_no_place(self):
         self.assertEqual(self.places((3, 5)), [])
         self.assertEqual(
-            words.cite_places([(5, 9)], [], []), []
+            words.cite_places([(5, 9)], [], [], {}), []
         )
 
     def test_a_long_line_is_quoted_up_to_a_word(self):
@@ -386,10 +399,84 @@ class TestSearchLocate(unittest.TestCase):
         for query in ("cite", "<!--", "1-2"):
             self.assertIsNone(session.locate(query))
 
+    def named(self):
+        """A meeting whose far side has two voices, one of them known."""
+        (self.dir / "transcript.jsonl").write_text(
+            '{"ts": 1, "speaker": "them", "who": "speaker_1", "text": "hello"}\n'
+            '{"ts": 2, "speaker": "them", "who": "speaker_0", "text": "the budget"}\n'
+            '{"ts": 3, "speaker": "you", "text": "we need the roadmap"}\n'
+        )
+        (self.dir / "speakers.json").write_text('{"speaker_0": "Priya"}')
+        return type(self.session)(self.dir)
+
+    def test_a_person_is_found_at_their_first_line(self):
+        hit = self.named().locate("priya")
+        self.assertEqual((hit["where"], hit["line"]), ("speaker", 1))
+
+    def test_a_name_and_a_word_are_one_phrase_like_any_other(self):
+        """Priya says "the budget", but nobody says "priya budget"."""
+        self.assertIsNone(self.named().locate("priya budget"))
+
+    def test_a_name_nobody_speaks_under_finds_nothing(self):
+        """`steno realign` drops the voices, and the file stays behind."""
+        (self.dir / "speakers.json").write_text('{"speaker_0": "Priya"}')
+        self.assertIsNone(type(self.session)(self.dir).locate("priya"))
+
+    def test_the_markup_of_a_transcript_line_is_not_searched(self):
+        """It was `[09:30:00] them: words`, so these found every meeting."""
+        (self.dir / "transcript.txt").write_text("[09:30:00] them: zebra\n")
+        session = type(self.session)(self.dir)
+        for query in ("them", "09:3", "zebra"):
+            self.assertIsNone(session.locate(query), query)
+
+    def test_the_folder_name_is_not_searched(self):
+        for query in ("20260927", "100000", "-"):
+            self.assertIsNone(self.session.locate(query), query)
+
+    def test_the_date_is_searched_as_it_reads(self):
+        for query in ("sunday", "september 27", "sep"):
+            self.assertEqual(self.session.locate(query)["where"], "date", query)
+
+    def test_the_date_is_found_the_ways_people_write_it(self):
+        """The meeting is on Sunday, September 27, 2026."""
+        for query in ("sun", "sep 27", "sept 27th", "27 september", "9/27",
+                      "09/27/2026", "9/27/26", "27/9", "2026-09-27",
+                      "sun sep 27", "Sunday, September 27", "sep 2026"):
+            hit = self.session.locate(query)
+            self.assertEqual(hit and hit["where"], "date", query)
+
+    def test_another_day_or_a_word_that_is_not_a_date_finds_nothing(self):
+        for query in ("monday", "sep 28", "9/28", "9/27/25", "oct", "mon sep 27",
+                      "day", "27", "2026", "sept budget", "marc", "13/40"):
+            self.assertIsNone(self.session.locate(query), query)
+
+
+    def test_a_line_comes_before_the_date(self):
+        (self.dir / "transcript.jsonl").write_text(
+            '{"ts": 1, "speaker": "them", "text": "see you sunday"}\n'
+        )
+        hit = type(self.session)(self.dir).locate("sunday")
+        self.assertEqual((hit["where"], hit["line"]), ("transcript", 0))
+
+    def test_a_project_hit_says_project(self):
+        (self.dir / "meta.json").write_text('{"project": "lab"}')
+        session = type(self.session)(self.dir)
+        self.assertEqual(session.locate("lab")["where"], "project")
+
     def test_matches_delegates_to_locate(self):
         self.assertTrue(self.session.matches("roadmap"))
         self.assertFalse(self.session.matches("quantum"))
         self.assertTrue(self.session.matches(""))
+
+    def test_only_the_lit_parts_of_a_row_are_searched(self):
+        parts = ["Friday, January 9", "45 min", "lab"]
+        line = "  ·  ".join(parts)
+        spans = words.spans_in_parts(parts, "january 9", lit=[0], sep="  ·  ")
+        self.assertEqual([line[a:b] for a, b in spans], ["January 9"])
+        spans = words.spans_in_parts(parts, "lab", lit=[2], sep="  ·  ")
+        self.assertEqual([line[a:b] for a, b in spans], ["lab"])
+        self.assertEqual(
+            words.spans_in_parts(parts, "min", lit=[0, 2], sep="  ·  "), [])
 
     def test_two_words_must_be_together_and_in_order(self):
         self.assertTrue(self.session.matches("budget is fine"))
@@ -408,6 +495,33 @@ class TestSearchLocate(unittest.TestCase):
         session = type(self.session)(self.dir)
         self.assertEqual(session.locate("renew the")["where"], "to-dos")
 
+
+class TestDateSearch(unittest.TestCase):
+    TUESDAY = datetime(2026, 10, 20, 14, 7)
+
+    def lit(self, query: str, start: datetime = TUESDAY) -> list[str]:
+        """What a date search lights in the date a row spells out."""
+        text = words.search_date(start)
+        spans = words.date_spans(words.date_query(query), start)
+        return [text[a:b] for a, b in spans]
+
+    def test_a_month_and_day_light_together(self):
+        for query in ("oct 20", "10/20", "october 20th", "2026-10-20"):
+            self.assertEqual(self.lit(query), ["October 20"], query)
+
+    def test_a_weekday_lights_the_weekday(self):
+        for query in ("tue", "tues", "tuesday"):
+            self.assertEqual(self.lit(query), ["Tuesday"], query)
+        wednesday = datetime(2026, 10, 21)
+        self.assertEqual(self.lit("weds", wednesday), ["Wednesday"])
+
+    def test_every_part_named_is_lit(self):
+        self.assertEqual(self.lit("tue oct 20"), ["Tuesday", "October 20"])
+        self.assertEqual(self.lit("oct"), ["October"])
+
+    def test_another_day_lights_nothing(self):
+        self.assertEqual(self.lit("wed oct 20"), [])
+        self.assertEqual(self.lit("10/21"), [])
 
 class TestSummaryMissing(unittest.TestCase):
     def test_offers_to_write_it_when_there_is_a_transcript(self):

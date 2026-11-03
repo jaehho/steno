@@ -9,9 +9,9 @@ import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
-from .. import citations
+from .. import citations, speakers
 from ..notesjob import NotesPhase, NotesState
 from ..playback import format_offset
 
@@ -36,8 +36,36 @@ OWNER_RE = re.compile(r"^\*\*[^*]+\*\*:?$")
 NUMBERED_RE = re.compile(r"\d+[.)]")
 # How much of a cited line the strip quotes before it says "…".
 QUOTE_CHARS = 90
+# A speaker tag's column: "Them" and "You" at the least, and a long name cut.
+TAG_MIN_CHARS = 5
+TAG_MAX_CHARS = 12
 # The href of the "Summarize again" link in the note by the heading.
 SUMMARIZE_AGAIN = "summarize"
+
+# The words a date search is made of: each name whole, or one of the
+# short forms people write, never any prefix ("marc" is a person).
+_WEEKDAYS = {
+    name: number for number, names in enumerate((
+        ("monday", "mon"), ("tuesday", "tue", "tues"),
+        ("wednesday", "wed", "weds"), ("thursday", "thu", "thur", "thurs"),
+        ("friday", "fri"), ("saturday", "sat"), ("sunday", "sun"),
+    )) for name in names
+}
+_MONTHS = {
+    name: number for number, names in enumerate((
+        ("january", "jan"), ("february", "feb"), ("march", "mar"),
+        ("april", "apr"), ("may",), ("june", "jun"), ("july", "jul"),
+        ("august", "aug"), ("september", "sep", "sept"),
+        ("october", "oct"), ("november", "nov"), ("december", "dec"),
+    ), start=1) for name in names
+}
+# "10/20", "10/20/26": month first, as dates are written here.
+_SLASHED = re.compile(r"(\d{1,2})/(\d{1,2})(?:/(\d{2}|\d{4}))?")
+_ISO = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+_DAY = re.compile(r"(\d{1,2})(?:st|nd|rd|th)?")
+_YEAR = re.compile(r"(?:19|20)\d{2}")
+LAST_MONTH = 12
+LAST_DAY = 31
 
 
 def list_section(start: datetime, now: datetime) -> str:
@@ -74,6 +102,112 @@ def row_meta(
     if not summarized:
         parts.append("no summary")
     return [p for p in parts if p]
+
+
+def search_date(start: datetime) -> str:
+    """The date a search can find a meeting by: "Sunday, September 27".
+
+    No time and no year. "09:3" should not find a meeting by its hour, and
+    with the year "20" would find them all.
+    """
+    return f"{start:%A}, {start:%B} {start.day}"
+
+
+class DateQuery(NamedTuple):
+    """A search read as a date. A part it does not name is None."""
+    weekday: int | None  # Monday is 0
+    month: int | None
+    day: int | None
+    year: int | None
+
+
+def date_query(phrase: str) -> DateQuery | None:
+    """A search as a date ("oct 20", "10/20", "weds", "tue oct 20th"), or
+    None if any word of it is not part of one.
+
+    A day needs a month or a weekday, and a year needs a month: "20" and
+    "2026" alone would find every meeting.
+    """
+    found: dict[str, int] = {}
+    for word in re.split(r"[\s,]+", phrase.lower().strip(" ,.")):
+        parts = _date_word(word.rstrip("."))
+        if parts is None or found.keys() & parts.keys():
+            return None
+        found.update(parts)
+    if "day" in found and not found.keys() & {"month", "weekday"}:
+        return None
+    if "year" in found and "month" not in found:
+        return None
+    if not found:
+        return None
+    return DateQuery(found.get("weekday"), found.get("month"),
+                     found.get("day"), found.get("year"))
+
+
+def _date_word(word: str) -> dict[str, int] | None:
+    """The parts of a date one word names, or None if it names none."""
+    if word in _WEEKDAYS:
+        return {"weekday": _WEEKDAYS[word]}
+    if word in _MONTHS:
+        return {"month": _MONTHS[word]}
+    if _YEAR.fullmatch(word):
+        return {"year": int(word)}
+    return _numeric_date(word)
+
+
+def _numeric_date(word: str) -> dict[str, int] | None:
+    """A day ("20", "20th") or a date in figures ("10/20", "2026-10-20")."""
+    if m := _DAY.fullmatch(word):
+        return _calendar(None, int(m[1]), None)
+    if m := _ISO.fullmatch(word):
+        return _calendar(int(m[2]), int(m[3]), int(m[1]))
+    if not (m := _SLASHED.fullmatch(word)):
+        return None
+    first, second = int(m[1]), int(m[2])
+    # "20/10" can only be day first, so it is read that way.
+    if first > LAST_MONTH >= second:
+        first, second = second, first
+    year = None if m[3] is None else int(m[3]) % 100 + 2000
+    return _calendar(first, second, year)
+
+
+def _calendar(
+    month: int | None, day: int, year: int | None,
+) -> dict[str, int] | None:
+    """A month, day and year as date parts, or None if one cannot be."""
+    if not 1 <= day <= LAST_DAY or (
+        month is not None and not 1 <= month <= LAST_MONTH
+    ):
+        return None
+    parts = {"day": day, "month": month, "year": year}
+    return {k: v for k, v in parts.items() if v is not None}
+
+
+def date_spans(
+    query: DateQuery | None, start: datetime,
+) -> list[tuple[int, int]]:
+    """Where `query` lights `search_date(start)`, by character, or [] if it
+    names another day. A month and its day are lit as one, "October 20".
+    """
+    if query is None:
+        return []
+    actual = (start.weekday(), start.month, start.day, start.year)
+    if any(want is not None and want != got
+           for want, got in zip(query, actual, strict=True)):
+        return []
+    weekday, month = f"{start:%A}", f"{start:%B}"
+    month_at = len(weekday) + len(", ")
+    day_at = month_at + len(month) + 1
+    day_end = day_at + len(str(start.day))
+    spans = []
+    if query.weekday is not None:
+        spans.append((0, len(weekday)))
+    if query.month is not None:
+        spans.append(
+            (month_at, day_end if query.day is not None else day_at - 1))
+    elif query.day is not None:
+        spans.append((day_at, day_end))
+    return spans
 
 
 def page_subtitle(
@@ -375,9 +509,16 @@ class Place:
 
     rows: list[int]  # transcript records it covers, in order
     stamp: str  # when the first of them starts, as the gutter says
-    speaker: str  # "You" or "Them"
+    speaker: str  # as the line's tag says it
     quote: str  # the start of the first of them
     more: int  # how many lines follow it inside the cite
+
+
+def tag_chars(tags: Sequence[str]) -> int:
+    """How wide a column of speaker tags is: its longest, so that the words
+    beside them all start under each other, up to where a long name is cut."""
+    longest = max((len(t) for t in tags), default=0)
+    return min(max(longest, TAG_MIN_CHARS), TAG_MAX_CHARS)
 
 
 def quote(text: str) -> str:
@@ -391,7 +532,7 @@ def quote(text: str) -> str:
 
 def cite_places(
     cites: Sequence[citations.Cite], records: Sequence[dict],
-    offsets: Sequence[int],
+    offsets: Sequence[int], names: dict[str, str],
 ) -> list[Place]:
     """The places a list of cites points at, top of the transcript first.
 
@@ -408,7 +549,7 @@ def cite_places(
         places[tuple(rows)] = Place(
             rows,
             format_offset(offsets[rows[0]]),
-            "Them" if first.get("speaker", "them") == "them" else "You",
+            speakers.tag(first, names),
             quote(str(first.get("text", ""))),
             len(rows) - 1,
         )
@@ -430,6 +571,21 @@ def match_spans(text: str, phrase: str) -> list[tuple[int, int]]:
         return []
     pattern = r"\s+".join(re.escape(word) for word in phrase.split())
     return [m.span() for m in re.finditer(pattern, text, re.IGNORECASE)]
+
+
+def spans_in_parts(
+    parts: Sequence[str], phrase: str, *, lit: Sequence[int], sep: str,
+) -> list[tuple[int, int]]:
+    """Where `phrase` occurs in the parts numbered `lit`, by character in
+    `sep.join(parts)`. The rest of the line is not searched: a row lights
+    what the meeting was found by, not every "min" in "45 min"."""
+    spans: list[tuple[int, int]] = []
+    at = 0
+    for i, part in enumerate(parts):
+        if i in lit:
+            spans += [(at + a, at + b) for a, b in match_spans(part, phrase)]
+        at += len(part) + len(sep)
+    return spans
 
 
 def byte_spans(text: str, spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:

@@ -7,8 +7,9 @@ there is one place to look, whether a call is happening or not.
 from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
+import contextlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from .. import citations, projectnotes
 from ..cost import format_meter, prerecorded_cost, stream_cost
 from ..merge import previous_session
 from ..notes import ensure_todos, load_todos, open_count
+from ..speakers import load_names, name_of, names_path
 from ..summarize import (
     SUMMARY_FILENAME,
     duration_minutes,
@@ -33,12 +35,15 @@ from ..summarize import (
     load_title,
     session_stamp,
     stamp_with_archived,
+    transcript_path,
 )
 from . import words
 from .menu import meeting_menu_model
-from .widgets import hint_label
+from .widgets import hint_label, mark_matches, mark_spans
 
 LIVE = "live"
+# Between the date, length and project under a meeting's title.
+META_SEP = "  ·  "
 # The last row of the list, which shows or hides the archived meetings.
 ARCHIVE = "archive"
 STATES = ("idle", "recording", "finalizing", "paused")
@@ -66,6 +71,8 @@ class Session:
         self.minutes = duration_minutes(load_records(path))
         self.cost = _session_cost(path, self.minutes)
         self.stamp = session_stamp(path)
+        self._spoken: list[tuple[str, str]] = []
+        self._spoken_stamp: tuple | None = None
 
     @property
     def summary_path(self) -> Path:
@@ -83,39 +90,69 @@ class Session:
     def locate(self, query: str) -> dict | None:
         """Where a query hit, or None. `{"where": label, "line": n}`.
 
-        `where` is the surface the reader cares about — summary, notes, to-dos
-        or the transcript — and `line` is a 0-based transcript line so the meeting
-        page can scroll to the sentence rather than just opening the meeting
-        and leaving the reader to hunt for it.
+        `where` is the surface the reader cares about (the title, a
+        speaker, the summary, notes, to-dos or the transcript) and `line`
+        is a 0-based transcript line, so the meeting page can scroll to the
+        sentence rather than just opening the meeting and leaving the reader
+        to hunt for it.
         """
         if not query:
             return {"where": "", "line": 0}
         phrase = words.search_phrase(query)
-
-        def hit(text: str) -> bool:
-            return bool(words.match_spans(text, phrase))
-
-        if hit(self.title or "") or hit(self.project or "") or hit(self.dir.name):
-            return {"where": "title", "line": -1}
-        for name, label in ((SUMMARY_FILENAME, "summary"), ("notes.md", "notes")):
-            try:
-                text = _read_searchable(self.dir / name)
-            except OSError:
-                continue
-            if hit(text):
-                return {"where": label, "line": -1}
-        if any(hit(todo.text) for todo in load_todos(self.dir)):
-            return {"where": "to-dos", "line": -1}
-        try:
-            lines = (self.dir / "transcript.txt").read_text().splitlines()
-        except OSError:
-            # A meeting that was quit before it was finished has only the
-            # far side's jsonl; it must still be findable.
-            lines = [str(r.get("text", "")) for r in load_records(self.dir)]
-        for i, line in enumerate(lines):
-            if hit(line):
-                return {"where": "transcript", "line": i}
+        for where, line, text in self._surfaces():
+            if words.match_spans(text, phrase):
+                return {"where": where, "line": line}
+        # After the words, so that "may" in a line still lands on the line.
+        if words.date_spans(words.date_query(phrase), self.start):
+            return {"where": "date", "line": -1}
         return None
+
+    def _spoken_lines(self) -> list[tuple[str, str]]:
+        """Each transcript line's `(name of who said it, words)`.
+
+        Kept until the transcript or the names change: a search asks every
+        meeting on every key, and parsing them all each time stalls typing.
+        """
+        stamp = (
+            _file_stamp(transcript_path(self.dir)),
+            _file_stamp(names_path(self.dir)),
+        )
+        if stamp != self._spoken_stamp:
+            names = load_names(self.dir)
+            self._spoken = [
+                (name_of(r, names), str(r.get("text", "")))
+                for r in load_records(self.dir)
+            ]
+            self._spoken_stamp = stamp
+        return self._spoken
+
+    def _surfaces(self) -> Iterator[tuple[str, int, str]]:
+        """What search reads, in the order a hit counts: `(where, line, text)`.
+
+        A generator, because a search that ends at the title has no need
+        of the transcript.
+        """
+        yield "title", -1, self.title or ""
+        yield "project", -1, self.project or ""
+        spoken = self._spoken_lines()
+        for i, (name, _line) in enumerate(spoken):
+            yield "speaker", i, name
+        for name, label in ((SUMMARY_FILENAME, "summary"), ("notes.md", "notes")):
+            with contextlib.suppress(OSError):
+                yield label, -1, _read_searchable(self.dir / name)
+        for todo in load_todos(self.dir):
+            yield "to-dos", -1, todo.text
+        for i, (_name, line) in enumerate(spoken):
+            yield "transcript", i, line
+
+
+def _file_stamp(path: Path) -> tuple[int, int]:
+    """What changes when a file does; a missing file has its own."""
+    try:
+        info = path.stat()
+    except OSError:
+        return (0, 0)
+    return (info.st_mtime_ns, info.st_size)
 
 
 def _read_searchable(path: Path) -> str:
@@ -641,14 +678,30 @@ class Sidebar(Gtk.Box):
         parts = words.row_meta(
             s.start, now, s.minutes, s.project, summarized=s.summary_path.is_file()
         )
-        if self.query:
-            hit = s.locate(self.query)
-            if hit and hit["where"] in ("summary", "notes", "to-dos", "transcript"):
-                parts.append(f"in {hit['where']}")
-        meta = Gtk.Label(label="  ·  ".join(parts), xalign=0.0)
+        # A hit in what the row shows is lit there; one elsewhere is named.
+        phrase = words.search_phrase(self.query)
+        hit = s.locate(self.query) if self.query else None
+        where = hit["where"] if hit else ""
+        spans: list[tuple[int, int]] = []
+        if where == "title":
+            mark_matches(title, phrase)
+        elif where == "date":
+            # Spelled out, with what the search named lit: "Oct 20" holds
+            # no "october", and "10/20" is in neither. It opens the line,
+            # so its spans are the line's.
+            parts[0] = words.search_date(s.start)
+            spans = words.date_spans(words.date_query(phrase), s.start)
+        elif where == "project":
+            spans = words.spans_in_parts(
+                parts, phrase, lit=[parts.index(s.project)], sep=META_SEP)
+        elif where:
+            parts.append(f"in {where}")
+        meta = Gtk.Label(label=META_SEP.join(parts), xalign=0.0)
         meta.add_css_class("session-meta")
         meta.set_hexpand(True)
         meta.set_ellipsize(Pango.EllipsizeMode.END)
+        if spans:
+            mark_spans(meta, spans)
         line.append(meta)
         if s.open_todos:
             badge = Gtk.Label(label=words.todo_count(s.open_todos), xalign=1.0)
@@ -664,6 +717,9 @@ class Sidebar(Gtk.Box):
 
     def _on_search(self, entry) -> None:
         self.query = entry.get_text().strip()
+        dated = words.date_query(words.search_phrase(self.query)) is not None
+        (entry.add_css_class if dated else entry.remove_css_class)("date-query")
+        entry.set_tooltip_text("Also finding meetings on this date" if dated else None)
         # A new query is a new question: its first hit is what it means,
         # so the page starts there rather than at whatever was open
         # (issue #20). Clearing it keeps the meeting being read.

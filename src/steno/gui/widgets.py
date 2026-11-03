@@ -62,8 +62,13 @@ def mark_matches(label: Gtk.Label, phrase: str) -> None:
 
     Attributes sit on top of the label's markup and leave its text alone.
     """
+    mark_spans(label, words.match_spans(label.get_text(), phrase))
+
+
+def mark_spans(label: Gtk.Label, spans: list[tuple[int, int]]) -> None:
+    """Highlight these character spans of `label`; none clears it."""
     text = label.get_text()
-    spans = words.byte_spans(text, words.match_spans(text, phrase))
+    spans = words.byte_spans(text, spans)
     if not spans:
         label.set_attributes(None)
         return

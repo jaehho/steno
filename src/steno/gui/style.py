@@ -188,6 +188,11 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
     .side-column.below {{ border-top: 1px solid {colors['surface0']}; }}
     .side-column.beside {{ border-left: 1px solid {colors['surface0']}; }}
     .search-alone {{ padding: 4px 12px 8px; }}
+    /* A search also read as a date says so in its own words; a search
+       that found nothing is still red. */
+    entry.date-query:not(.error) > text {{
+        color: {colors['teal']}; font-weight: 600;
+    }}
     .panel-below {{ border-top: 1px solid {colors['surface0']}; }}
     .panel-beside {{ border-left: 1px solid {colors['surface0']}; }}
 

@@ -230,8 +230,9 @@ class CiteBar(Gtk.Box):
         self.clear()
         self.count.set_text(places_word(len(places)))
         self.title.set_markup(title)
+        who_chars = words.tag_chars([place.speaker for place in places])
         for index, place in enumerate(places):
-            button = self._place_row(place, playable)
+            button = self._place_row(place, playable, who_chars)
             button.connect("clicked", lambda _b, i=index: self._on_pick(i))
             self.places.append(button)
             self._buttons.append(button)
@@ -241,14 +242,18 @@ class CiteBar(Gtk.Box):
         self.set_visible(True)
 
     @staticmethod
-    def _place_row(place: words.Place, playable: bool) -> Gtk.Button:
+    def _place_row(
+        place: words.Place, playable: bool, who_chars: int,
+    ) -> Gtk.Button:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         stamp = Gtk.Label(label=place.stamp, xalign=1.0)
         stamp.add_css_class("place-stamp")
         stamp.set_width_chars(5)
         who = Gtk.Label(label=place.speaker, xalign=0.0)
         who.add_css_class("place-who")
-        who.set_width_chars(4)
+        who.set_width_chars(who_chars)
+        who.set_max_width_chars(who_chars)
+        who.set_ellipsize(Pango.EllipsizeMode.END)
         quote = Gtk.Label(label=f"“{place.quote}”", xalign=0.0)
         quote.set_ellipsize(Pango.EllipsizeMode.END)
         quote.set_hexpand(True)

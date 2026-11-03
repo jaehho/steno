@@ -61,6 +61,8 @@ from ..playback import (
 )
 from ..realign import plan
 from ..retention import audio_bytes, delete_audio, delete_session, human_bytes
+from ..speakers import load_names, name_of
+from ..speakers import tag as speaker_tag
 from ..summarize import (
     list_projects,
     load_meta,
@@ -155,6 +157,7 @@ class MeetingPage(Gtk.Box):
         self._asst_bus = None
         self.current: Session | None = None
         self._records: list[dict] = []
+        self._names: dict[str, str] = {}
         # How much of the summary on the page cites, for the note by its
         # heading.
         self._seen = citations.Coverage()
@@ -447,14 +450,19 @@ class MeetingPage(Gtk.Box):
             if i < len(self._rows):
                 self._rows[i].remove_css_class("line-hit")
                 _line_text(self._rows[i]).set_attributes(None)
+                _line_tag(self._rows[i]).set_attributes(None)
         self._clear_hit()
         self._hits = []
         self._search_phrase = words.search_phrase(query)
         for i, record in enumerate(self._records):
-            if words.match_spans(str(record.get("text", "")), self._search_phrase):
+            # A line is found by its words or by the name of who said it.
+            if any(words.match_spans(said, self._search_phrase) for said in (
+                str(record.get("text", "")), name_of(record, self._names),
+            )):
                 self._hits.append(i)
                 self._rows[i].add_css_class("line-hit")
                 mark_matches(_line_text(self._rows[i]), self._search_phrase)
+                mark_matches(_line_tag(self._rows[i]), self._search_phrase)
         self._mark_summary()
         for label in self._todo_labels:
             mark_matches(label, self._search_phrase)
@@ -672,7 +680,11 @@ class MeetingPage(Gtk.Box):
         s = self.current
         if s is None or (session_dir is not None and s.dir != session_dir):
             return
-        if load_records(s.dir) != self._records:
+        # A summary can teach the names without changing a line.
+        if (
+            load_records(s.dir) != self._records
+            or load_names(s.dir) != self._names
+        ):
             # New rows have none of the lines lit; light them again.
             active = self._active
             self._load_transcript(s)
@@ -1165,6 +1177,7 @@ class MeetingPage(Gtk.Box):
             self.transcript_list.remove(row)
         self._clear_cites()
         self._records = load_records(s.dir)
+        self._names = load_names(s.dir)
         # Repairs and caches `started_at` for sessions recorded before the tool
         # wrote one, so the gutter and playback agree from the first click.
         self._started_at = repair_started_at(s.dir, self._records)
@@ -1176,7 +1189,12 @@ class MeetingPage(Gtk.Box):
 
         # Every line's row now, for whatever marks lines by number; into
         # the list a screenful at once and the rest by frames.
-        self._rows = [_transcript_row(r, self._started_at) for r in self._records]
+        tags = [speaker_tag(r, self._names) for r in self._records]
+        tag_chars = words.tag_chars(tags)
+        self._rows = [
+            _transcript_row(r, self._started_at, tag, tag_chars)
+            for r, tag in zip(self._records, tags, strict=True)
+        ]
         self._attached = 0
         self._attach(FIRST_LINES)
         if self._filling:
@@ -1363,7 +1381,9 @@ class MeetingPage(Gtk.Box):
 
     def _show_cites(self, source: CiteSource, scroll: bool) -> None:
         self._clear_cites()
-        places = words.cite_places(source.cites, self._records, self._display)
+        places = words.cite_places(
+            source.cites, self._records, self._display, self._names
+        )
         if not places:
             self._toast("Those lines are not in this transcript")
             return
@@ -1883,7 +1903,9 @@ def _ticks(todos: list[Todo]) -> dict[str, bool]:
     return {t.key: t.done for t in todos}
 
 
-def _transcript_row(record: dict, started_at: float) -> Gtk.ListBoxRow:
+def _transcript_row(
+    record: dict, started_at: float, tag_text: str, tag_chars: int,
+) -> Gtk.ListBoxRow:
     """One line of transcript, and one seek point."""
     row = Gtk.ListBoxRow()
     row.set_activatable(True)
@@ -1898,10 +1920,12 @@ def _transcript_row(record: dict, started_at: float) -> Gtk.ListBoxRow:
     stamp.set_valign(Gtk.Align.START)
     stamp.set_width_chars(5)
 
-    tag = Gtk.Label(label="Them" if speaker == "them" else "You", xalign=0.0)
+    tag = Gtk.Label(label=tag_text, xalign=0.0)
     tag.add_css_class("speaker-tag")
     tag.set_valign(Gtk.Align.START)
-    tag.set_width_chars(5)
+    tag.set_width_chars(tag_chars)
+    tag.set_max_width_chars(tag_chars)
+    tag.set_ellipsize(Pango.EllipsizeMode.END)
 
     text = Gtk.Label(label=str(record.get("text", "")), xalign=0.0)
     text.set_wrap(True)
@@ -1922,3 +1946,8 @@ def _transcript_row(record: dict, started_at: float) -> Gtk.ListBoxRow:
 def _line_text(row: Gtk.ListBoxRow) -> Gtk.Label:
     """The words of a transcript line, the last thing in its row."""
     return row.get_child().get_last_child()
+
+
+def _line_tag(row: Gtk.ListBoxRow) -> Gtk.Label:
+    """Who said a transcript line, just before its words."""
+    return _line_text(row).get_prev_sibling()

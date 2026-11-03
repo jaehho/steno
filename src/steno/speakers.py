@@ -25,8 +25,11 @@ NAMES_FILENAME = "speakers.json"
 # the name itself must be capitalized. "this is" only opens an utterance
 # ("This is Alice from Acme"), since mid-sentence it is "this is Python".
 _NAME = r"([A-Z][a-zA-Z'\u2019-]{1,24})\b"
+# "I'm I'm gonna": a stutter. The second "I'm" (or "I'll", "I've") is
+# nobody's name, and an introduction may still follow it.
+_SELF = r"I['\u2019]"
 _INTRODUCED = re.compile(
-    r"\b(?i:my name is|i['\u2019]m|i am)\s+" + _NAME
+    r"\b(?i:my name is|i['\u2019]m|i am)\s+(?!" + _SELF + ")" + _NAME
 )
 _OPENING = re.compile(r"^\W*(?i:this is)\s+" + _NAME)
 # Capitalized words that follow those lead-ins without being anyone's name.
@@ -59,7 +62,10 @@ def load_names(session_dir: Path) -> dict[str, str]:
         return {}
     if not isinstance(raw, dict):
         return {}
-    return {str(k): str(v) for k, v in raw.items() if v}
+    # A file learned before the stutter rule can hold "I'm": it is left
+    # out, so the voice is "Them" again and the next summary relearns it.
+    return {str(k): str(v) for k, v in raw.items()
+            if v and not re.match(_SELF, str(v))}
 
 
 def save_names(session_dir: Path, names: dict[str, str]) -> None:
@@ -71,12 +77,21 @@ def save_names(session_dir: Path, names: dict[str, str]) -> None:
     )
 
 
+def name_of(record: dict, names: dict[str, str]) -> str:
+    """The person a line's voice turned out to be, or "" if nobody knows."""
+    return names.get(str(record.get("who") or ""), "")
+
+
 def label(record: dict, names: dict[str, str]) -> str:
     """What a line should call its speaker: a name if we have one, else `them`."""
-    who = str(record.get("who") or "")
-    if who and who in names:
-        return names[who]
-    return str(record.get("speaker", "them"))
+    return name_of(record, names) or str(record.get("speaker", "them"))
+
+
+def tag(record: dict, names: dict[str, str]) -> str:
+    """`label` as the window prints it: the name, else "Them" or "You"."""
+    return name_of(record, names) or (
+        "Them" if record.get("speaker", "them") == "them" else "You"
+    )
 
 
 def _introduced(text: str) -> str | None:

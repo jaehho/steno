@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from steno.speakers import label, learn_from, load_names, save_names
+from steno.speakers import (
+    label,
+    learn_from,
+    load_names,
+    save_names,
+    tag,
+)
 
 
 class TestNames(unittest.TestCase):
@@ -36,6 +42,19 @@ class TestLabel(unittest.TestCase):
     def test_near_side_stays_you(self):
         row = {"speaker": "you", "who": "", "text": "hi"}
         self.assertEqual(label(row, {}), "you")
+
+
+class TestTag(unittest.TestCase):
+    def test_a_named_voice_is_tagged_with_the_name(self):
+        row = {"speaker": "them", "who": "speaker_0", "text": "hi"}
+        self.assertEqual(tag(row, {"speaker_0": "Alice"}), "Alice")
+
+    def test_an_unnamed_voice_is_them(self):
+        row = {"speaker": "them", "who": "speaker_1", "text": "hi"}
+        self.assertEqual(tag(row, {"speaker_0": "Alice"}), "Them")
+
+    def test_the_near_side_is_you(self):
+        self.assertEqual(tag({"speaker": "you", "text": "hi"}, {}), "You")
 
 
 class TestLearn(unittest.TestCase):
@@ -134,3 +153,18 @@ class TestFalseIntroductions(unittest.TestCase):
 
     def test_a_feeling_is_not_a_name(self):
         self.assertEqual(self._learn("I'm Sorry about that"), {})
+
+    def test_a_stutter_is_not_a_name(self):
+        # 20261102-121744, 20261020-140743: these taught the map `I'm`.
+        for text in ("So I'm I'm gonna", "that I'm I'm... I have three",
+                     "I'm I'll check", "I am I\u2019m not sure"):
+            self.assertEqual(self._learn(text), {}, text)
+
+    def test_an_introduction_after_a_stutter_still_counts(self):
+        self.assertEqual(self._learn("I'm I'm Alice").get("speaker_0"), "Alice")
+
+    def test_a_stutter_already_learned_is_not_read_back(self):
+        save_names(self.dir, {"speaker_0": "I'm", "speaker_1": "Alice"})
+        self.assertEqual(load_names(self.dir), {"speaker_1": "Alice"})
+        row = {"speaker": "them", "who": "speaker_0", "text": "Hi, I'm Bob"}
+        self.assertEqual(learn_from(self.dir, [row])["speaker_0"], "Bob")
