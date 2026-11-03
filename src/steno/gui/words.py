@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from .. import citations, speakers
 from ..notesjob import NotesPhase, NotesState
@@ -41,6 +41,31 @@ TAG_MIN_CHARS = 5
 TAG_MAX_CHARS = 12
 # The href of the "Summarize again" link in the note by the heading.
 SUMMARIZE_AGAIN = "summarize"
+
+# The words a date search is made of: each name whole, or one of the
+# short forms people write, never any prefix ("marc" is a person).
+_WEEKDAYS = {
+    name: number for number, names in enumerate((
+        ("monday", "mon"), ("tuesday", "tue", "tues"),
+        ("wednesday", "wed", "weds"), ("thursday", "thu", "thur", "thurs"),
+        ("friday", "fri"), ("saturday", "sat"), ("sunday", "sun"),
+    )) for name in names
+}
+_MONTHS = {
+    name: number for number, names in enumerate((
+        ("january", "jan"), ("february", "feb"), ("march", "mar"),
+        ("april", "apr"), ("may",), ("june", "jun"), ("july", "jul"),
+        ("august", "aug"), ("september", "sep", "sept"),
+        ("october", "oct"), ("november", "nov"), ("december", "dec"),
+    ), start=1) for name in names
+}
+# "10/20", "10/20/26": month first, as dates are written here.
+_SLASHED = re.compile(r"(\d{1,2})/(\d{1,2})(?:/(\d{2}|\d{4}))?")
+_ISO = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+_DAY = re.compile(r"(\d{1,2})(?:st|nd|rd|th)?")
+_YEAR = re.compile(r"(?:19|20)\d{2}")
+LAST_MONTH = 12
+LAST_DAY = 31
 
 
 def list_section(start: datetime, now: datetime) -> str:
@@ -86,6 +111,103 @@ def search_date(start: datetime) -> str:
     with the year "20" would find them all.
     """
     return f"{start:%A}, {start:%B} {start.day}"
+
+
+class DateQuery(NamedTuple):
+    """A search read as a date. A part it does not name is None."""
+    weekday: int | None  # Monday is 0
+    month: int | None
+    day: int | None
+    year: int | None
+
+
+def date_query(phrase: str) -> DateQuery | None:
+    """A search as a date ("oct 20", "10/20", "weds", "tue oct 20th"), or
+    None if any word of it is not part of one.
+
+    A day needs a month or a weekday, and a year needs a month: "20" and
+    "2026" alone would find every meeting.
+    """
+    found: dict[str, int] = {}
+    for word in re.split(r"[\s,]+", phrase.lower().strip(" ,.")):
+        parts = _date_word(word.rstrip("."))
+        if parts is None or found.keys() & parts.keys():
+            return None
+        found.update(parts)
+    if "day" in found and not found.keys() & {"month", "weekday"}:
+        return None
+    if "year" in found and "month" not in found:
+        return None
+    if not found:
+        return None
+    return DateQuery(found.get("weekday"), found.get("month"),
+                     found.get("day"), found.get("year"))
+
+
+def _date_word(word: str) -> dict[str, int] | None:
+    """The parts of a date one word names, or None if it names none."""
+    if word in _WEEKDAYS:
+        return {"weekday": _WEEKDAYS[word]}
+    if word in _MONTHS:
+        return {"month": _MONTHS[word]}
+    if _YEAR.fullmatch(word):
+        return {"year": int(word)}
+    return _numeric_date(word)
+
+
+def _numeric_date(word: str) -> dict[str, int] | None:
+    """A day ("20", "20th") or a date in figures ("10/20", "2026-10-20")."""
+    if m := _DAY.fullmatch(word):
+        return _calendar(None, int(m[1]), None)
+    if m := _ISO.fullmatch(word):
+        return _calendar(int(m[2]), int(m[3]), int(m[1]))
+    if not (m := _SLASHED.fullmatch(word)):
+        return None
+    first, second = int(m[1]), int(m[2])
+    # "20/10" can only be day first, so it is read that way.
+    if first > LAST_MONTH >= second:
+        first, second = second, first
+    year = None if m[3] is None else int(m[3]) % 100 + 2000
+    return _calendar(first, second, year)
+
+
+def _calendar(
+    month: int | None, day: int, year: int | None,
+) -> dict[str, int] | None:
+    """A month, day and year as date parts, or None if one cannot be."""
+    if not 1 <= day <= LAST_DAY or (
+        month is not None and not 1 <= month <= LAST_MONTH
+    ):
+        return None
+    parts = {"day": day, "month": month, "year": year}
+    return {k: v for k, v in parts.items() if v is not None}
+
+
+def date_spans(
+    query: DateQuery | None, start: datetime,
+) -> list[tuple[int, int]]:
+    """Where `query` lights `search_date(start)`, by character, or [] if it
+    names another day. A month and its day are lit as one, "October 20".
+    """
+    if query is None:
+        return []
+    actual = (start.weekday(), start.month, start.day, start.year)
+    if any(want is not None and want != got
+           for want, got in zip(query, actual, strict=True)):
+        return []
+    weekday, month = f"{start:%A}", f"{start:%B}"
+    month_at = len(weekday) + len(", ")
+    day_at = month_at + len(month) + 1
+    day_end = day_at + len(str(start.day))
+    spans = []
+    if query.weekday is not None:
+        spans.append((0, len(weekday)))
+    if query.month is not None:
+        spans.append(
+            (month_at, day_end if query.day is not None else day_at - 1))
+    elif query.day is not None:
+        spans.append((day_at, day_end))
+    return spans
 
 
 def page_subtitle(

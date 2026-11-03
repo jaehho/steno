@@ -102,6 +102,9 @@ class Session:
         for where, line, text in self._surfaces():
             if words.match_spans(text, phrase):
                 return {"where": where, "line": line}
+        # After the words, so that "may" in a line still lands on the line.
+        if words.date_spans(words.date_query(phrase), self.start):
+            return {"where": "date", "line": -1}
         return None
 
     def _spoken_lines(self) -> list[tuple[str, str]]:
@@ -141,8 +144,6 @@ class Session:
             yield "to-dos", -1, todo.text
         for i, (_name, line) in enumerate(spoken):
             yield "transcript", i, line
-        # After the words, so that "may" in a line still lands on the line.
-        yield "date", -1, words.search_date(self.start)
 
 
 def _file_stamp(path: Path) -> tuple[int, int]:
@@ -681,24 +682,26 @@ class Sidebar(Gtk.Box):
         phrase = words.search_phrase(self.query)
         hit = s.locate(self.query) if self.query else None
         where = hit["where"] if hit else ""
-        lit: list[int] = []
+        spans: list[tuple[int, int]] = []
         if where == "title":
             mark_matches(title, phrase)
         elif where == "date":
-            # Spelled out as it was searched: "Oct 20" holds no "october".
+            # Spelled out, with what the search named lit: "Oct 20" holds
+            # no "october", and "10/20" is in neither. It opens the line,
+            # so its spans are the line's.
             parts[0] = words.search_date(s.start)
-            lit = [0]
+            spans = words.date_spans(words.date_query(phrase), s.start)
         elif where == "project":
-            lit = [parts.index(s.project)]
+            spans = words.spans_in_parts(
+                parts, phrase, lit=[parts.index(s.project)], sep=META_SEP)
         elif where:
             parts.append(f"in {where}")
         meta = Gtk.Label(label=META_SEP.join(parts), xalign=0.0)
         meta.add_css_class("session-meta")
         meta.set_hexpand(True)
         meta.set_ellipsize(Pango.EllipsizeMode.END)
-        if lit:
-            mark_spans(meta, words.spans_in_parts(
-                parts, phrase, lit=lit, sep=META_SEP))
+        if spans:
+            mark_spans(meta, spans)
         line.append(meta)
         if s.open_todos:
             badge = Gtk.Label(label=words.todo_count(s.open_todos), xalign=1.0)

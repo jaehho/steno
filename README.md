@@ -207,7 +207,10 @@ summarized) is called by it on the meeting page, in the bar of places, and in
 what the Ask box sends the model; any other far-side voice is "Them". While a
 meeting is being recorded there are no names yet. The search box reads the
 title, project, speakers' names, summary, notes, to-dos, the spoken words and
-the date ("monday", "october 12"), not the time of a line or the folder name.
+the date, written any of the usual ways ("oct 12", "10/12", "10/12/26",
+"2026-10-12", "weds", "tue oct 12th"), but not the time of a line or the
+folder name. A date counts after the words, so "may" in a line still finds the
+line.
 A hit in the title, date or project is highlighted in the meeting's row, which
 spells its date out for a date hit; a hit anywhere else is named instead (`in
 speaker`, `in transcript`, and so on).

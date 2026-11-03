@@ -437,6 +437,20 @@ class TestSearchLocate(unittest.TestCase):
         for query in ("sunday", "september 27", "sep"):
             self.assertEqual(self.session.locate(query)["where"], "date", query)
 
+    def test_the_date_is_found_the_ways_people_write_it(self):
+        """The meeting is on Sunday, September 27, 2026."""
+        for query in ("sun", "sep 27", "sept 27th", "27 september", "9/27",
+                      "09/27/2026", "9/27/26", "27/9", "2026-09-27",
+                      "sun sep 27", "Sunday, September 27", "sep 2026"):
+            hit = self.session.locate(query)
+            self.assertEqual(hit and hit["where"], "date", query)
+
+    def test_another_day_or_a_word_that_is_not_a_date_finds_nothing(self):
+        for query in ("monday", "sep 28", "9/28", "9/27/25", "oct", "mon sep 27",
+                      "day", "27", "2026", "sept budget", "marc", "13/40"):
+            self.assertIsNone(self.session.locate(query), query)
+
+
     def test_a_line_comes_before_the_date(self):
         (self.dir / "transcript.jsonl").write_text(
             '{"ts": 1, "speaker": "them", "text": "see you sunday"}\n'
@@ -481,6 +495,33 @@ class TestSearchLocate(unittest.TestCase):
         session = type(self.session)(self.dir)
         self.assertEqual(session.locate("renew the")["where"], "to-dos")
 
+
+class TestDateSearch(unittest.TestCase):
+    TUESDAY = datetime(2026, 10, 20, 14, 7)
+
+    def lit(self, query: str, start: datetime = TUESDAY) -> list[str]:
+        """What a date search lights in the date a row spells out."""
+        text = words.search_date(start)
+        spans = words.date_spans(words.date_query(query), start)
+        return [text[a:b] for a, b in spans]
+
+    def test_a_month_and_day_light_together(self):
+        for query in ("oct 20", "10/20", "october 20th", "2026-10-20"):
+            self.assertEqual(self.lit(query), ["October 20"], query)
+
+    def test_a_weekday_lights_the_weekday(self):
+        for query in ("tue", "tues", "tuesday"):
+            self.assertEqual(self.lit(query), ["Tuesday"], query)
+        wednesday = datetime(2026, 10, 21)
+        self.assertEqual(self.lit("weds", wednesday), ["Wednesday"])
+
+    def test_every_part_named_is_lit(self):
+        self.assertEqual(self.lit("tue oct 20"), ["Tuesday", "October 20"])
+        self.assertEqual(self.lit("oct"), ["October"])
+
+    def test_another_day_lights_nothing(self):
+        self.assertEqual(self.lit("wed oct 20"), [])
+        self.assertEqual(self.lit("10/21"), [])
 
 class TestSummaryMissing(unittest.TestCase):
     def test_offers_to_write_it_when_there_is_a_transcript(self):

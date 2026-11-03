@@ -240,12 +240,13 @@ class TestSpeakerNames(OnTheShortMeeting):
         self.assertNotIn("in title", meta.get_text())
 
     def test_a_date_hit_spells_the_date_out_and_lights_it(self):
-        row = self.search("january 9")
-        title, meta = self.row_labels(row)
-        self.assertTrue(meta.get_text().startswith("Friday, January 9"))
-        self.assertIsNotNone(meta.get_attributes())
-        self.assertNotIn("in date", meta.get_text())
-        self.assertIsNone(title.get_attributes())
+        for query in ("january 9", "jan 9", "1/9", "fri"):
+            row = self.search(query)
+            title, meta = self.row_labels(row)
+            self.assertTrue(meta.get_text().startswith("Friday, January 9"), query)
+            self.assertIsNotNone(meta.get_attributes(), query)
+            self.assertNotIn("in date", meta.get_text())
+            self.assertIsNone(title.get_attributes())
 
     def test_a_hit_the_row_cannot_show_is_named(self):
         _title, meta = self.row_labels(self.search("priya"))
