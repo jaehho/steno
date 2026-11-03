@@ -717,6 +717,9 @@ class Sidebar(Gtk.Box):
 
     def _on_search(self, entry) -> None:
         self.query = entry.get_text().strip()
+        dated = words.date_query(words.search_phrase(self.query)) is not None
+        (entry.add_css_class if dated else entry.remove_css_class)("date-query")
+        entry.set_tooltip_text("Also finding meetings on this date" if dated else None)
         # A new query is a new question: its first hit is what it means,
         # so the page starts there rather than at whatever was open
         # (issue #20). Clearing it keeps the meeting being read.

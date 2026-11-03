@@ -253,6 +253,15 @@ class TestSpeakerNames(OnTheShortMeeting):
         self.assertIn("in speaker", meta.get_text())
         self.assertIsNone(meta.get_attributes())
 
+    def test_the_box_says_when_a_search_is_read_as_a_date(self):
+        box = self.window.sidebar.search
+        self.search("1/9")
+        self.assertTrue(box.has_css_class("date-query"))
+        self.assertIsNotNone(box.get_tooltip_text())
+        self.search("priya")
+        self.assertFalse(box.has_css_class("date-query"))
+        self.assertIsNone(box.get_tooltip_text())
+
 
 class TestTranscriptScroll(OnTheShortMeeting):
     def open_long_meeting(self) -> Gtk.ScrolledWindow:
