@@ -93,7 +93,10 @@ def view(task, template=None):
 
 
 def save():
-    (here / "state.json").write_text(json.dumps(state))
+    # Whole, since a test may be reading it as this runs.
+    tmp = here / "state.json.tmp"
+    tmp.write_text(json.dumps(state))
+    tmp.replace(here / "state.json")
 
 
 if state["down"]:
@@ -116,6 +119,8 @@ elif cmd == "add":
             "source": source,
             "status": "needs-action",
             "title": rest[-1],
+            "due": rest[rest.index("--due") + 1] if "--due" in rest else "",
+            "note": rest[rest.index("--note") + 1] if "--note" in rest else "",
             "list_name": rest[rest.index("--list") + 1]
             if "--list" in rest else "Inbox",
             "deleted": False,
@@ -250,6 +255,15 @@ class FakeAsst:
         for t in state["tasks"]:
             if t["id"] == uid:
                 t["title"] = title
+        self._state = state
+        self._write()
+
+    def change_due(self, uid: str, due: str) -> None:
+        """Change a task's date the way the user would in asst."""
+        state = self._read()
+        for t in state["tasks"]:
+            if t["id"] == uid:
+                t["due"] = due
         self._state = state
         self._write()
 

@@ -86,7 +86,7 @@ Day to day there is nothing to run. Open the window from rofi, or click the bar.
 steno                      the window (same as `steno gui`)
 steno gui --background     listen with no window (what autostart runs)
 steno autostart [on|off]   start listening at login, for this user
-steno show                 raise the window, starting it if needed
+steno show [NAME]          raise the window or open a meeting, starting it if needed
 steno toggle               start or stop recording (starts the listener if it is down)
 steno pause 45m            stop detecting for a while; --off to resume
 steno quit                 stop the listener
@@ -119,7 +119,11 @@ and has a **Summarize now** button. A meeting's to-dos sit in two groups: **For
 you**, which also holds any item nobody has claimed, and **Waiting on them**,
 what someone else promised, kept as a reminder. Only the first is counted, in
 the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
-still owe across every meeting; a row opens its meeting. The model's action
+still owe across every meeting; a row opens its meeting. A task reaches asst
+with the date the meeting gave it, if it gave one, worked out from the day of
+the meeting, and a note that says which meeting it came from. asst's **Open
+meeting** opens it, and so does `steno show NAME`. A date you change in asst
+stays changed; Steno sends it only once. The model's action
 items are the weakest part, so each to-do row has a menu (right-click, or
 the `Menu` key): **Edit** the wording, **Remove** a wrong one, and, when asst
 holds the task, **Open in asst** (the list name beside the row does the same)

@@ -7,6 +7,7 @@ import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from . import citations, claude, data_dir
@@ -107,6 +108,16 @@ not support, and add any that are missing. The list is no source of facts; \
 only the transcript is.
 
 {listing}"""
+DUE_PROMPT = """\
+# Due dates
+
+The meeting took place on {day}. Where an action item has a deadline that was \
+said as a day or a date, add it after the wording and before the tag, as \
+`(due: YYYY-MM-DD)`, worked out from that day. The wording still says the \
+deadline as it was said. Example of the format only: \
+`- Send the usage figures by Friday (due: 2026-10-16) [L40-41]`. Add none where \
+no day was said ("soon", "next week", "when you can"): never guess one. The \
+`(due: ...)` is not part of an item's wording."""
 # More than this and the list is a second transcript.
 MAX_EARLIER_TODOS = 40
 
@@ -184,6 +195,17 @@ def earlier_todos_prompt(todos: Sequence[Todo]) -> str:
     if not groups:
         return ""
     return EARLIER_TODOS_PROMPT.format(listing="\n\n".join(groups))
+
+
+def due_prompt(started_at: float) -> str:
+    """How to give an action item a date, counting from the meeting's
+    day: it may be summarized days later. "" when the day is not known,
+    since a date worked out from nothing is an invented one.
+    """
+    if started_at <= 0:
+        return ""
+    day = datetime.fromtimestamp(started_at).strftime("%A, %Y-%m-%d")
+    return DUE_PROMPT.format(day=day)
 
 
 def transcript_path(session_dir: Path) -> Path:
@@ -348,6 +370,8 @@ async def summarize_session(
         system += "\n\n" + projects_prompt(root, known)
     if earlier := earlier_todos_prompt(load_todos(session_dir)):
         system += "\n\n" + earlier
+    if due := due_prompt(started_at):
+        system += "\n\n" + due
 
     transcript = format_for_model(records, names=names, offsets=offsets)
     # A heading-only reply is a known flake, not a short meeting: ask again.

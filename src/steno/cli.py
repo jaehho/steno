@@ -38,7 +38,7 @@ from . import (
 from . import sync as meeting_sync
 from .brief import BRIEF_FILENAME, brief_age_days, estimate_tokens, load_brief
 from .claude import check_ready
-from .control import activate, show, toggle_record
+from .control import activate, show, show_session, toggle_record
 from .cost import SUMMARY_GUESS, format_usd
 from .detect import (
     DEFAULT_ALLOW,
@@ -184,10 +184,20 @@ def cmd_bar(args: argparse.Namespace) -> None:
             return
 
 
-def cmd_show(_args: argparse.Namespace) -> None:
-    """Raise the window, starting the app if it isn't running."""
+def cmd_show(args: argparse.Namespace) -> None:
+    """Raise the window or open a meeting in it, starting the app if it
+    isn't running."""
 
-    if not show():
+    if args.session is None:
+        shown = show()
+    else:
+        try:
+            session = resolve_session(args.session)
+        except FileNotFoundError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+        shown = show_session(str(session.absolute()))
+    if not shown:
         print("could not start steno", file=sys.stderr)
         sys.exit(1)
 
@@ -1310,7 +1320,11 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
                        help="Print the current state and exit")
     p_bar.set_defaults(func=cmd_bar)
 
-    p_show = sub.add_parser("show", help="Raise the window, starting it if needed")
+    p_show = sub.add_parser(
+        "show", help="Raise the window or open a meeting, starting it if needed"
+    )
+    p_show.add_argument("session", nargs="?", metavar="NAME",
+                        help="A meeting's folder name or path")
     p_show.set_defaults(func=cmd_show)
 
     p_toggle = sub.add_parser("toggle", help="Start or stop recording")
