@@ -27,7 +27,13 @@ gi.require_version("Graphene", "1.0")
 
 from gi.repository import Gdk, GLib, Graphene, Gtk
 
-from steno.gui.meeting import FIRST_LINES, LINES_PER_FRAME, MeetingPage, _line_text
+from steno.gui.meeting import (
+    FIRST_LINES,
+    LINES_PER_FRAME,
+    MeetingPage,
+    _line_tag,
+    _line_text,
+)
 from steno.gui.window import Window
 from tests.gtk_sidebar_menu import StubApp, settle
 
@@ -214,6 +220,11 @@ class TestSpeakerNames(OnTheShortMeeting):
         self.window.sidebar.list.select_row(row)
         self.assertEqual(
             [r.has_css_class("line-hit") for r in self.page._rows],
+            [True, False, False, True],
+        )
+        # The name is what matched, so the name is what is lit.
+        self.assertEqual(
+            [_line_tag(r).get_attributes() is not None for r in self.page._rows],
             [True, False, False, True],
         )
 
