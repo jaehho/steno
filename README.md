@@ -143,14 +143,13 @@ goes to the trash; the summary is written again so its citations match.
 
 The Ask box answers with the model named under it, the summary's model until
 you choose another. Click the name for the choices, a row for each model: the
-summary's model, tagged *default*, then the provider's presets, the models it
-lists at its `/models` endpoint, and **Custom…** for an id you type. The
-*default* row follows the summary's model: choose it and the Ask box changes
-with it when `STENO_MODEL` or the provider's default does. Any other row, or an
-id you type, pins that model: it answers every question until you choose again,
-whatever the default becomes. (Pinning the model that is the default today is
-typing its id under Custom…; the menu shows that as the default row, because
-the two answer alike.) The list is fetched once per run, the first time the
+summary's model, tagged *default*, then the provider's presets (on Claude Code
+`opus`, `fable` and `haiku`, each the newest of its kind) and the models it
+lists at its `/models` endpoint. The *default* row follows the summary's model:
+choose it and the Ask box changes with it when `STENO_MODEL` or the provider's
+default does. Any other row pins that model: it answers every question until
+you choose again, whatever the default becomes. A model no row offers is set
+with `STENO_ASK_MODEL`. The list is fetched once per run, the first time the
 menu is opened and off the window's thread; if the provider will not give it,
 the presets are all there is and nothing says why. Speech models (`tts`, `asr`)
 are left out of it. The choice is kept in `gui.json` under

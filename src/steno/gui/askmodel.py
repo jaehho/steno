@@ -3,8 +3,9 @@
 The pick is a window preference (`prefs.ask_model`) and `STENO_ASK_MODEL`
 overrides it; with neither, asking uses the summary's model. The control
 names the one in force and opens a popover with the choices, one row per
-model: the default (tagged as such), the provider's presets, its own
-model list when that can be fetched, and a model typed by hand.
+model: the default (tagged as such), the provider's presets, and its own
+model list when that can be fetched. A model none of them lists is set
+with `STENO_ASK_MODEL`.
 
 The list is a plain GET to the provider, made once per run, on a thread,
 when the popover is first opened. Until it arrives (or if it never does)
@@ -104,11 +105,11 @@ MODELS = ModelList()
 
 
 class _ChoiceRow(Gtk.ListBoxRow):
-    """One model in the list. A value of None is the "Custom…" row, and
-    one of "" the model that follows the default (`follows`)."""
+    """One model in the list. A value of "" is the model that follows the
+    default (`follows`)."""
 
     def __init__(
-        self, value: str | None, label: str, current: bool = False,
+        self, value: str, label: str, current: bool = False,
         follows: bool = False,
     ) -> None:
         super().__init__()
@@ -209,11 +210,6 @@ class AskModelButton(Gtk.MenuButton):
         self.choices_scroll.set_max_content_height(260)
         self.choices_scroll.set_child(self.choices)
         box.append(self.choices_scroll)
-
-        self.custom_entry = Gtk.Entry()
-        self.custom_entry.set_placeholder_text("Model id, then Enter")
-        self.custom_entry.connect("activate", lambda _e: self._custom_entered())
-        box.append(self.custom_entry)
         return box
 
     def _on_show(self) -> None:
@@ -225,8 +221,6 @@ class AskModelButton(Gtk.MenuButton):
             "question. Unset it to choose here." if forced else "")
         for part in (self.filter_entry, self.choices_scroll):
             part.set_visible(not forced)
-        self.custom_entry.set_visible(False)
-        self.custom_entry.set_text("")
         self.filter_entry.set_text("")
         if not forced:
             self._fill()
@@ -251,24 +245,14 @@ class AskModelButton(Gtk.MenuButton):
                 value, label, current=value == in_force,
                 follows=value == "" and bool(default),
             ))
-        self.choices.append(_ChoiceRow(None, "Custom…"))
         self.filter_entry.set_visible(len(rows) > FILTER_AFTER)
 
     def _shown(self, row: _ChoiceRow) -> bool:
         needle = self.filter_entry.get_text().strip().lower()
-        return row.value is None or needle in row.label.lower()
+        return needle in row.label.lower()
 
     def _activated(self, row: _ChoiceRow) -> None:
-        if row.value is None:
-            self.custom_entry.set_visible(True)
-            self.custom_entry.grab_focus()
-        else:
-            self._choose(row.value)
-
-    def _custom_entered(self) -> None:
-        # Enter on an empty box is not a choice; "Default" is how to go back.
-        if self.custom_entry.get_text().strip():
-            self._choose(self.custom_entry.get_text())
+        self._choose(row.value)
 
     def _choose(self, model: str) -> None:
         """Remember the pick. It is the next question that goes to it."""
