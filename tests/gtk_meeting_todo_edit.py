@@ -295,6 +295,21 @@ class TestEditing(TodoEditCase):
         self.right_click(SEND).activate_action("todo.edit", None)
         self.assertIs(self.focus(), self.box("Send the Q3 usage figures"))
 
+    def test_summarize_again_warns_that_your_words_go(self):
+        self.answers("ask_text", "Send the Q3 usage figures")
+        self.right_click(SEND).activate_action("todo.edit", None)
+        with mock.patch.object(self.page, "_dialog") as dialog:
+            self.page._confirm_summarize()
+        _heading, body, _confirm, _go = dialog.call_args.args
+        self.assertIn("You reworded 1 to-do,", body)
+        self.assertTrue(dialog.call_args.kwargs["destructive"])
+
+    def test_without_words_of_yours_summarize_again_does_not_warn(self):
+        with mock.patch.object(self.page, "_dialog") as dialog:
+            self.page._confirm_summarize()
+        self.assertNotIn("reworded", dialog.call_args.args[1])
+        self.assertFalse(dialog.call_args.kwargs["destructive"])
+
     def test_the_same_words_change_nothing_and_call_nothing(self):
         self.answers("ask_text", SEND)
         self.right_click(SEND).activate_action("todo.edit", None)

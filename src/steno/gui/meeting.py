@@ -767,17 +767,24 @@ class MeetingPage(Gtk.Box):
             + ", with a citation on each point it can support. It costs about "
             f"{format_usd(self._summary_cost(s))}."
         )
+        reworded = 0
         if again:
             body += (
                 "\n\nThe new summary replaces this one. Your notes, the "
                 "project and the to-dos you ticked are kept."
             )
+            reworded = sum(
+                t.edited and not t.dropped for t in load_todos(s.dir)
+            )
+        if reworded:
+            body += "\n\n" + words.reworded_warning(reworded)
         self._dialog(
             "Summarize this meeting again?" if again else "Write the summary?",
             body,
             "Summarize",
             lambda: self._summarize(s),
-            destructive=False,
+            # Words of yours are lost to it: say so in the button too.
+            destructive=bool(reworded),
         )
 
     def stop_pull(self) -> None:

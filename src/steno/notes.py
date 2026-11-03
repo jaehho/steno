@@ -98,10 +98,11 @@ class Todo:
     # task (`drop_open_todos`): a dropped row that names a task is one
     # whose removal is still to do.
     dropped: bool = False
-    # Words the user gave it (Edit or Add on the meeting page, or a new
-    # title in asst). A later summary keeps them, as it keeps a title
-    # given by hand: the task in asst says the same and nothing would
-    # tell it otherwise.
+    # Words the user gave one of the model's items: an Edit on the
+    # meeting page, or a new title in asst. Summarize again warns that
+    # the model's words will replace them, here and in asst, and then
+    # they do. A row added by hand is the user's but has no model words
+    # to go back to, so it is not counted.
     edited: bool = False
     # New words given here that asst has not taken yet. Like `dirty` for
     # a tick: a pull keeps them rather than asst's old title, and the next
@@ -341,10 +342,12 @@ def _carry_state(fresh: Todo, prior: Todo) -> None:
     fresh.dirty = prior.dirty
     fresh.dropped = prior.dropped
     fresh.list_name = prior.list_name
-    if prior.edited:
-        fresh.text = prior.text
-        fresh.edited = True
-        fresh.retitle = prior.retitle
+    # The summary's words win, the user's included (the window warned
+    # before it asked), and asst is told them too. Words still owed to
+    # asst stay owed, now the summary's.
+    fresh.retitle = bool(prior.uid) and (
+        prior.retitle or fresh.text != prior.text
+    )
 
 
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
@@ -354,8 +357,9 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
     an item the summary now words differently (`SAME_ITEM_RATIO`, and no
     word swapped for another) is the same row, with the new wording and
     the old state, uid and source, so the task asst holds is neither
-    duplicated nor orphaned. Words the user gave a row stay over the
-    summary's. Items the user has completed are kept even if
+    duplicated nor orphaned. The summary's words win over ones the user
+    gave a row, and a filed row's new words go to asst. Items the user
+    has completed are kept even if
     a re-summarize drops them — deleting the record of finished work would
     be the one unrecoverable thing this file could do. An open item already
     on the phone is kept too: the model must not orphan a task asst is
@@ -393,7 +397,10 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
             if id(t) not in taken and (t.done or t.uid or t.owner == "you")
         ]
         save_todos(session_dir, merged)
-    return file_with_asst(session_dir, merged) if file else merged
+    if not file:
+        return merged
+    # Filing the new items, then the new words of the old ones.
+    return flush_asst(session_dir, file_with_asst(session_dir, merged))
 
 
 def set_done_local(session_dir: Path, key: str, done: bool) -> list[Todo]:
@@ -662,8 +669,8 @@ def rename_todo(session_dir: Path, key: str, text: str) -> Todo | None:
     another row already says it (the wording is how a row is found).
 
     The row keeps its source, uid and state: it is the same promise, said
-    better, and a later summary does not put the model's words back.
-    Telling asst is `deliver_title`, which is slow.
+    better, until Summarize again puts the model's words back (after a
+    warning). Telling asst is `deliver_title`, which is slow.
     """
     text = " ".join(text.split())
     if not text:
@@ -738,7 +745,7 @@ def add_todo_row(session_dir: Path, text: str) -> Todo | None:
     text = " ".join(text.split())
     if not text:
         return None
-    fresh = Todo(text=text, owner="you", edited=True)
+    fresh = Todo(text=text, owner="you")
     _with_src(session_dir, fresh)
     added: list[Todo] = []
 

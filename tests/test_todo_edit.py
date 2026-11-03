@@ -89,13 +89,25 @@ class TestRewording(EditCase):
         self.assertTrue(reworded.done)
         self.assertEqual(len(load_todos(self.dir)), 3)
 
-    def test_a_summary_again_keeps_the_words_the_user_gave_it(self):
+    def test_a_summary_again_puts_the_models_words_back_here_and_in_asst(self):
         uid = self.row(SEND).uid
         rename_todo(self.dir, SEND, "Send the Q3 figures")
+        deliver_title(self.dir, uid, "Send the Q3 figures")
         sync_todos(self.dir, SUMMARY)
         rows = [t for t in load_todos(self.dir) if t.uid == uid]
-        self.assertEqual([t.text for t in rows], ["Send the Q3 figures"])
+        self.assertEqual(
+            [(t.text, t.edited, t.retitle) for t in rows],
+            [("Send the usage figures by Friday", False, False)],
+        )
+        (task,) = [t for t in self.asst.tasks() if t["id"] == uid]
+        self.assertEqual(task["title"], "Send the usage figures by Friday")
         self.assertEqual(self.asst.calls("add")[2:], [])
+
+    def test_a_row_added_by_hand_stays_through_a_summary_again(self):
+        add_todo_row(self.dir, "Book the room")
+        self.assertFalse(self.row("book the room").edited)
+        sync_todos(self.dir, SUMMARY)
+        self.assertEqual(self.row("book the room").text, "Book the room")
 
     def test_an_untouched_row_still_takes_the_summarys_new_words(self):
         sync_todos(self.dir, SUMMARY.replace("usage figures", "usage figure"))
@@ -230,15 +242,14 @@ class TestAdding(EditCase):
             len([t for t in load_todos(self.dir) if t.owner == "you"]), 3
         )
 
-    def test_a_summary_with_the_same_words_keeps_how_you_wrote_them(self):
+    def test_a_summary_that_names_an_added_item_words_it_as_the_model_does(self):
         add_todo_row(self.dir, "SEND THE USAGE FIGURES BY FRIDAY again")
         sync_todos(
             self.dir, SUMMARY + "- send the usage figures by friday again\n"
         )
-        self.assertIn(
-            "SEND THE USAGE FIGURES BY FRIDAY again",
-            [t.text for t in load_todos(self.dir)],
-        )
+        texts = [t.text for t in load_todos(self.dir)]
+        self.assertIn("send the usage figures by friday again", texts)
+        self.assertEqual(len(texts), 4)
 
     def test_empty_wording_or_wording_already_there_is_refused(self):
         self.assertIsNone(add_todo_row(self.dir, ""))

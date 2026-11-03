@@ -126,8 +126,10 @@ asst holds the task, **Open in asst** (the list name beside the row does the
 same) and **Move to list**. **Add a to-do** at the end of the section files
 one the model missed under the meeting's project list. Edit and Remove reach
 asst too (`asst edit`, `asst rm`); a row that never reached asst, and what
-others owe, stay here. Words you gave a row stay through a re-summarize. A re-summarize can bring back a row you removed, since
-the model says it again. The ⋯ menu acts on
+others owe, stay here. A title changed in asst comes back to the row. A
+re-summarize words every row as the model does, yours included, here and in
+asst, and **Summarize again** warns first when you have reworded one. It can
+also bring back a row you removed, since the model says it again. The ⋯ menu acts on
 the meeting you are looking at: summarize it again, re-time it against its
 audio, join it with the meeting before, drop the audio but keep the words,
 copy or save the meeting as markdown, put it away (Archive, below), or
