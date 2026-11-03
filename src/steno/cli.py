@@ -108,10 +108,14 @@ DEEPGRAM_API_KEY=
 # its project's notes/meetings folder. On by default.
 # STENO_PROJECT_NOTES=0
 
-# Optional. An rclone remote and folder to push finished meetings to, audio
-# included and unencrypted: STENO_SYNC_REMOTE=nextcloud:Steno/sessions
+# Optional. An rclone remote and folder that is the main store for your
+# meetings, audio included and unencrypted:
+# STENO_SYNC_REMOTE=nextcloud:Steno/sessions
 # Unset (the default), nothing leaves this machine. `steno sync` runs it now.
 # STENO_SYNC_REMOTE=
+# Days back to download other devices' audio for (default 30, 0 is text only);
+# `steno fetch NAME` downloads one meeting's audio whatever the window.
+# STENO_SYNC_AUDIO_DAYS=30
 
 # Optional. Any value stops steno running `asst`: no to-do is filed, ticked
 # or removed in the task app. For scratch runs; "0" does not undo it.
@@ -256,6 +260,24 @@ def cmd_watch(args: argparse.Namespace) -> None:
         print("\nstopped")
 
 
+def _say_sync_state() -> None:
+    """When the server was last reached, and any copies kept aside."""
+    load_dotenv(config_dir() / ".env")
+    if not meeting_sync.remote():
+        return
+    last = meeting_sync.load_last()
+    if last:
+        when = _dt.datetime.fromtimestamp(last["at"]).strftime("%H:%M:%S")
+        print(f"sync: {last['status']} at {when} {last.get('detail', '')}".rstrip())
+    else:
+        print("sync: not run yet")
+    kept = meeting_sync.conflicts_on_disk()
+    if kept:
+        print(f"  {len(kept)} conflict copies kept aside, delete when settled:")
+        for item in kept:
+            print(f"    {item}")
+
+
 def cmd_status(_args: argparse.Namespace) -> None:
 
     until = paused_until()
@@ -280,34 +302,73 @@ def cmd_status(_args: argparse.Namespace) -> None:
     if unsummarized:
         print(f"  {len(unsummarized)} without a summary "
               f"(`steno summarize --all` to catch up)")
+    _say_sync_state()
     # The same one line the app logs at startup: what the bar and
     # swaync will find when they resolve the app icon.
     print(f"icon: {icon_host_report(icon_theme_dir())}")
 
 
+# Result list, how a line starts, and how the tally says it (done, to do).
+SYNC_LISTS = (
+    ("pushed", "push", ("pushed", "to push")),
+    ("pulled", "pull", ("pulled", "to pull")),
+    ("trashed_remote", "trash-on-server",
+     ("trashed on the server", "to trash on the server")),
+    ("trashed_local", "trash-here", ("trashed here", "to trash here")),
+)
+
+
+def _say_sync(result: meeting_sync.Result, dry_run: bool) -> None:
+    """What a round did, or in a dry run would do, one line each."""
+    for attr, done, _tally in SYNC_LISTS:
+        for item in getattr(result, attr):
+            print(f"{'would ' if dry_run else ''}{done} {item}")
+    for item in result.conflicts:
+        print(f"conflict {item}: the server's version took the name")
+    for item in result.held:
+        print(f"held     {item}: `steno sync --allow-deletes` to go ahead")
+    for item in result.busy:
+        print(f"waiting  {item} (recording, or written to a moment ago)")
+    for item, why in result.failed.items():
+        print(f"failed   {item}: {why}")
+    counts = ", ".join(
+        f"{len(getattr(result, attr))} {tally[1 if dry_run else 0]}"
+        for attr, _done, tally in SYNC_LISTS if getattr(result, attr)
+    )
+    print(f"{counts or 'nothing to send or fetch'}; "
+          f"{result.unchanged} files in step, {len(result.busy)} waiting, "
+          f"{len(result.failed)} failed")
+
+
 def cmd_sync(args: argparse.Namespace) -> None:
-    """Push finished meetings to the remote in STENO_SYNC_REMOTE."""
+    """Reconcile this device's meetings with STENO_SYNC_REMOTE."""
     load_dotenv(config_dir() / ".env")
-    result = meeting_sync.sync(dry_run=args.dry_run)
-    if result.off:
+    result = meeting_sync.sync(
+        dry_run=args.dry_run, allow_deletes=args.allow_deletes
+    )
+    if result.status == "off":
         print(f"sync is off: set {meeting_sync.REMOTE_ENV} in "
               "~/.config/steno/.env (an rclone remote and folder)")
-        return
-    if result.locked:
+    elif result.status == "locked":
         print("another sync is running")
-        return
-    verb, tally = ("would push", "to push") if args.dry_run else ("pushed", "pushed")
-    for name in result.pushed:
-        print(f"{verb} {name}")
-    for name in result.busy:
-        print(f"waiting {name} (still recording or written to a moment ago)")
-    for name, why in result.failed.items():
-        print(f"failed  {name}: {why}")
-    print(f"{len(result.pushed)} {tally}, "
-          f"{result.unchanged} unchanged, {len(result.busy)} waiting, "
-          f"{len(result.failed)} failed")
-    if result.failed:
+    elif result.status == "unreachable":
+        print(f"the server is not reachable: {result.detail}")
         sys.exit(1)
+    else:
+        _say_sync(result, args.dry_run)
+        if result.status == "error":
+            sys.exit(1)
+
+
+def cmd_fetch(args: argparse.Namespace) -> None:
+    """Download one meeting's audio from the server."""
+    load_dotenv(config_dir() / ".env")
+    for name in args.names:
+        result = meeting_sync.fetch_audio(name)
+        if result.status != "ok":
+            print(f"{name}: {result.detail or result.status}")
+            sys.exit(1)
+        print(f"{name}: {len(result.pulled)} audio files fetched")
 
 
 def cmd_pause(args: argparse.Namespace) -> None:
@@ -1404,11 +1465,20 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     p_status.set_defaults(func=cmd_status)
 
     p_sync = sub.add_parser(
-        "sync", help="Push finished meetings to STENO_SYNC_REMOTE (rclone)"
+        "sync", help="Reconcile meetings with the server in STENO_SYNC_REMOTE"
     )
     p_sync.add_argument("--dry-run", action="store_true",
-                        help="List what would be pushed; send nothing")
+                        help="List what would change; change nothing")
+    p_sync.add_argument("--allow-deletes", action="store_true",
+                        help="Go ahead with trashing that was held back")
     p_sync.set_defaults(func=cmd_sync)
+
+    p_fetch = sub.add_parser(
+        "fetch", help="Download a meeting's audio from the server"
+    )
+    p_fetch.add_argument("names", nargs="+", metavar="NAME",
+                         help="Session folder name, e.g. 20261020-140743")
+    p_fetch.set_defaults(func=cmd_fetch)
 
     p_pause = sub.add_parser("pause", help="Suspend meeting detection for a while")
     p_pause.add_argument("duration", nargs="?", default="60m",

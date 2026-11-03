@@ -418,8 +418,13 @@ class App(Adw.Application):
         except Exception:
             log.exception("sync")
             return
-        if result.pushed or result.failed:
-            log.info("sync: pushed %s, failed %s", result.pushed, result.failed)
+        log.log(
+            logging.WARNING if result.status in ("error", "held") else logging.INFO,
+            "sync %s: pushed %s, pulled %s, trashed %s here and %s on the server, "
+            "conflicts %s, failed %s %s",
+            result.status, result.pushed, result.pulled, result.trashed_local,
+            result.trashed_remote, result.conflicts, result.failed, result.detail,
+        )
 
     def _republish(self) -> bool:
         """Re-assert what we are doing, and notice a pause that has lapsed."""
