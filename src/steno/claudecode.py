@@ -16,6 +16,7 @@ import os
 import shutil
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 READ_TOOLS = ("Read", "Grep", "Glob")
 # An API key or another host in the environment would bill the call
@@ -31,6 +32,13 @@ WITHHELD = ("notes", "meetings")
 
 class ClaudeCodeError(RuntimeError):
     pass
+
+
+class Reply(NamedTuple):
+    """The object a structured call returned, and the model that wrote it:
+    the exact one, even when an alias such as `sonnet` was asked for."""
+    content: dict
+    model: str
 
 
 def claude_path() -> str | None:
@@ -136,7 +144,7 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
     schema: dict,
     read_root: Path | None = None,
     timeout: float = 900.0,
-) -> dict:
+) -> Reply:
     """One call that must return an object matching `schema`."""
     argv = build_argv(
         _require_binary(), model=model, effort=effort, system=system,
@@ -152,10 +160,11 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
         if proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-    return parse_structured(out.decode(), err.decode())
+    return parse_structured(out.decode(), err.decode(), asked=model)
 
 
-def parse_structured(out: str, err: str = "") -> dict:
+def parse_structured(out: str, err: str = "", *, asked: str = "") -> Reply:
+    """The object in a `--output-format json` result, and its model."""
     try:
         payload = json.loads(out)
     except json.JSONDecodeError:
@@ -166,7 +175,16 @@ def parse_structured(out: str, err: str = "") -> dict:
         reason = payload.get("result") or payload.get("subtype") or _tail(err)
         msg = f"claude -p returned no result: {str(reason)[:200]}"
         raise ClaudeCodeError(msg)
-    return structured
+    return Reply(structured, model_used(payload, asked))
+
+
+def model_used(payload: dict, asked: str) -> str:
+    """The model that wrote most of a result, by `modelUsage`; `asked`
+    when the result does not say."""
+    usage = payload.get("modelUsage")
+    if not isinstance(usage, dict) or not usage:
+        return asked
+    return max(usage, key=lambda name: (usage[name] or {}).get("outputTokens", 0))
 
 
 async def stream_text(  # noqa: PLR0913 - one call shape: prompt + model config

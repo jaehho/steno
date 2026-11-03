@@ -91,7 +91,16 @@ class TestArgv(unittest.TestCase):
 class TestParsing(unittest.TestCase):
     def test_structured_output(self):
         out = json.dumps({"is_error": False, "structured_output": {"a": 1}})
-        self.assertEqual(claudecode.parse_structured(out), {"a": 1})
+        self.assertEqual(claudecode.parse_structured(out, asked="sonnet"),
+                         ({"a": 1}, "sonnet"))
+
+    def test_an_alias_is_recorded_as_the_model_that_answered(self):
+        usage = {"claude-haiku-5-5": {"outputTokens": 3},
+                 "claude-sonnet-5-5": {"outputTokens": 900}}
+        out = json.dumps({"is_error": False, "structured_output": {"a": 1},
+                          "modelUsage": usage})
+        self.assertEqual(claudecode.parse_structured(out, asked="sonnet").model,
+                         "claude-sonnet-5-5")
 
     def test_error_result_raises(self):
         out = json.dumps({"is_error": True, "result": "not logged in"})
@@ -120,22 +129,23 @@ class TestTheDefaultProvider(unittest.TestCase):
 
     def test_it_is_claude_code_on_sonnet_at_high_effort(self):
         self.assertEqual(claude.provider(), "claude-code")
-        self.assertEqual(claude.default_model(), "claude-sonnet-5-5")
+        self.assertEqual(claude.default_model(), "sonnet")
         self.assertEqual(claude.effort(), "high")
         self.assertEqual(asyncio.run(claude.list_models()), claude.presets())
 
     def test_a_summary_call_goes_through_claude_p(self):
-        result = {"is_error": False, "structured_output": {"a": "x"}}
+        result = {"is_error": False, "structured_output": {"a": "x"},
+                  "modelUsage": {"claude-sonnet-5-5": {"outputTokens": 9}}}
         _fake_claude(self.bindir, json.dumps(result))
         out = asyncio.run(claude.run_structured(
-            "the transcript", system="s", model="claude-sonnet-5-5",
+            "the transcript", system="s", model="sonnet",
             schema={"type": "object"}))
-        self.assertEqual(out, {"a": "x"})
+        self.assertEqual(out, ({"a": "x"}, "claude-sonnet-5-5"))
         call = _call(self.bindir)
         self.assertEqual(call["stdin"], "the transcript")
         self.assertIsNone(call["key"])
         self.assertEqual(_after(call["argv"], "--effort"), "high")
-        self.assertEqual(_after(call["argv"], "--model"), "claude-sonnet-5-5")
+        self.assertEqual(_after(call["argv"], "--model"), "sonnet")
 
     def test_an_answer_streams(self):
         lines = [

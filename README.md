@@ -59,9 +59,12 @@ steno init         # writes ~/.config/steno/.env
 
 Put a `DEEPGRAM_API_KEY` in that file. Summaries and questions go to Claude
 Sonnet at high effort through headless Claude Code (`claude -p`), on your Claude
-subscription: install Claude Code and log in. An `ANTHROPIC_API_KEY` in the
-environment is never passed on, so a call cannot be billed to the API by
-accident. `STENO_PROVIDER=openrouter` sends one OpenAI-style chat-completions
+subscription: install Claude Code and log in. Steno asks for `sonnet`, Claude
+Code's name for its newest Sonnet, so a new model arrives with a Claude Code
+update and an old one's retirement breaks nothing; each summary records the
+exact model that wrote it (`summary_model` in `meta.json`). An
+`ANTHROPIC_API_KEY` in the environment is never passed on, so a call cannot be
+billed to the API by accident. `STENO_PROVIDER=openrouter` sends one OpenAI-style chat-completions
 request to OpenRouter instead, with its key in `~/.config/openrouter.env`
 (`OPENROUTER_API_KEY`), and `STENO_PROVIDER=mimo` to MiMo with
 `~/.config/mimo.env`; `STENO_MODEL`, `STENO_EFFORT`, `STENO_BASE_URL` and

@@ -322,11 +322,13 @@ CUT_REPLY = """\
 
 class FakeModel:
     """A stand-in for claude.run_structured: replies in order, the last one
-    for every call after, and a record of what it was asked."""
+    for every call after, and a record of what it was asked. Each reply
+    is signed by `wrote`, else by the model asked for."""
 
-    def __init__(self, *replies):
+    def __init__(self, *replies, wrote=""):
         self.replies = list(replies)
         self.calls = []
+        self.wrote = wrote
 
     async def __call__(self, prompt, **kwargs):
         self.calls.append((prompt, kwargs))
@@ -334,7 +336,7 @@ class FakeModel:
         reply = self.replies[0] if last else self.replies.pop(0)
         if isinstance(reply, str):
             reply = {"summary": reply, "project": None}
-        return reply
+        return claude.Reply(reply, self.wrote or kwargs["model"])
 
 
 def _ending(last: str) -> str:
@@ -400,6 +402,14 @@ class TestSummarizeSession(unittest.TestCase):
 
     def written(self) -> str:
         return (self.dir / "summary.md").read_text()
+
+    def test_the_meeting_records_the_model_that_wrote_it_not_the_alias(self):
+        fake = FakeModel(CITED_REPLY, wrote="claude-sonnet-5-5")
+        with mock.patch.object(claude, "run_structured", fake):
+            asyncio.run(summarize_session(self.dir, "sonnet", None, self.projects))
+        self.assertEqual(fake.calls[0][1]["model"], "sonnet")
+        meta = json.loads((self.dir / "meta.json").read_text())
+        self.assertEqual(meta["summary_model"], "claude-sonnet-5-5")
 
     def test_the_model_sees_line_ids_at_the_gutters_times(self):
         self.run_with(CITED_REPLY)

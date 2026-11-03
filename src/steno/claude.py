@@ -26,16 +26,19 @@ from typing import TypeVar
 import httpx
 
 from . import claudecode
+from .claudecode import Reply
 
 # name -> how to reach a chat-completions endpoint and who to bill.
 # `base_url` may be a callable when it is derived from the key file (MiMo
 # hosts the OpenAI route beside its Anthropic one, and the plan picks the host).
 PROVIDERS: dict[str, dict] = {
-    # No key and no host: `claude -p` brings its own login.
+    # No key and no host: `claude -p` brings its own login. Its aliases
+    # name the newest model of each kind, so a new release needs a newer
+    # Claude Code, not a change here; the reply says which model it was.
     "claude-code": {
-        "model": "claude-sonnet-5-5",
+        "model": "sonnet",
         "effort": "high",
-        "presets": ("claude-opus-5-5", "claude-haiku-5-5"),
+        "presets": ("opus", "fable", "haiku"),
     },
     "mimo": {
         "key_file": "~/.config/mimo.env",
@@ -284,8 +287,9 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
     schema: dict,
     read_root: Path | None = None,
     timeout: float = 900.0,
-) -> dict:
-    """One call that must return an object matching `schema`. Raises ClaudeError."""
+) -> Reply:
+    """One call that must return an object matching `schema`, and the
+    model that wrote it. Raises ClaudeError."""
     if provider() == CLAUDE_CODE:
         return await _through_claude_code(claudecode.run_structured(
             prompt, system=system, model=model, effort=effort(),
@@ -302,14 +306,20 @@ async def run_structured(  # noqa: PLR0913 - one call shape: prompt + model conf
             calls = message.get("tool_calls") or []
             if not calls or read_root is None:
                 # No tools were offered, so none can come back.
-                return parse_structured(_content(message))
+                return _reply(data, model)
             messages.append({"role": "assistant", "content": _content(message),
                              "tool_calls": calls})
             messages += [_tool_result(read_root, call) for call in calls]
         # Over the tool budget: one forced answer with the tools withdrawn.
         data = await _call(client, _thinking(
             _payload(model, messages, schema=schema), effort()))
-        return parse_structured(_content(data["choices"][0]["message"]))
+        return _reply(data, model)
+
+
+def _reply(data: dict, asked: str) -> Reply:
+    """A chat completion's object, and the model the host says it used."""
+    return Reply(parse_structured(_content(data["choices"][0]["message"])),
+                 data.get("model") or asked)
 
 
 async def _through_claude_code(call: Coroutine[object, object, _T]) -> _T:
