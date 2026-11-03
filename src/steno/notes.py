@@ -98,10 +98,15 @@ class Todo:
     # task (`drop_open_todos`): a dropped row that names a task is one
     # whose removal is still to do.
     dropped: bool = False
-    # Words the user gave it (Edit or Add on the meeting page). A later
-    # summary keeps them, as it keeps a title given by hand: the task in
-    # asst says the same and nothing would tell it otherwise.
+    # Words the user gave it (Edit or Add on the meeting page, or a new
+    # title in asst). A later summary keeps them, as it keeps a title
+    # given by hand: the task in asst says the same and nothing would
+    # tell it otherwise.
     edited: bool = False
+    # New words given here that asst has not taken yet. Like `dirty` for
+    # a tick: a pull keeps them rather than asst's old title, and the next
+    # pull sends them again.
+    retitle: bool = False
     # Where in the meeting this was said, as seconds on the transcript's
     # timeline. Comes from the summary's markers, never from the text.
     cites: list[citations.Cite] = field(default_factory=list)
@@ -206,6 +211,7 @@ def load_todos(session_dir: Path) -> list[Todo]:
             dirty=bool(row.get("dirty", False)),
             dropped=bool(row.get("dropped", False)),
             edited=bool(row.get("edited", False)),
+            retitle=bool(row.get("retitle", False)),
             cites=citations.coerce(row.get("cites")),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
@@ -338,6 +344,7 @@ def _carry_state(fresh: Todo, prior: Todo) -> None:
     if prior.edited:
         fresh.text = prior.text
         fresh.edited = True
+        fresh.retitle = prior.retitle
 
 
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
@@ -475,13 +482,13 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
 
 
 def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
-    """Retry a tick that failed to reach asst.
+    """Retry a tick, or new words, that failed to reach asst.
 
     asstd can be down for a minute; a tick must not be lost, and when the
     daemon returns the next pull must not undo what the user already did.
     Call this before reading remote state.
 
-    Only ticks go out. Filing an item is `file_with_asst`, run when a summary
+    Only ticks and wordings go out. Filing an item is `file_with_asst`, run when a summary
     lands: this runs on every pull, which is every time a meeting is opened,
     and opening a meeting must not write a task into a task app.
     """
@@ -496,6 +503,14 @@ def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
         ):
             t.dirty = False
             delivered.append((t.uid, t.done))
+    titled: list[tuple[str, str]] = []
+    for t in todos:
+        if (
+            t.retitle and t.uid and not t.dropped
+            and asstlink.set_title(t.uid, t.text)
+        ):
+            t.retitle = False
+            titled.append((t.uid, t.text))
     if delivered:
         def landed(current: list[Todo]) -> bool:
             changed = False
@@ -506,7 +521,24 @@ def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
             return changed
 
         _edit(session_dir, landed)
+    _titles_landed(session_dir, titled)
     return todos
+
+
+def _titles_landed(session_dir: Path, titled: list[tuple[str, str]]) -> None:
+    """asst holds these `(uid, words)`: their rows owe it nothing more."""
+    if not titled:
+        return
+
+    def landed(current: list[Todo]) -> bool:
+        changed = False
+        for row in current:
+            if row.retitle and (row.uid, row.text) in titled:
+                row.retitle = False
+                changed = True
+        return changed
+
+    _edit(session_dir, landed)
 
 
 def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
@@ -514,7 +546,8 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
 
     First push whatever tick is still dirty (asstd may have just come back).
     Then remote wins when asst answers: a phone check-off has to show up
-    here. A row still dirty keeps its local tick. A task deleted in asst is
+    here, and so does a title changed there. A row still dirty keeps its
+    local tick, and one whose new words asst has not taken keeps them. A task deleted in asst is
     deleted here too — a row that has reached the phone and then vanished
     from it was removed on purpose. Rows that never filed (theirs, or yours
     not yet sent) are local and stay: a pull files nothing. A dropped
@@ -574,11 +607,28 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
                 t.uid = uid
                 t.list_name = list_name
                 changed = True
+            changed |= _adopt_title(t, str(hit.get("title") or ""), current)
             kept.append(t)
         current[:] = kept
         return changed
 
     return _edit(session_dir, reconcile)
+
+
+def _adopt_title(row: Todo, title: str, rows: Sequence[Todo]) -> bool:
+    """Take a title given in asst as the row's words, as an Edit here
+    would. Not while words given here are on their way there, and not
+    when another row already says it (the wording is how a row is
+    found). True if the row changed."""
+    title = " ".join(title.split())
+    if not title or title == row.text or row.retitle:
+        return False
+    key = Todo(text=title).key
+    if any(other is not row and other.key == key for other in rows):
+        return False
+    row.text = title
+    row.edited = True
+    return True
 
 
 def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) -> int:
@@ -632,6 +682,7 @@ def rename_todo(session_dir: Path, key: str, text: str) -> Todo | None:
         _with_src(session_dir, row)
         row.text = text
         row.edited = True
+        row.retitle = bool(row.uid)
         found.append(row)
         return True
 
@@ -639,12 +690,17 @@ def rename_todo(session_dir: Path, key: str, text: str) -> Todo | None:
     return found[0] if found else None
 
 
-def deliver_title(uid: str, text: str) -> bool:
+def deliver_title(session_dir: Path, uid: str, text: str) -> bool:
     """Tell asst about a rewording. Slow: not for the GTK thread. An
-    unfiled row has nothing to tell, which is not a failure."""
+    unfiled row has nothing to tell, which is not a failure; one asst
+    did not take is sent again by the next pull (`flush_asst`)."""
     if not uid or not asstlink.available():
         return True
-    return asstlink.set_title(uid, " ".join(text.split()))
+    text = " ".join(text.split())
+    if not asstlink.set_title(uid, text):
+        return False
+    _titles_landed(session_dir, [(uid, text)])
+    return True
 
 
 def remove_todo(session_dir: Path, key: str) -> Todo | None:

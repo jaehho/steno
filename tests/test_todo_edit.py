@@ -70,13 +70,13 @@ class TestRewording(EditCase):
     def test_asst_is_told_the_new_title_of_that_task(self):
         uid = self.row(SEND).uid
         rename_todo(self.dir, SEND, "Send the Q3 usage figures")
-        self.assertTrue(deliver_title(uid, "Send the Q3 usage figures"))
+        self.assertTrue(deliver_title(self.dir, uid, "Send the Q3 usage figures"))
         (task,) = [t for t in self.asst.tasks() if t["id"] == uid]
         self.assertEqual(task["title"], "Send the Q3 usage figures")
 
     def test_a_title_that_starts_with_a_dash_is_text_not_an_option(self):
         uid = self.row(SEND).uid
-        self.assertTrue(deliver_title(uid, "--list nonsense"))
+        self.assertTrue(deliver_title(self.dir, uid, "--list nonsense"))
         (task,) = [t for t in self.asst.tasks() if t["id"] == uid]
         self.assertEqual(task["title"], "--list nonsense")
         self.assertEqual(task["list_name"], "lab")
@@ -114,12 +114,50 @@ class TestRewording(EditCase):
         self.assertIsNone(rename_todo(self.dir, "no such row", "anything"))
 
     def test_an_unfiled_row_has_nothing_to_tell_asst(self):
-        self.assertTrue(deliver_title("", "anything"))
+        self.assertTrue(deliver_title(self.dir, "", "anything"))
         self.assertEqual(self.asst.calls("edit"), [])
 
     def test_a_refusal_by_asst_is_said(self):
         self.asst.down = True
-        self.assertFalse(deliver_title(self.row(SEND).uid, "x"))
+        self.assertFalse(deliver_title(self.dir, self.row(SEND).uid, "x"))
+
+
+class TestTitlesFromAsst(EditCase):
+    """A title changed in asst comes back, and one given here is kept
+    until asst has taken it."""
+
+    def test_a_title_changed_in_asst_becomes_the_rows_words(self):
+        uid = self.row(SEND).uid
+        self.asst.retitle(uid, "Send the Q3 usage figures")
+        pull_todos(self.dir)
+        (row,) = [t for t in load_todos(self.dir) if t.uid == uid]
+        self.assertEqual(row.text, "Send the Q3 usage figures")
+        self.assertTrue(row.edited)
+        self.assertEqual(len(load_todos(self.dir)), 3)
+
+    def test_words_asst_has_not_taken_are_kept_and_sent_again(self):
+        uid = self.row(SEND).uid
+        rename_todo(self.dir, SEND, "Send the Q3 usage figures")
+        self.asst.down = True
+        self.assertFalse(deliver_title(self.dir, uid, "Send the Q3 usage figures"))
+        self.asst.down = False
+        pull_todos(self.dir)
+        (row,) = [t for t in load_todos(self.dir) if t.uid == uid]
+        self.assertEqual(row.text, "Send the Q3 usage figures")
+        self.assertFalse(row.retitle)
+        (task,) = [t for t in self.asst.tasks() if t["id"] == uid]
+        self.assertEqual(task["title"], "Send the Q3 usage figures")
+
+    def test_a_title_another_row_already_has_is_left_in_asst(self):
+        uid = self.row(SEND).uid
+        self.asst.retitle(uid, "Draft the comparison table")
+        pull_todos(self.dir)
+        (row,) = [t for t in load_todos(self.dir) if t.uid == uid]
+        self.assertEqual(row.text, "Send the usage figures by Friday")
+
+    def test_an_unchanged_title_is_not_an_edit(self):
+        pull_todos(self.dir)
+        self.assertFalse(any(t.edited for t in load_todos(self.dir)))
 
 
 class TestRemoving(EditCase):

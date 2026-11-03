@@ -244,6 +244,15 @@ class FakeAsst:
         self._state = state
         self._write()
 
+    def retitle(self, uid: str, title: str) -> None:
+        """Reword a task the way the user would in asst's own window."""
+        state = self._read()
+        for t in state["tasks"]:
+            if t["id"] == uid:
+                t["title"] = title
+        self._state = state
+        self._write()
+
     def remove(self, uid: str) -> None:
         """Delete a task the way the user would in asst's own window."""
         state = self._read()
