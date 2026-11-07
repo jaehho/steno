@@ -647,10 +647,10 @@ def _day_query(typed: str) -> DateQuery | None:
 def filter_day(day_filter: Filter, today: date) -> date:
     """The day an `after:` or `before:` filter names, which it includes.
 
-    A month alone is its first day to `before:` and its last to
-    `after:`, so `before:oct` takes October 1 and `after:oct` takes
-    October 31. A date with no year is the latest one on or before
-    `today`: in January, `after:12/1` is last December.
+    A month alone is all of it, as a day is: `after:oct` takes October
+    from its first day and `before:oct` up to its last, so the two
+    together are October. A date with no year is the latest one on or
+    before `today`: in January, `after:12/1` is last December.
     """
     query = _day_query(day_filter.value)
     if day_filter.key not in DAY_KEYS or query is None or query.month is None:
@@ -663,7 +663,7 @@ def filter_day(day_filter: Filter, today: date) -> date:
     last = calendar.monthrange(year, query.month)[1]
     if query.day is not None:
         return date(year, query.month, min(query.day, last))
-    return date(year, query.month, 1 if day_filter.key == "before" else last)
+    return date(year, query.month, 1 if day_filter.key == "after" else last)
 
 
 def searched(filters: Sequence[Filter]) -> frozenset[str]:

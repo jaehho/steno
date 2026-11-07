@@ -633,17 +633,17 @@ class TestFilterDay(unittest.TestCase):
         self.assertEqual(self.day("before:2026-10-20"), date(2026, 10, 20))
         self.assertEqual(self.day("after:10/1/25"), date(2025, 10, 1))
 
-    def test_a_month_alone_is_its_first_day_before_and_last_after(self):
-        self.assertEqual(self.day("before:oct"), date(2026, 10, 1))
-        self.assertEqual(self.day("after:oct"), date(2026, 10, 31))
-        self.assertEqual(self.day("after:feb"), date(2026, 2, 28))
+    def test_a_month_alone_is_all_of_it(self):
+        self.assertEqual(self.day("after:oct"), date(2026, 10, 1))
+        self.assertEqual(self.day("before:oct"), date(2026, 10, 31))
+        self.assertEqual(self.day("before:feb"), date(2026, 2, 28))
 
     def test_no_year_is_the_last_such_day_to_have_come(self):
         self.assertEqual(self.day("after:11/7"), date(2026, 11, 7))
         self.assertEqual(self.day("after:12/1"), date(2025, 12, 1))
         january = date(2027, 1, 5)
         self.assertEqual(self.day("after:12/1", january), date(2026, 12, 1))
-        self.assertEqual(self.day("before:dec", january), date(2026, 12, 1))
+        self.assertEqual(self.day("before:dec", january), date(2026, 12, 31))
 
     def test_a_day_past_the_end_of_its_month_is_the_last(self):
         self.assertEqual(self.day("before:2/30"), date(2026, 2, 28))
@@ -752,11 +752,13 @@ class TestSearchFilters(unittest.TestCase):
             self.found("after:10/5 before:10/15"), {"Alpha", "Bravo"}
         )
 
-    def test_a_month_alone(self):
-        self.assertEqual(self.found("before:oct"), {"Budget review"})
-        self.assertEqual(
-            self.found("after:sep"), {"Alpha", "Bravo", "Charlie", "Echo"}
-        )
+    def test_a_month_alone_is_all_of_it(self):
+        """Budget review is in September, the rest in October."""
+        october = {"Alpha", "Bravo", "Charlie", "Echo"}
+        self.assertEqual(self.found("after:oct before:oct"), october)
+        self.assertEqual(self.found("after:oct"), october)
+        self.assertEqual(self.found("before:sep"), {"Budget review"})
+        self.assertEqual(len(self.found("before:oct")), len(self.sessions))
         self.assertEqual(self.found("!after:10/1"), {"Budget review"})
 
     def test_a_date_with_no_year_is_the_last_one_to_have_come(self):
