@@ -312,7 +312,7 @@ class TestCost(unittest.TestCase):
 
 class TestRealignHere(unittest.TestCase):
     def test_a_local_plan_costs_nothing(self):
-        plan = realign.Plan(Path("/x/a"), 30.0, False, per_minute=0.0)
+        plan = realign.Plan(Path("/x/a"), 30.0, False, backend="local")
         self.assertEqual(plan.cost, 0.0)
         self.assertIn("~$0.00", realign.format_plan([plan]).splitlines()[-1])
 
@@ -341,6 +341,71 @@ class TestRealignHere(unittest.TestCase):
         meta = json.loads((session / "meta.json").read_text())
         self.assertEqual(meta["asr"], "local:large-v3-turbo")
         self.assertTrue((session / "transcript.before-realign.jsonl").is_file())
+
+
+class TestRetryStaysHere(unittest.TestCase):
+    """A debrief whose transcription failed is retried with `steno
+    realign`; with no STENO_ASR that is on this machine, as the first
+    try was, never Deepgram."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.session = debrief.create_session(self.root, STARTED_AT)
+        write_wav(self.session / "you.wav", b"\0\0" * 16000)
+        self.env = {k: v for k, v in os.environ.items()
+                    if k not in ("DEEPGRAM_API_KEY", "STENO_ASR")}
+
+    def test_a_debrief_is_redone_here_and_a_call_is_not(self):
+        call = self.root / "20260101-090000"
+        call.mkdir()
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(realign.backend_for(self.session), "local")
+            self.assertEqual(realign.backend_for(call), "deepgram")
+            self.assertEqual(realign.plan(self.session).cost, 0.0)
+        with mock.patch.dict(os.environ, {**self.env, "STENO_ASR": "deepgram"},
+                             clear=True):
+            # Said outright, it is what you asked for.
+            self.assertEqual(realign.backend_for(self.session), "deepgram")
+
+    def test_a_failed_debrief_says_how_to_retry_it_here(self):
+        args = argparse.Namespace(source=None, max=60.0, no_summary=True,
+                                  dir=self.root, brief=None)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+             mock.patch.object(cli, "load_dotenv"), \
+             mock.patch.object(cli, "_record_debrief",
+                               return_value=(self.session, STARTED_AT)), \
+             mock.patch.object(debrief, "transcribe",
+                               mock.AsyncMock(side_effect=RuntimeError("x"))), \
+             redirect_stdout(io.StringIO()), redirect_stderr(err), \
+             self.assertRaises(SystemExit):
+            cli.cmd_debrief(args)
+        self.assertIn(f"on this machine: steno realign {self.session.name}",
+                      err.getvalue())
+        self.assertTrue((self.session / "you.wav").is_file())
+
+    def test_that_retry_runs_here_without_a_deepgram_key(self):
+        args = argparse.Namespace(session=self.session.name, all=False,
+                                  force=False, dry_run=False, yes=True,
+                                  dir=self.root)
+        fake = mock.AsyncMock(return_value=[
+            {"ts": STARTED_AT + 2, "speaker": "you", "text": "hi",
+             "offset": 0.5}])
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+             mock.patch.object(cli, "load_dotenv"), \
+             mock.patch.object(transcribe, "transcribe_file_local", fake), \
+             mock.patch.object(transcribe.httpx, "AsyncClient",
+                               side_effect=AssertionError("Deepgram")), \
+             redirect_stdout(out), redirect_stderr(io.StringIO()):
+            cli.cmd_realign(args)
+        self.assertIn("on this machine", out.getvalue())
+        self.assertIn("~$0.00", out.getvalue())
+        meta = json.loads((self.session / "meta.json").read_text())
+        self.assertEqual(meta["asr"], "local:large-v3-turbo")
+        self.assertNotIn("mic_pending", meta)
+        self.assertEqual(fake.await_count, 1)
 
 
 @unittest.skipUnless(model_cached(TEST_MODEL) and shutil.which("espeak-ng"),

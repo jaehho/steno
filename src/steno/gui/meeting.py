@@ -2016,7 +2016,11 @@ class MeetingPage(Gtk.Box):
         s = self.current
         if s is None or self._on_realign is None or self._realigning:
             return
-        job = plan(s.dir)
+        try:
+            job = plan(s.dir)
+        except ValueError as e:  # a STENO_ASR it does not know
+            self._toast(str(e))
+            return
         if job.minutes <= 0:
             self._toast("This meeting has no audio to re-time against")
             return
@@ -2026,10 +2030,14 @@ class MeetingPage(Gtk.Box):
             "Right now this meeting's lines are placed by inference, which is "
             "accurate to a second or two.\n\n"
         )
+        where = (
+            "on this machine, which costs nothing" if job.backend == "local"
+            else f"costs about ${job.cost:.2f}"
+        )
         self._dialog(
             "Re-time this meeting against its audio?",
-            f"{note}Transcribing {job.minutes:.0f} minutes of audio costs about "
-            f"${job.cost:.2f}. The far side is re-transcribed in one pass, which "
+            f"{note}Transcribing {job.minutes:.0f} minutes of audio {where}. "
+            "The far side is re-transcribed in one pass, which "
             "is usually more accurate than the live stream was.\n\n"
             "The current transcript is kept beside the new one.",
             "Re-time it",

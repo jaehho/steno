@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import dataclasses
 import datetime as _dt
 import json as _json
 import logging
@@ -62,7 +61,7 @@ from .notes import (
     sync_todos,
 )
 from .playback import TRACKS, clean_path
-from .realign import format_plan, has_audio, plan, realign_session
+from .realign import Plan, format_plan, has_audio, plan, realign_session
 from .retention import audio_bytes, delete_session, human_bytes, trash_dir
 from .session import paused_until, set_pause
 from .state import bar_json, read_state
@@ -556,23 +555,22 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _realigns_here() -> bool:
-    """True when STENO_ASR=local; exits when Deepgram is needed and has no key."""
+def _plans(targets: list[Path]) -> list[Plan]:
+    """Each target's plan; exits on a STENO_ASR it does not know."""
     try:
-        local = asr_backend(os.environ) == "local"
+        return [plan(t) for t in targets]
     except ValueError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
-    if not local and not os.environ.get("DEEPGRAM_API_KEY"):
-        print(f"Missing DEEPGRAM_API_KEY (see {config_dir() / '.env'})", file=sys.stderr)
-        sys.exit(1)
-    return local
 
 
 def cmd_realign(args: argparse.Namespace) -> None:
-    """Re-time old sessions against their audio, after saying what it costs."""
+    """Re-time old sessions against their audio, after saying what it costs.
+
+    Each session goes to the engine `backend_for` picks: Deepgram for a
+    call unless STENO_ASR says otherwise, this machine for a debrief.
+    """
     load_dotenv(config_dir() / ".env")
-    local = _realigns_here()
     if args.all:
         targets = _leave_out_archived(
             [s for s in iter_sessions(args.dir) if has_audio(s)]
@@ -583,22 +581,26 @@ def cmd_realign(args: argparse.Namespace) -> None:
         except FileNotFoundError as e:
             print(str(e), file=sys.stderr)
             sys.exit(1)
+    plans = _plans(targets)
     if not args.force:
-        targets = [t for t in targets if not plan(t).already_aligned]
-    if not targets:
+        plans = [p for p in plans if not p.already_aligned]
+    if not plans:
         print("nothing to re-time (--force to redo aligned sessions)")
         return
+    uploads = any(p.backend != "local" for p in plans)
+    if uploads and not os.environ.get("DEEPGRAM_API_KEY"):
+        print(f"Missing DEEPGRAM_API_KEY (see {config_dir() / '.env'})", file=sys.stderr)
+        sys.exit(1)
 
-    plans = [plan(t) for t in targets]
-    if local:
-        plans = [dataclasses.replace(p, per_minute=0.0) for p in plans]
-    where = " on this machine" if local else ""
+    here = sum(p.backend == "local" for p in plans)
+    where = (" on this machine" if here == len(plans)
+             else f", {here} of them on this machine" if here else "")
     print(f"re-timing {len(plans)} session{'s' if len(plans) != 1 else ''}{where}:")
     print(format_plan(plans))
     if args.dry_run:
         return
-    question = ("replace their transcripts? [y/N] " if local
-                else "spend that? [y/N] ")
+    question = ("spend that? [y/N] " if uploads
+                else "replace their transcripts? [y/N] ")
     if not args.yes and not _confirm(question):
         print("nothing done")
         return
@@ -607,7 +609,8 @@ def cmd_realign(args: argparse.Namespace) -> None:
     for job in plans:
         progress = _progress_line(f"  {job.name}: transcribing {job.minutes:.0f} min...")
         try:
-            lines = asyncio.run(realign_session(job.session_dir))
+            lines = asyncio.run(
+                realign_session(job.session_dir, backend=job.backend))
         except Exception as e:
             _replace_line(f"  {job.name}: failed - {e}", progress)
             failed += 1
@@ -653,7 +656,10 @@ def cmd_debrief(args: argparse.Namespace) -> None:
         lines = asyncio.run(debrief.transcribe(session_dir, started_at, backend))
     except Exception as e:
         _replace_line(f"  {session_dir.name}: transcription failed - {e}", progress)
-        print(f"    the recording is kept in {session_dir}", file=sys.stderr)
+        name = session_dir.name
+        print(f"    the recording is kept in {session_dir}\n"
+              f"    to try again {where}: steno realign {name}, "
+              f"then steno summarize {name}", file=sys.stderr)
         sys.exit(1)
     took = time.monotonic() - began
     _replace_line(
