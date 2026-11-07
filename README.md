@@ -322,11 +322,16 @@ writes this inside it.
 
 ```
 <project>/notes/meetings/
-    README.md                                    the meetings, newest first
-    2026-10-06-1612-rcnn-toolbox.md              summary, to-dos, your notes
-    2026-10-06-1612-rcnn-toolbox.transcript.md   what was said, [mm:ss] you: ...
-    .gitignore                                   `*`, made with the folder
+    README.md                          the meetings, newest first
+    2026-10-06-1612-rcnn-toolbox.md    summary, to-dos, your notes
+    .gitignore                         `*`, made with the folder
 ```
+
+The transcript is not there. It is other people's speech word for word, and a
+project gets pushed, synced and read by agents, so it stays in Steno (#43):
+`steno export NAME` prints a meeting with it, and each page says so. A
+transcript page an earlier Steno wrote beside a summary is taken away the next
+time its meeting is written; `steno project-notes --all` does them all at once.
 
 The project is the one the summary picked from `~/projects` (or
 `STENO_PROJECTS_DIR`); **Set project...** in the ⋯ menu changes it, and
@@ -336,12 +341,11 @@ opens with a front matter block (title, date, time, length, project, the
 session it came from) and a line saying Steno generated it. The summary page
 is what `steno export` makes without the words: the summary with its
 citations written as `[03:21, 07:40]`, your to-dos as a checklist in the
-state they are in now, your notes, and a link to the transcript page. A
+state they are in now, your notes, and a line saying where the transcript is
+(`steno show` and `steno export` with the session's name). A
 to-do closed because the meeting was put away is not on the checklist as an
 empty box: it follows it under *Closed when the meeting was put away*, as it
-does in `steno export`. The
-transcript page is `[mm:ss] who: text` for each line, with the far side's
-names where Steno has them, as the export has it. `README.md` is the index, a
+does in `steno export`. `README.md` is the index, a
 line per meeting (date, title, length, open to-dos) under a note on what the
 folder is, for an agent that lands in it.
 
@@ -354,7 +358,7 @@ waiting at once. A tick or an edit never puts a meeting into a project that
 was not there already. `steno summarize` and `steno realign` do the same
 from a terminal. A meeting you delete is taken out of its project first;
 one you archive stays there. If the pages cannot be taken out (the folder is
-not writable, say), the meeting is not deleted, because the transcript would
+not writable, say), the meeting is not deleted, because the summary would
 stay behind with nothing to say where it is: the window shows why, `steno
 delete` prints it and exits 1, and deleting again after the fix goes through.
 **Show in project notes** in the ⋯ menu opens the folder, for a meeting that
@@ -381,27 +385,29 @@ has pages in one.
 - It runs no git, and sends nothing anywhere: no network, no model. The pages
   are made from files Steno already has.
 
-**Git.** Transcripts are other people's speech, and project repositories get
-pushed. So the folder is made with a `.gitignore` of `*`, which ignores the
+**Git.** The summaries are drawn from other people's speech, and project
+repositories get pushed. So the folder is made with a `.gitignore` of `*`, which ignores the
 meetings and itself: git sees nothing in the folder, and `git status` stays
 clean. Steno stages and commits nothing. To keep the meetings in the
 repository, delete the `.gitignore`; Steno writes it once, with the folder,
 and does not write it back. (An earlier Steno also wrote `!.gitignore`
-there, which left the folder showing in `git status` as untracked. That
-file is rewritten, once, the next time Steno writes in the folder; a
-`.gitignore` you have changed is left as it is.)
+there, which left the folder showing in `git status` as untracked, and a
+later one gave the transcripts as the reason. Either file is rewritten,
+once, the next time Steno writes in the folder; a `.gitignore` you have
+changed is left as it is.)
 
 If `notes/meetings` already holds files of yours when Steno first writes in
 it, a `*` would hide them from git too, and `git add` would refuse the next one
-you write there. So that folder gets a `.gitignore` of `*.transcript.md`
-alone: the transcripts stay out of git, your files stay visible, and the
-summary pages and the index show up as new files for you to commit or ignore.
+you write there. So that folder gets no `.gitignore`: your files stay
+visible, and the summary pages and the index show up as new files for you to
+commit or ignore. (A `.gitignore` of `*.transcript.md` an earlier Steno left
+there goes with the folder when it empties.)
 
 **A synced folder.** The `.gitignore` is for git alone; a sync tool does not
 read it. If the project's `notes/` is synced (an Obsidian vault with a sync
-plugin, a Nextcloud or Syncthing folder), the meetings go with it,
-transcripts included, to every device and server it syncs to, and a vault
-lists and searches them with the rest. Steno cannot tell, and does not look.
+plugin, a Nextcloud or Syncthing folder), the summaries go with it to every
+device and server it syncs to, and a vault lists and searches them with the
+rest. The transcripts are not there to carry. Steno cannot tell, and does not look.
 To keep them out, use the sync tool's own ignore setting for
 `notes/meetings`, or turn project notes off. Steno does what it can to be a
 quiet neighbour in such a folder: a sync sees one new page per meeting, and
@@ -436,12 +442,10 @@ $ steno project-notes --all --dry-run
 20261012-100000  Weekly sync  [rcnn]
   create  rcnn/notes/meetings/.gitignore
   create  rcnn/notes/meetings/2026-10-12-1000-weekly-sync.md
-  create  rcnn/notes/meetings/2026-10-12-1000-weekly-sync.transcript.md
   create  rcnn/notes/meetings/README.md
 20261006-161200  RCNN Toolbox  [rcnn]
   create  rcnn/notes/meetings/2026-10-06-1612-rcnn-toolbox.md
-  create  rcnn/notes/meetings/2026-10-06-1612-rcnn-toolbox.transcript.md
-dry run, nothing written: 2 meetings looked at, 0 already up to date; 6 to create
+dry run, nothing written: 2 meetings looked at, 0 already up to date; 4 to create
 ```
 
 `steno project-notes` alone does the newest meeting, `NAME` one, `--project P`
@@ -509,15 +513,14 @@ another folder in the project). Nothing is uploaded or shared on the tool's
 own initiative.
 
 Project notes (above) add local files and nothing else: no upload, no
-network, no model call, no git. What they change is where the transcript
-lives. It is now also a file in the project of each meeting, as heard, without
-the scrubbing above (that is for what is sent to the model host, not for what
-is kept or exported). Whatever reads that folder reads it: an editor, a
-backup, a sync client, an agent you run in the project, which sends what it
-reads to its own provider. Steno keeps the transcripts out of git with a
-`.gitignore`, the summaries too in a folder it made; it cannot keep either out
-of a sync (an Obsidian vault, say), which carries the meetings to every device
-it syncs to.
+network, no model call, no git. The transcript is not among them; it stays
+in Steno. The summary is, without the scrubbing above (that is for what is
+sent to the model host, not for what is kept or exported). Whatever reads
+that folder reads it: an editor, a backup, a sync client, an agent you run in
+the project, which sends what it reads to its own provider. Steno keeps the
+summaries out of git with a `.gitignore` in a folder it made; it cannot keep
+them out of a sync (an Obsidian vault, say), which carries them to every
+device it syncs to.
 `STENO_PROJECT_NOTES=0` turns the copies off.
 
 It records other people automatically. That is a deliberate choice, and getting
