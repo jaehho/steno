@@ -299,6 +299,16 @@ class TestSpeakerNames(OnTheShortMeeting):
         self.assertTrue(sidebar.search.has_css_class("error"))
         self.assertEqual(self.tinted(), [])
 
+    def test_the_box_is_tinted_as_the_words_are_typed(self):
+        """The teal moves with the filter at once, before the search's
+        pause is over and the search runs again. Typed in front, not
+        set: set_text empties the box first, which searches at once."""
+        sidebar = self.window.sidebar
+        self.search("speaker:priya")
+        sidebar.search.insert_text("thanks ", 0)
+        self.assertEqual(sidebar.query, "speaker:priya")
+        self.assertEqual(self.tinted(), ["speaker:priya"])
+
     def test_a_date_an_in_leaves_out_is_not_called_a_date(self):
         """Named is on 1/9, but its transcript never says so."""
         sidebar = self.window.sidebar
