@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import gi
@@ -25,6 +25,7 @@ from ..cost import format_meter, prerecorded_cost, stream_cost
 from ..merge import previous_session
 from ..notes import ensure_todos, load_todos, open_count
 from ..speakers import load_names, name_of, names_path
+from ..speakers import tag as speaker_tag
 from ..summarize import (
     SUMMARY_FILENAME,
     duration_minutes,
@@ -39,7 +40,7 @@ from ..summarize import (
 )
 from . import words
 from .menu import meeting_menu_model
-from .widgets import hint_label, mark_matches, mark_spans
+from .widgets import hint_label, mark_matches, mark_spans, tint_spans
 
 LIVE = "live"
 # Between the date, length and project under a meeting's title.
@@ -72,22 +73,23 @@ class Session:
         self.cost = _session_cost(path, self.minutes)
         self.stamp = session_stamp(path)
         self._spoken: list[tuple[str, str]] = []
+        self._heard: frozenset[str] = frozenset()
         self._spoken_stamp: tuple | None = None
 
     @property
     def summary_path(self) -> Path:
         return self.dir / SUMMARY_FILENAME
 
-    def matches(self, query: str) -> bool:
+    def matches(self, query: str, today: date | None = None) -> bool:
         """Phrase search over everything the meeting produced.
 
         Reading the transcripts is fine at this scale and keeps the archive a
         directory of files rather than a database. If this ever gets slow, that
         is the moment to add an index — not before.
         """
-        return self.locate(query) is not None
+        return self.locate(query, today) is not None
 
-    def locate(self, query: str) -> dict | None:
+    def locate(self, query: str, today: date | None = None) -> dict | None:
         """Where a query hit, or None. `{"where": label, "line": n}`.
 
         `where` is the surface the reader cares about (the title, a
@@ -95,17 +97,57 @@ class Session:
         is a 0-based transcript line, so the meeting page can scroll to the
         sentence rather than just opening the meeting and leaving the reader
         to hunt for it.
+
+        Every filter in the query (`project:lab`, `!has:todo`, issue
+        #40) must hold before the phrase is looked for, and a query of
+        filters alone finds the meeting at no line. `today` places a
+        date with no year (`after:10/1`); the clock is read when it is
+        not given.
         """
         if not query:
             return {"where": "", "line": 0}
-        phrase = words.search_phrase(query)
+        filters, phrase = words.parse_filters(query)
+        today = today if today is not None else date.today()
+        if not all(self._holds(f, today) for f in filters):
+            return None
+        if not phrase:
+            return {"where": "", "line": -1}
+        places = words.searched(filters)
         for where, line, text in self._surfaces():
-            if words.match_spans(text, phrase):
+            if where in places and words.match_spans(text, phrase):
                 return {"where": where, "line": line}
         # After the words, so that "may" in a line still lands on the line.
-        if words.date_spans(words.date_query(phrase), self.start):
+        if "date" in places and words.date_spans(
+            words.date_query(phrase), self.start
+        ):
             return {"where": "date", "line": -1}
         return None
+
+    def _holds(self, search_filter: words.Filter, today: date) -> bool:
+        """Whether the meeting gets past one filter of a search. `in:`
+        says where to look, not which meetings, so it holds for all."""
+        if search_filter.key == "in":
+            return True
+        return self._is(search_filter, today) != search_filter.negated
+
+    def _is(self, search_filter: words.Filter, today: date) -> bool:
+        """Whether the meeting is what a filter names, its `!` aside.
+
+        A project or a speaker is named by any part of it, whatever its
+        case, as the phrase finds words.
+        """
+        wanted = search_filter.value.casefold()
+        key = search_filter.key
+        if key == "project":
+            return wanted in (self.project or "").casefold()
+        if key == "speaker":
+            return any(wanted in who.casefold() for who in self._voices())
+        if key == "has":
+            return self.open_todos > 0
+        day = words.filter_day(search_filter, today)
+        if key == "after":
+            return self.start.date() >= day
+        return self.start.date() <= day
 
     def _spoken_lines(self) -> list[tuple[str, str]]:
         """Each transcript line's `(name of who said it, words)`.
@@ -119,12 +161,20 @@ class Session:
         )
         if stamp != self._spoken_stamp:
             names = load_names(self.dir)
+            records = load_records(self.dir)
             self._spoken = [
-                (name_of(r, names), str(r.get("text", "")))
-                for r in load_records(self.dir)
+                (name_of(r, names), str(r.get("text", ""))) for r in records
             ]
+            self._heard = frozenset(speaker_tag(r, names) for r in records)
             self._spoken_stamp = stamp
         return self._spoken
+
+    def _voices(self) -> frozenset[str]:
+        """Everyone who said a line, as the page tags them: a learned
+        name, else You or Them. Read with the lines, and kept with
+        them."""
+        self._spoken_lines()
+        return self._heard
 
     def _surfaces(self) -> Iterator[tuple[str, int, str]]:
         """What search reads, in the order a hit counts: `(where, line, text)`.
@@ -290,6 +340,7 @@ class Sidebar(Gtk.Box):
         search.set_margin_start(8)
         search.set_margin_end(8)
         search.set_margin_bottom(6)
+        search.connect("changed", self._tint_query)
         search.connect("search-changed", self._on_search)
         search.connect("stop-search", self._on_stop_search)
         search.connect("activate", self._on_search_activate)
@@ -489,9 +540,10 @@ class Sidebar(Gtk.Box):
         while (row := self.list.get_first_child()) is not None:
             self.list.remove(row)
 
+        now = datetime.now()
         found = [
             s for s in self.sessions
-            if s.dir != self.live_dir and s.matches(self.query)
+            if s.dir != self.live_dir and s.matches(self.query, now.date())
         ]
         away = [s for s in found if s.archived]
         self.items = (
@@ -500,7 +552,6 @@ class Sidebar(Gtk.Box):
             + ([ARCHIVE] if away else [])
             + (away if self.show_archived else [])
         )
-        now = datetime.now()
         for item in self.items:
             if isinstance(item, Session):
                 row = self._session_row(item, now)
@@ -680,7 +731,7 @@ class Sidebar(Gtk.Box):
         )
         # A hit in what the row shows is lit there; one elsewhere is named.
         phrase = words.search_phrase(self.query)
-        hit = s.locate(self.query) if self.query else None
+        hit = s.locate(self.query, now.date()) if self.query else None
         where = hit["where"] if hit else ""
         spans: list[tuple[int, int]] = []
         if where == "title":
@@ -717,13 +768,27 @@ class Sidebar(Gtk.Box):
 
     def _on_search(self, entry) -> None:
         self.query = entry.get_text().strip()
-        dated = words.date_query(words.search_phrase(self.query)) is not None
-        (entry.add_css_class if dated else entry.remove_css_class)("date-query")
+        # Not when an `in:` leaves the date out (issue #40).
+        dated = words.date_query(words.phrase_in(self.query, "date")) is not None
         entry.set_tooltip_text("Also finding meetings on this date" if dated else None)
         # A new query is a new question: its first hit is what it means,
         # so the page starts there rather than at whatever was open
         # (issue #20). Clearing it keeps the meeting being read.
         self._repopulate(None if self.query else self._selected_key())
+        self._tint_query(entry)
+
+    def _tint_query(self, entry: Gtk.SearchEntry) -> None:
+        """Each filter in the box, and a phrase read as a date, in teal
+        (issue #40). Done as the words are typed, not after the search's
+        pause, so the colour never sits on the wrong letters. While the
+        last search found nothing the box is red instead (the window's
+        `error`), and stays so until the next search says otherwise.
+        """
+        found = not self.query or any(
+            isinstance(item, Session) for item in self.items
+        )
+        spans = words.box_spans(entry.get_text()) if found else []
+        tint_spans(entry.get_delegate(), spans)
 
     def _on_stop_search(self, entry) -> None:
         """Esc in the search box: clear it, or with nothing left to

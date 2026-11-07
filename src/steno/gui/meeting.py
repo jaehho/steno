@@ -176,7 +176,7 @@ class MeetingPage(Gtk.Box):
         self._playing_index = -1
         # What the sidebar's search is looking for, and the lines that hold
         # it; both shown on the page wherever the words occur.
-        self._search_phrase = ""
+        self._search_query = ""
         self._hits: list[int] = []
         self._hit_at = -1  # the one in `_hits` the page was last taken to
         # What was last asked where it was said, and the lines that answer.
@@ -456,20 +456,27 @@ class MeetingPage(Gtk.Box):
                 _line_tag(self._rows[i]).set_attributes(None)
         self._clear_hit()
         self._hits = []
-        self._search_phrase = words.search_phrase(query)
+        self._search_query = query
+        said = self._phrase_in("transcript")
+        named = self._phrase_in("speaker")
         for i, record in enumerate(self._records):
             # A line is found by its words or by the name of who said it.
-            if any(words.match_spans(said, self._search_phrase) for said in (
-                str(record.get("text", "")), name_of(record, self._names),
-            )):
+            if words.match_spans(str(record.get("text", "")), said) or (
+                words.match_spans(name_of(record, self._names), named)
+            ):
                 self._hits.append(i)
                 self._rows[i].add_css_class("line-hit")
-                mark_matches(_line_text(self._rows[i]), self._search_phrase)
-                mark_matches(_line_tag(self._rows[i]), self._search_phrase)
+                mark_matches(_line_text(self._rows[i]), said)
+                mark_matches(_line_tag(self._rows[i]), named)
         self._mark_summary()
         for label in self._todo_labels:
-            mark_matches(label, self._search_phrase)
-        self.notes.mark(self._search_phrase)
+            mark_matches(label, self._phrase_in("to-dos"))
+        self.notes.mark(self._phrase_in("notes"))
+
+    def _phrase_in(self, surface: str) -> str:
+        """What the search lights in one part of the page: nothing where
+        its `in:` leaves that part out (issue #40)."""
+        return words.phrase_in(self._search_query, surface)
 
     def match_note(self) -> str:
         """Which match the page is on, for the header, which stays in view
@@ -505,7 +512,7 @@ class MeetingPage(Gtk.Box):
 
     def _mark_summary(self) -> None:
         for label in self.summary_view.labels:
-            mark_matches(label, self._search_phrase)
+            mark_matches(label, self._phrase_in("summary"))
 
     def _scroll_to_row(self, row: Gtk.ListBoxRow, give_up: int) -> bool:
         """Bring a transcript line to just under the top of whichever scroller
@@ -1012,7 +1019,7 @@ class MeetingPage(Gtk.Box):
 
         label = wrapping_label(todo.text, selectable=False)
         self._todo_labels.append(label)
-        mark_matches(label, self._search_phrase)
+        mark_matches(label, self._phrase_in("to-dos"))
         # Wrap at a column's width instead of asking for the whole sentence.
         label.set_max_width_chars(30)
         label.set_hexpand(True)

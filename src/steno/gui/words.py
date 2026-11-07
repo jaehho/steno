@@ -5,10 +5,11 @@ status card, how a summary is rendered — can be tested headlessly.
 """
 from __future__ import annotations
 
+import calendar
 import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple
 
 from .. import citations, speakers
@@ -66,6 +67,21 @@ _DAY = re.compile(r"(\d{1,2})(?:st|nd|rd|th)?")
 _YEAR = re.compile(r"(?:19|20)\d{2}")
 LAST_MONTH = 12
 LAST_DAY = 31
+
+# A search's words: anything between spaces.
+_WORD = re.compile(r"\S+")
+# What a `key:value` word of a search can be (issue #40). The rest of a
+# search is one phrase.
+FILTER_KEYS = frozenset({"project", "speaker", "after", "before", "has", "in"})
+DAY_KEYS = frozenset({"after", "before"})
+# Where a search looks, as a hit's row names it: `in:` picks from these.
+SURFACES = (
+    "title", "project", "speaker", "summary", "notes", "to-dos",
+    "transcript", "date",
+)
+_SURFACE_ALIASES = {"todo": "to-dos", "todos": "to-dos"}
+# What `has:` can ask for: open to-dos, as the row's "N to do" counts.
+_TODO_WORDS = frozenset({"todo", "todos"})
 
 
 def list_section(start: datetime, now: datetime) -> str:
@@ -565,9 +581,140 @@ def cite_places(
     return sorted(places.values(), key=lambda place: place.rows[0])
 
 
+class Filter(NamedTuple):
+    """One `key:value` word of a search, which every hit must pass."""
+    key: str  # one of FILTER_KEYS
+    # As typed; for `in:` the surface as SURFACES spells it, and for
+    # `has:` "todo".
+    value: str
+    negated: bool  # written `!key:value`
+    span: tuple[int, int]  # where in the query, by character, `!` included
+
+
+def parse_filters(query: str) -> tuple[list[Filter], str]:
+    """The filters in a search, and the phrase the rest of it makes.
+
+    A filter is one word, `key:value`, and `!` in front negates it. Its
+    value runs to the next space. A word whose key is no filter's, or
+    whose value its key cannot read (`after:soon`, `in:everything`),
+    is a word of the phrase like any other.
+    """
+    filters: list[Filter] = []
+    rest: list[str] = []
+    for word in _WORD.finditer(query):
+        found = _filter(word[0], word.span())
+        if found is None:
+            rest.append(word[0])
+        else:
+            filters.append(found)
+    return filters, " ".join(rest)
+
+
+def _filter(word: str, span: tuple[int, int]) -> Filter | None:
+    """The filter a word of a search is, or None for a word to find."""
+    negated = word.startswith("!")
+    key, colon, typed = word.removeprefix("!").partition(":")
+    key = key.lower()
+    if not colon or key not in FILTER_KEYS:
+        return None
+    value = _filter_value(key, typed)
+    return None if value is None else Filter(key, value, negated, span)
+
+
+def _filter_value(key: str, typed: str) -> str | None:
+    """A filter's value as it is kept, or None if `key` cannot read
+    it."""
+    if key in DAY_KEYS:
+        return typed if _day_query(typed) is not None else None
+    if key == "in":
+        surface = _SURFACE_ALIASES.get(typed.lower(), typed.lower())
+        return surface if surface in SURFACES else None
+    if key == "has":
+        return "todo" if typed.lower() in _TODO_WORDS else None
+    return typed or None
+
+
+def _day_query(typed: str) -> DateQuery | None:
+    """`typed` as a date an `after:` or `before:` can stop at: one
+    with a month in it and no weekday, read as a date search reads
+    it."""
+    query = date_query(typed)
+    if query is None or query.month is None or query.weekday is not None:
+        return None
+    return query
+
+
+def filter_day(day_filter: Filter, today: date) -> date:
+    """The day an `after:` or `before:` filter names, which it includes.
+
+    A month alone is all of it, as a day is: `after:oct` takes October
+    from its first day and `before:oct` up to its last, so the two
+    together are October. A date with no year is the one nearest
+    `today`, except that `after:` never takes one in a month still to
+    come, since nothing has happened after it yet. So in November
+    `before:12/31` is this December and `after:11/1 before:11/30` is
+    this month, and in January `after:12/1` is last December.
+    """
+    query = _day_query(day_filter.value)
+    if day_filter.key not in DAY_KEYS or query is None or query.month is None:
+        msg = f"not a date filter: {day_filter}"
+        raise ValueError(msg)
+    first = day_filter.key == "after"
+    if query.year is not None:
+        return _day_of(query.year, query.month, query.day, first=first)
+    days = [
+        _day_of(year, query.month, query.day, first=first)
+        for year in (today.year - 1, today.year, today.year + 1)
+    ]
+    if first:
+        days = [
+            day for day in days
+            if (day.year, day.month) <= (today.year, today.month)
+        ]
+    return min(days, key=lambda day: abs(day - today))
+
+
+def _day_of(year: int, month: int, day: int | None, *, first: bool) -> date:
+    """A day of a month, or with no day its first (`first`) or its
+    last. A day past the month's end is its last."""
+    last = calendar.monthrange(year, month)[1]
+    if day is None:
+        return date(year, month, 1 if first else last)
+    return date(year, month, min(day, last))
+
+
+def searched(filters: Sequence[Filter]) -> frozenset[str]:
+    """Where a search looks for its phrase: the surfaces its `in:`
+    filters name, or all of them, less those `!in:` leaves out."""
+    named = {f.value for f in filters if f.key == "in" and not f.negated}
+    left_out = {f.value for f in filters if f.key == "in" and f.negated}
+    return frozenset(named or SURFACES) - left_out
+
+
+def phrase_in(query: str, surface: str) -> str:
+    """The phrase a search looks for in `surface`, "" where its `in:`
+    filters leave that surface out."""
+    filters, phrase = parse_filters(query)
+    return phrase if surface in searched(filters) else ""
+
+
 def search_phrase(query: str) -> str:
-    """What a search looks for: the words as typed, in order, together."""
-    return " ".join(query.split())
+    """What a search looks for: the words as typed, in order, together,
+    less its filters."""
+    return parse_filters(query)[1]
+
+
+def box_spans(query: str) -> list[tuple[int, int]]:
+    """What the search box sets apart, by character: each filter, and
+    every word of the phrase when the phrase reads as a date and its
+    `in:` filters leave the date in, so it also finds meetings by it."""
+    filters, phrase = parse_filters(query)
+    taken = {f.span for f in filters}
+    dated = "date" in searched(filters) and date_query(phrase) is not None
+    return [
+        word.span() for word in _WORD.finditer(query)
+        if dated or word.span() in taken
+    ]
 
 
 def match_spans(text: str, phrase: str) -> list[tuple[int, int]]:
