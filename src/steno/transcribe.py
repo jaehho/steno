@@ -38,7 +38,7 @@ DEFAULT_HOST = "api.deepgram.com"
 
 
 def deepgram_host() -> str:
-    """The Deepgram API host: STENO_DEEPGRAM_HOST, else the global one."""
+    """The Deepgram host: STENO_DEEPGRAM_HOST, else the global one."""
     return os.environ.get(HOST_ENV, "").strip() or DEFAULT_HOST
 
 

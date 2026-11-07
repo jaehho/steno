@@ -28,7 +28,7 @@ def _silent_wav(path: Path) -> None:
 
 
 def _batch_request(env: dict[str, str]) -> httpx.Request:
-    """Run transcribe_file against a fake Deepgram; return its request."""
+    """transcribe_file against a fake Deepgram; the request it sent."""
     seen: list[httpx.Request] = []
 
     def reply(request: httpx.Request) -> httpx.Response:
@@ -61,7 +61,7 @@ class TestModelTrainingOptOut(unittest.TestCase):
 
 
 class TestUsageLogKeepsNoNames(unittest.TestCase):
-    """The opt-out leaves keyterms in the usage log; redaction hides them."""
+    """The opt-out leaves keyterms in the usage log; redaction not."""
 
     def test_stream_redacts_usage(self):
         q = parse_qs(urlparse(listen_url(["Jane Doe"])).query)
@@ -91,7 +91,7 @@ class TestHost(unittest.TestCase):
 
 
 class TestNoOtherDeepgramCall(unittest.TestCase):
-    """A URL written out by hand would skip the opt-out and the EU pin."""
+    """A URL written by hand would skip the opt-out and the EU pin."""
 
     def test_no_module_writes_a_deepgram_url(self):
         url = re.compile(r"\w+://[\w.-]*deepgram\.com")
