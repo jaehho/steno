@@ -768,7 +768,8 @@ class Sidebar(Gtk.Box):
 
     def _on_search(self, entry) -> None:
         self.query = entry.get_text().strip()
-        dated = words.date_query(words.search_phrase(self.query)) is not None
+        # Not when an `in:` leaves the date out (issue #40).
+        dated = words.date_query(words.phrase_in(self.query, "date")) is not None
         entry.set_tooltip_text("Also finding meetings on this date" if dated else None)
         # A new query is a new question: its first hit is what it means,
         # so the page starts there rather than at whatever was open

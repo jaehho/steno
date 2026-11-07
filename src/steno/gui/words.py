@@ -706,10 +706,11 @@ def search_phrase(query: str) -> str:
 
 def box_spans(query: str) -> list[tuple[int, int]]:
     """What the search box sets apart, by character: each filter, and
-    every word of the phrase when the phrase reads as a date."""
+    every word of the phrase when the phrase reads as a date and its
+    `in:` filters leave the date in, so it also finds meetings by it."""
     filters, phrase = parse_filters(query)
     taken = {f.span for f in filters}
-    dated = date_query(phrase) is not None
+    dated = "date" in searched(filters) and date_query(phrase) is not None
     return [
         word.span() for word in _WORD.finditer(query)
         if dated or word.span() in taken

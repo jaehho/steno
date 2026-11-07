@@ -609,6 +609,17 @@ class TestParseFilters(unittest.TestCase):
         )
         self.assertEqual(words.box_spans("foo:bar budget"), [])
 
+    def test_a_date_phrase_an_in_leaves_out_is_not_set_apart(self):
+        """It finds no meeting by its date, so it is only words."""
+        for query, apart in (
+            ("in:transcript oct 20", ["in:transcript"]),
+            ("!in:date oct 20", ["!in:date"]),
+            ("in:date oct 20", ["in:date", "oct", "20"]),
+        ):
+            self.assertEqual(
+                [query[a:b] for a, b in words.box_spans(query)], apart, query
+            )
+
     def test_in_picks_where_the_phrase_is_looked_for(self):
         def searched(query):
             return words.searched(words.parse_filters(query)[0])

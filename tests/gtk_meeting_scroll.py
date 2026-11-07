@@ -299,6 +299,16 @@ class TestSpeakerNames(OnTheShortMeeting):
         self.assertTrue(sidebar.search.has_css_class("error"))
         self.assertEqual(self.tinted(), [])
 
+    def test_a_date_an_in_leaves_out_is_not_called_a_date(self):
+        """Named is on 1/9, but its transcript never says so."""
+        sidebar = self.window.sidebar
+        sidebar.search.set_text("in:transcript 1/9")
+        self.assertTrue(
+            wait_for(lambda: sidebar.query == "in:transcript 1/9")
+        )
+        self.assertIsNone(sidebar.search.get_tooltip_text())
+        self.assertTrue(sidebar.search.has_css_class("error"))
+
     def test_filters_alone_open_the_meeting_at_no_line(self):
         self.window.sidebar.list.select_row(self.search("speaker:priya"))
         self.assertEqual(self.page.current.title, "Named")
