@@ -138,7 +138,8 @@ class TestManualReachesTheBar(unittest.TestCase):
             asyncio.run(begin(engine))
         self.addCleanup(engine.current.transcript_jsonl.close)
         (changed,) = [e for e in events if isinstance(e, StatusChanged)]
-        return state.bar_json({"status": changed.status, "detail": changed.detail})
+        published = {"status": changed.status, "detail": changed.detail}
+        return state.bar_json(published)
 
     def test_a_start_you_asked_for(self):
         out = self.started(lambda e: e._on_command("start"))
