@@ -22,11 +22,14 @@ KEEPALIVE_S = 8.0
 # request URL enormous. Plain terms only — a weight suffix is treated literally.
 MAX_KEYTERMS = 30
 
-# Deepgram keeps the audio and transcript of every request for model
-# training unless the request says `mip_opt_out=true`
-# (developers.deepgram.com/trust-security/your-data). A meeting is other
-# people talking, so every request opts out.
-MIP_OPT_OUT = ("mip_opt_out", "true")
+# Sent on every Deepgram request, because a meeting is other people
+# talking (developers.deepgram.com/trust-security/your-data):
+# - `mip_opt_out`: by default Deepgram keeps the audio and transcript to
+#   train its models; opted out, only while it processes the request.
+# - `redact_usage`: the usage log, kept 90 days whatever the opt-out,
+#   records each request's URL, keyterms included; those are the brief's
+#   names. Redacted, it stores `[REDACTED]` in their place.
+PRIVACY_PARAMS = (("mip_opt_out", "true"), ("redact_usage", "true"))
 
 # api.eu.deepgram.com keeps processing in the EU; together with the
 # opt-out it is Deepgram's full in-region guarantee.
@@ -64,7 +67,7 @@ def listen_url(keyterms: list[str] | None = None) -> str:
     # Far-side diarization: who among *them* said it. The near side is one
     # person by construction and is not run through this socket.
     pairs.append(("diarize_model", "latest"))
-    pairs.append(MIP_OPT_OUT)
+    pairs.extend(PRIVACY_PARAMS)
     pairs.extend(
         ("keyterm", term.strip())
         for term in (keyterms or [])[:MAX_KEYTERMS]
@@ -212,7 +215,7 @@ async def transcribe_file(
         ("smart_format", "true"),
         ("utterances", "true"),
         ("punctuate", "true"),
-        MIP_OPT_OUT,
+        *PRIVACY_PARAMS,
     ]
     params.extend(
         ("keyterm", term.strip())

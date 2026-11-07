@@ -15,6 +15,8 @@ import httpx
 from steno import transcribe
 from steno.transcribe import HOST_ENV, listen_url, transcribe_file
 
+SRC = Path(transcribe.__file__).parent
+
 
 def _silent_wav(path: Path) -> None:
     with wave.open(str(path), "wb") as w:
@@ -43,7 +45,7 @@ def _batch_request(env: dict[str, str]) -> httpx.Request:
         with mock.patch.dict(os.environ, env, clear=False), \
                 mock.patch.object(transcribe.httpx, "AsyncClient",
                                   fake_client):
-            asyncio.run(transcribe_file(wav, 0.0, "you"))
+            asyncio.run(transcribe_file(wav, 0.0, "you", keyterms=["ACME"]))
     return seen[0]
 
 
@@ -55,6 +57,20 @@ class TestModelTrainingOptOut(unittest.TestCase):
     def test_batch_opts_out(self):
         request = _batch_request({"DEEPGRAM_API_KEY": "test"})
         self.assertEqual(request.url.params.get("mip_opt_out"), "true")
+
+
+class TestUsageLogKeepsNoNames(unittest.TestCase):
+    """The opt-out leaves keyterms in the usage log; redaction hides them."""
+
+    def test_stream_redacts_usage(self):
+        q = parse_qs(urlparse(listen_url(["Jane Doe"])).query)
+        self.assertEqual(q["keyterm"], ["Jane Doe"])
+        self.assertEqual(q["redact_usage"], ["true"])
+
+    def test_batch_redacts_usage(self):
+        request = _batch_request({"DEEPGRAM_API_KEY": "test"})
+        self.assertEqual(request.url.params.get("keyterm"), "ACME")
+        self.assertEqual(request.url.params.get("redact_usage"), "true")
 
 
 class TestHost(unittest.TestCase):
@@ -71,6 +87,18 @@ class TestHost(unittest.TestCase):
                                   HOST_ENV: eu})
         self.assertEqual(request.url.host, eu)
         self.assertEqual(request.url.params.get("mip_opt_out"), "true")
+
+
+class TestNoOtherDeepgramCall(unittest.TestCase):
+    """A new call site would skip the opt-out without anyone noticing."""
+
+    def test_only_transcribe_names_the_host(self):
+        naming = sorted(
+            path.relative_to(SRC).as_posix()
+            for path in SRC.rglob("*.py")
+            if "deepgram.com" in path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(naming, ["transcribe.py"])
 
 
 if __name__ == "__main__":
