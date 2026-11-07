@@ -83,6 +83,41 @@ class TestSession(unittest.TestCase):
         self.assertEqual(meta["asr"], "local:large-v3-turbo")
 
 
+class TestRecord(unittest.TestCase):
+    """The mic alone, until told to stop or out of time; no audio device."""
+
+    def record(self, stop_after: float | None, max_s: float) -> Path:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        dest = tmp / "you.wav"
+
+        async def fake_record_only(source, wav):
+            self.assertEqual(source, "mic-source")
+            while True:
+                wav.writeframes(b"\0\0" * 160)
+                await asyncio.sleep(0.01)
+
+        async def run():
+            stop = asyncio.Event()
+            if stop_after is not None:
+                asyncio.get_running_loop().call_later(stop_after, stop.set)
+            return await debrief.record(dest, stop, max_s)
+
+        with mock.patch.object(debrief, "capture_mic",
+                               mock.AsyncMock(return_value="mic-source")), \
+             mock.patch.object(debrief, "record_only", fake_record_only):
+            self.assertEqual(asyncio.run(run()), "mic-source")
+        return dest
+
+    def test_it_stops_when_told_and_leaves_a_readable_wav(self):
+        dest = self.record(stop_after=0.1, max_s=30.0)
+        self.assertGreater(debrief.wav_seconds(dest), 0.0)
+
+    def test_a_forgotten_debrief_stops_at_its_limit(self):
+        dest = self.record(stop_after=None, max_s=0.1)
+        self.assertGreater(debrief.wav_seconds(dest), 0.0)
+
+
 class TestPrompt(unittest.TestCase):
     def test_a_call_keeps_the_prompt_it_had(self):
         self.assertEqual(system_prompt_for({}), SYSTEM_PROMPT)
