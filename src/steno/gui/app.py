@@ -30,6 +30,7 @@ from .. import (
     icon_dir,
     icon_host_report,
     icon_theme_dir,
+    livesrc,
     migrate_legacy,
     projectnotes,
 )
@@ -104,6 +105,7 @@ class App(Adw.Application):
         # edited in the window; lives as long as the app, not the window.
         self.rewriter = Rewriter(on_problem=self._notes_problem)
         self.tray: Tray | None = None
+        self.source: livesrc.Source | None = None
         self._sync_workers: list[threading.Thread] = []
 
     # ------------------------------------------------------------------ startup
@@ -119,6 +121,12 @@ class App(Adw.Application):
         # next "the bar shows a placeholder" can be read, not guessed.
         logging.getLogger("steno.icon").info(
             "%s", icon_host_report(icon_theme_dir())
+        )
+        # Which tree is live, said once: a worktree handed over for a
+        # try stays the recorder until something replaces it.
+        self.source = livesrc.publish(
+            pid=os.getpid(), started_at=time.time(),
+            default_root=os.environ.get(livesrc.DEFAULT_ROOT_ENV, ""),
         )
         # Without this the app would exit the moment its last window closed,
         # taking the detector with it. The pipeline outlives every window.

@@ -104,6 +104,16 @@ ran "ran checkout: [status]" "installed"
 STENO_SRC="$tmp/other" "$tmp/prefix/bin/steno" y ||
   die "installed STENO_SRC run exited non-zero"
 ran "ran other: [y]" "installed, with STENO_SRC"
+# The app is told which checkout is the installed one, so a STENO_SRC
+# tree can say it is a test build.
+tree "$tmp/third"
+cat >"$tmp/third/.venv/bin/steno" <<'EOF'
+#!/bin/sh
+echo "installed is $STENO_DEFAULT_ROOT" >>"$MARKER"
+EOF
+STENO_SRC="$tmp/third" "$tmp/prefix/bin/steno" ||
+  die "the STENO_DEFAULT_ROOT run exited non-zero"
+ran "installed is $tmp/checkout" "STENO_DEFAULT_ROOT"
 # Installing rewrote the copy, not the template it was made from.
 grep -q '^DEFAULT_ROOT="@ROOT@"$' "$tmp/checkout/scripts/steno-live" ||
   die "make link edited scripts/steno-live in place"
