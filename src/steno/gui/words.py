@@ -649,21 +649,38 @@ def filter_day(day_filter: Filter, today: date) -> date:
 
     A month alone is all of it, as a day is: `after:oct` takes October
     from its first day and `before:oct` up to its last, so the two
-    together are October. A date with no year is the latest one on or
-    before `today`: in January, `after:12/1` is last December.
+    together are October. A date with no year is the one nearest
+    `today`, except that `after:` never takes one in a month still to
+    come, since nothing has happened after it yet. So in November
+    `before:12/31` is this December and `after:11/1 before:11/30` is
+    this month, and in January `after:12/1` is last December.
     """
     query = _day_query(day_filter.value)
     if day_filter.key not in DAY_KEYS or query is None or query.month is None:
         msg = f"not a date filter: {day_filter}"
         raise ValueError(msg)
-    year = query.year
-    if year is None:
-        come = (query.month, query.day or 1) <= (today.month, today.day)
-        year = today.year if come else today.year - 1
-    last = calendar.monthrange(year, query.month)[1]
-    if query.day is not None:
-        return date(year, query.month, min(query.day, last))
-    return date(year, query.month, 1 if day_filter.key == "after" else last)
+    first = day_filter.key == "after"
+    if query.year is not None:
+        return _day_of(query.year, query.month, query.day, first=first)
+    days = [
+        _day_of(year, query.month, query.day, first=first)
+        for year in (today.year - 1, today.year, today.year + 1)
+    ]
+    if first:
+        days = [
+            day for day in days
+            if (day.year, day.month) <= (today.year, today.month)
+        ]
+    return min(days, key=lambda day: abs(day - today))
+
+
+def _day_of(year: int, month: int, day: int | None, *, first: bool) -> date:
+    """A day of a month, or with no day its first (`first`) or its
+    last. A day past the month's end is its last."""
+    last = calendar.monthrange(year, month)[1]
+    if day is None:
+        return date(year, month, 1 if first else last)
+    return date(year, month, min(day, last))
 
 
 def searched(filters: Sequence[Filter]) -> frozenset[str]:

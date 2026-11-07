@@ -636,17 +636,33 @@ class TestFilterDay(unittest.TestCase):
     def test_a_month_alone_is_all_of_it(self):
         self.assertEqual(self.day("after:oct"), date(2026, 10, 1))
         self.assertEqual(self.day("before:oct"), date(2026, 10, 31))
-        self.assertEqual(self.day("before:feb"), date(2026, 2, 28))
+        march = date(2026, 3, 10)
+        self.assertEqual(self.day("before:feb", march), date(2026, 2, 28))
 
-    def test_no_year_is_the_last_such_day_to_have_come(self):
+    def test_no_year_after_is_the_latest_whose_month_has_come(self):
+        """Nothing has happened yet after a day in a month to come."""
         self.assertEqual(self.day("after:11/7"), date(2026, 11, 7))
+        self.assertEqual(self.day("after:11/30"), date(2026, 11, 30))
+        self.assertEqual(self.day("after:apr"), date(2026, 4, 1))
         self.assertEqual(self.day("after:12/1"), date(2025, 12, 1))
         january = date(2027, 1, 5)
         self.assertEqual(self.day("after:12/1", january), date(2026, 12, 1))
+
+    def test_no_year_before_is_the_one_nearest_today(self):
+        self.assertEqual(self.day("before:11/30"), date(2026, 11, 30))
+        self.assertEqual(self.day("before:dec"), date(2026, 12, 31))
+        self.assertEqual(self.day("before:oct"), date(2026, 10, 31))
+        october = date(2026, 10, 15)
+        self.assertEqual(self.day("before:10/20", october), date(2026, 10, 20))
+        january = date(2027, 1, 5)
         self.assertEqual(self.day("before:dec", january), date(2026, 12, 31))
+        # More than half a year back is nearer next year: give the year.
+        self.assertEqual(self.day("before:feb"), date(2027, 2, 28))
+        self.assertEqual(self.day("before:2/28/26"), date(2026, 2, 28))
 
     def test_a_day_past_the_end_of_its_month_is_the_last(self):
-        self.assertEqual(self.day("before:2/30"), date(2026, 2, 28))
+        self.assertEqual(self.day("after:2/30"), date(2026, 2, 28))
+        self.assertEqual(self.day("before:2/30/28"), date(2028, 2, 29))
 
     def test_only_a_date_filter_names_a_day(self):
         (found,), _ = words.parse_filters("project:lab")
@@ -686,7 +702,7 @@ class TestSearchFilters(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        root = Path(tmp.name)
+        self.root = root = Path(tmp.name)
         them = {"speaker": "them"}
         self.sessions = [
             write_meeting(
@@ -761,14 +777,25 @@ class TestSearchFilters(unittest.TestCase):
         self.assertEqual(len(self.found("before:oct")), len(self.sessions))
         self.assertEqual(self.found("!after:10/1"), {"Budget review"})
 
-    def test_a_date_with_no_year_is_the_last_one_to_have_come(self):
-        """In January, October is last year's."""
+    def test_a_date_with_no_year_is_placed_near_today(self):
+        """On November 7, 11/30 and December are this year's; in
+        January, October is last year's."""
+        self.sessions.append(write_meeting(
+            self.root, "20261105-100000", "Foxtrot",
+            [{"speaker": "you", "text": "hello"}],
+        ))
+        self.assertEqual(self.found("after:11/1 before:11/30"), {"Foxtrot"})
+        self.assertEqual(len(self.found("before:dec")), len(self.sessions))
         self.assertEqual(
             self.found("after:10/1 before:10/20", date(2027, 1, 5)),
             {"Alpha", "Bravo", "Charlie"},
         )
+
+    def test_before_a_day_later_this_month(self):
+        """The issue's "lab meetings before 10/20", asked on the 16th."""
         self.assertEqual(
-            self.found("after:10/1 before:10/20", date(2026, 9, 1)), set()
+            self.found("project:lab before:10/20", date(2026, 10, 16)),
+            {"Alpha", "Bravo"},
         )
 
     def test_speaker_reads_the_learned_names(self):
