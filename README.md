@@ -511,6 +511,11 @@ meetings (the folder it leads to, if `notes` or `meetings` is a link to
 another folder in the project). Nothing is uploaded or shared on the tool's
 own initiative.
 
+Every Deepgram request sends `mip_opt_out=true`, so Deepgram keeps the audio
+and transcript only while it processes them instead of keeping them to train
+its models (its default). `STENO_DEEPGRAM_HOST=api.eu.deepgram.com` in
+`~/.config/steno/.env` keeps the processing in the EU as well.
+
 Project notes (above) add local files and nothing else: no upload, no
 network, no model call, no git. The transcript is not among them; it stays
 in Steno. The summary is, without the scrubbing above (that is for what is
