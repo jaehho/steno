@@ -894,8 +894,7 @@ class TestWritingProjectNotes(ProjectNotesCase):
         self.assertIsNone(self.code)
         self.assertEqual(
             sorted(p.name for p in self.meetings().iterdir()),
-            [".gitignore", "2026-08-01-0900-kickoff.md",
-             "2026-08-01-0900-kickoff.transcript.md", "README.md"],
+            [".gitignore", "2026-08-01-0900-kickoff.md", "README.md"],
         )
         self.assertIn("20260801-090000  Kickoff  [demo]", self.out)
         self.assertIn("create  demo/notes/meetings/2026-08-01-0900-kickoff.md",
@@ -912,7 +911,7 @@ class TestWritingProjectNotes(ProjectNotesCase):
         self.notes(self.old.name, dry_run=True)
         self.assertEqual(_tree(self.projects), before)
         self.assertEqual((self.old / "meta.json").read_text(), meta)
-        self.assertIn("dry run, nothing written: 4 to create", self.out)
+        self.assertIn("dry run, nothing written: 3 to create", self.out)
         dry = self.out
         self.notes(self.old.name)
         for line in dry.splitlines():
@@ -930,11 +929,10 @@ class TestWritingProjectNotes(ProjectNotesCase):
     def test_all_goes_through_the_filed_meetings_but_the_archived(self):
         self.notes(all=True)
         self.assertEqual(
-            sorted(p.name for p in self.meetings().glob("*-*.md")
-                   if "transcript" not in p.name),
+            sorted(p.name for p in self.meetings().glob("*-*.md")),
             ["2026-08-01-0900-kickoff.md", "2026-10-01-0900-standup.md"],
         )
-        self.assertEqual(len(list(self.meetings("other").glob("*-*.md"))), 2)
+        self.assertEqual(len(list(self.meetings("other").glob("*-*.md"))), 1)
         self.assertIn("1 archived meeting left out", self.out)
         self.assertNotIn("Retro", self.out)
         self.assertNotIn("Chat", self.out)
@@ -955,10 +953,10 @@ class TestWritingProjectNotes(ProjectNotesCase):
         dry = self.out
         self.notes(all=True)
         self.assertEqual(dry.splitlines()[:-1], self.out.splitlines()[:-1])
-        self.assertIn("10 to create", dry)
+        self.assertIn("7 to create", dry)
         for told in (".gitignore", "README.md"):
             self.assertEqual(self.out.count(f"demo/notes/meetings/{told}"), 1)
-        self.assertIn("10 created", self.out)
+        self.assertIn("7 created", self.out)
 
     def test_a_project_limits_all_to_that_project(self):
         self.notes(all=True, project="other")
@@ -1121,7 +1119,7 @@ class TestProjectNotesFollowOtherCommands(ProjectNotesCase):
 
     def test_a_summary_with_a_project_writes_the_pages_and_says_so(self):
         out = self.summarize(self.loose, "demo")
-        self.assertIn("-> demo/notes/meetings: 4 files changed", out)
+        self.assertIn("-> demo/notes/meetings: 3 files changed", out)
         page = self.meetings() / "2026-09-15-0900-new.md"
         self.assertIn("- [ ] Send it", page.read_text())
 
@@ -1130,18 +1128,24 @@ class TestProjectNotesFollowOtherCommands(ProjectNotesCase):
         self.summarize(self.old, "demo")
         self.assertEqual(
             sorted(p.name for p in self.meetings().glob("2026-08-*")),
-            ["2026-08-01-0900-new.md", "2026-08-01-0900-new.transcript.md"],
+            ["2026-08-01-0900-new.md"],
         )
         self.assertIn("Ship it", (self.meetings() / "2026-08-01-0900-new.md")
                       .read_text())
 
     def test_realigning_a_meeting_in_a_project_writes_its_pages_again(self):
+        """The page has no words (#43), but its length is the new
+        transcript's."""
         self.notes(self.old.name)
-        (self.old / "transcript.jsonl").write_text(json.dumps(
-            {"ts": 1000.0, "speaker": "them", "text": "hello again"}) + "\n")
+        page = self.meetings() / "2026-08-01-0900-kickoff.md"
+        self.assertIn("duration_min: 0\n", page.read_text())
+        (self.old / "transcript.jsonl").write_text("".join(
+            json.dumps({"ts": ts, "speaker": "them", "text": "hello again"})
+            + "\n" for ts in (1000.0, 1300.0)
+        ))
         self.realign(self.old)
-        words = next(self.meetings().glob("*kickoff.transcript.md"))
-        self.assertIn("hello again", words.read_text())
+        self.assertIn("duration_min: 5\n", page.read_text())
+        self.assertNotIn("hello again", page.read_text())
 
     def test_realigning_a_meeting_with_no_pages_writes_none(self):
         self.realign(self.old)
@@ -1193,7 +1197,7 @@ class TestDeleteTakesTheCopyWithIt(ProjectNotesCase):
         self.notes(self.old.name)
         self.assertEqual(self.delete("failed"), [])
         self.assertEqual(self.code, 1)
-        self.assertEqual(len(list(self.meetings().glob("*kickoff*"))), 2)
+        self.assertEqual(len(list(self.meetings().glob("*kickoff*"))), 1)
 
     def test_a_meeting_with_no_pages_in_a_project_costs_it_nothing(self):
         self.assertEqual(self.delete("trashed"), [])
@@ -1202,7 +1206,7 @@ class TestDeleteTakesTheCopyWithIt(ProjectNotesCase):
 
     def test_a_copy_that_cannot_be_taken_out_keeps_the_meeting(self):
         """The record of where the copy is lives in meta.json, which goes
-        with the meeting: delete anyway and the transcript page is left
+        with the meeting: delete anyway and the summary page is left
         in the project for good."""
         self.notes(self.old.name)
         before = (self.old / "meta.json").read_text()
@@ -1218,7 +1222,7 @@ class TestDeleteTakesTheCopyWithIt(ProjectNotesCase):
         self.assertIn("Permission denied", self.err)
         self.assertIn("was not deleted", self.err)
         self.assertEqual((self.old / "meta.json").read_text(), before)
-        self.assertEqual(len(list(self.meetings().glob("*kickoff*"))), 2)
+        self.assertEqual(len(list(self.meetings().glob("*kickoff*"))), 1)
         # Once the folder can be written, the same command finishes.
         self.assertEqual(self.delete("trashed"), [])
         self.assertEqual(list(self.meetings().glob("*kickoff*")), [])
