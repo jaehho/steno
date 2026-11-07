@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from .. import citations, projectnotes
-from ..cost import format_meter, prerecorded_cost, stream_cost
+from ..cost import format_meter
 from ..merge import previous_session
 from ..notes import ensure_todos, load_todos, open_count
 from ..speakers import load_names, name_of, names_path
@@ -29,6 +29,7 @@ from ..speakers import tag as speaker_tag
 from ..summarize import (
     SUMMARY_FILENAME,
     duration_minutes,
+    estimated_cost,
     is_archived,
     iter_sessions,
     load_project,
@@ -218,15 +219,22 @@ def _session_cost(path: Path, minutes: float) -> float:
     """A meeting's stamped estimate, or one derived from its length.
 
     Older sessions predate `cost_usd`; they still have to count toward the
-    meter or the total lies the moment the archive is not brand new.
+    meter or the total lies the moment the archive is not brand new. So
+    does one not summarized yet, such as a debrief transcribed with
+    --no-summary: derived from its kind and engine, which cost nothing
+    for a debrief done here.
     """
     try:
-        stamped = json.loads((path / "meta.json").read_text()).get("cost_usd")
-        if stamped is not None:
+        meta = json.loads((path / "meta.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    stamped = meta.get("cost_usd")
+    if stamped is not None:
+        with contextlib.suppress(TypeError, ValueError):
             return float(stamped)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        pass
-    return stream_cost(minutes) + prerecorded_cost(minutes)
+    return estimated_cost(meta, minutes)
 
 
 Item = Session | str
