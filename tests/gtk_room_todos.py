@@ -24,10 +24,12 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Gdk, Gio, Gtk
 
+from steno.events import NotesStatus
 from steno.gui import words
 from steno.gui.meeting import MeetingPage
 from steno.gui.window import Window
 from steno.notes import load_todos, sync_todos
+from steno.notesjob import NotesState
 from tests.fakeasst import FakeAsst
 from tests.gtk_meeting_scroll import wait_for
 from tests.gtk_meeting_todo_edit import walk
@@ -240,6 +242,11 @@ class TestKeptRoom(RoomCase):
         self.assertEqual(self.page.current.dir, self.kept)
 
     def test_it_says_nothing_left_and_offers_to_send_it(self):
+        # What the engine says when the meeting ends with the page open.
+        self.window.on_event(NotesStatus(
+            session_dir=self.kept, state=NotesState.HELD,
+        ))
+        settle()
         self.assertIn("nothing has gone to Deepgram",
                       self.page.summary_label.get_text())
         self.assertTrue(self.page.summarize_button.get_visible())

@@ -724,8 +724,10 @@ class MeetingPage(Gtk.Box):
                 self._show_cites(active, scroll=False)
 
     def apply_notes(self, status: NotesStatus) -> None:
-        """Record the engine's word on this meeting's notes job, and redraw."""
-        if status.state is NotesState.WRITTEN:
+        """Record the engine's word on this meeting's notes job, and redraw.
+        A room kept on the laptop is read from disk (`_room_kept`), so its
+        HELD, like WRITTEN, leaves nothing to remember."""
+        if status.state in (NotesState.WRITTEN, NotesState.HELD):
             self._notes.pop(status.session_dir, None)
         else:
             self._notes[status.session_dir] = status
