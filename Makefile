@@ -38,15 +38,18 @@ venv:            ## (re)create .venv - needed after moving the checkout
 	@# managed build, which has neither python-gobject nor numpy.
 	@uv venv --python /usr/bin/python --system-site-packages
 	@uv sync
+	@scripts/steno-venv-check
 	@.venv/bin/python -c 'import gi; \
 	  gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1"); \
 	  gi.require_version("Gst", "1.0"); \
 	  from gi.repository import Adw, Gst, Gtk; \
 	  print("ok: window and playback are importable")'
 
-# Before every `uv run`: after a patch upgrade of the system Python, uv
-# would throw .venv away and rebuild it without the system packages
-# (#41). The check writes the new version in; anything else it refuses.
+# Last in `make venv` and before every `uv run`: after a patch upgrade
+# of the system Python, uv would throw .venv away and rebuild it
+# without the system packages (#41). The check cuts the Python version
+# pyvenv.cfg records to major.minor, which uv then compares alone, so
+# no `uv run`, from make or not, rebuilds; anything else it refuses.
 venv-check:
 	@scripts/steno-venv-check
 
