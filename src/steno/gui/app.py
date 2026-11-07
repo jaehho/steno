@@ -124,10 +124,11 @@ class App(Adw.Application):
         )
         # Which tree is live, said once: a worktree handed over for a
         # try stays the recorder until something replaces it.
-        self.source = livesrc.publish(
+        source = livesrc.publish(
             pid=os.getpid(), started_at=time.time(),
             default_root=os.environ.get(livesrc.DEFAULT_ROOT_ENV, ""),
         )
+        self.source = source
         # Without this the app would exit the moment its last window closed,
         # taking the detector with it. The pipeline outlives every window.
         self.hold()
@@ -141,7 +142,8 @@ class App(Adw.Application):
         self.bridge.start()
         # Off for a bar that already shows the waybar module, which says more.
         if os.environ.get(TRAY_ENV, "1") != "0":
-            self.tray = Tray(self)
+            self.tray = Tray(
+                self, src=source.label if source.is_test_build else "")
             if not self.tray.start():
                 self.tray = None
         self._publish("paused" if paused_until() else "idle")

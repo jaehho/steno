@@ -33,6 +33,7 @@ INTERFACE = """
     <property name="Title" type="s" access="read"/>
     <property name="Status" type="s" access="read"/>
     <property name="IconName" type="s" access="read"/>
+    <property name="AttentionIconName" type="s" access="read"/>
     <property name="IconThemePath" type="s" access="read"/>
     <property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
     <property name="ItemIsMenu" type="b" access="read"/>
@@ -42,6 +43,7 @@ INTERFACE = """
     <method name="ContextMenu"><arg type="i" direction="in"/><arg type="i" direction="in"/></method>
     <method name="Scroll"><arg type="i" direction="in"/><arg type="s" direction="in"/></method>
     <signal name="NewIcon"/>
+    <signal name="NewAttentionIcon"/>
     <signal name="NewToolTip"/>
     <signal name="NewTitle"/>
     <signal name="NewStatus"><arg type="s"/></signal>
@@ -66,9 +68,13 @@ def _dbusmenu():
 class Tray:
     """Owns the item, its menu, and its registration with the host."""
 
-    def __init__(self, app) -> None:
+    def __init__(self, app, src: str = "") -> None:
         self.app = app
-        self.view = tray_view("idle")
+        # A test build's `branch@sha`, said in the title and the menu,
+        # with the item asking for attention; "" when the installed
+        # checkout is the one running.
+        self.src = src
+        self.view = tray_view("idle", src=src)
         self.conn: Gio.DBusConnection | None = None
         self._registration = 0
         self._name_id = 0
@@ -123,13 +129,18 @@ class Tray:
     # ------------------------------------------------------------------- state
 
     def update(self, status: str, detail: str = "") -> None:
-        old, self.view = self.view, tray_view(status, detail)
+        old, self.view = self.view, tray_view(status, detail, self.src)
         if self.conn is None:
             return
         if old["icon"] != self.view["icon"]:
             self._emit("NewIcon")
-        if old["tooltip"] != self.view["tooltip"]:
+            self._emit("NewAttentionIcon")
+        if old["title"] != self.view["title"]:
+            self._emit("NewTitle")
+        if any(old[k] != self.view[k] for k in ("title", "tooltip")):
             self._emit("NewToolTip")
+        if old["status"] != self.view["status"]:
+            self._emit("NewStatus", GLib.Variant("(s)", (self.view["status"],)))
         self._sync_menu()
 
     def _emit(self, signal: str, params: GLib.Variant | None = None) -> None:
@@ -146,12 +157,17 @@ class Tray:
         values = {
             "Category": GLib.Variant("s", "ApplicationStatus"),
             "Id": GLib.Variant("s", "steno"),
-            "Title": GLib.Variant("s", "Steno"),
-            "Status": GLib.Variant("s", "Active"),
+            "Title": GLib.Variant("s", view["title"]),
+            "Status": GLib.Variant("s", view["status"]),
             "IconName": GLib.Variant("s", view["icon"]),
+            # A host draws this one while Status is NeedsAttention.
+            # Quickshell, with none, falls back to pixmaps steno does
+            # not send and draws nothing.
+            "AttentionIconName": GLib.Variant("s", view["icon"]),
             "IconThemePath": GLib.Variant("s", str(icon_dir())),
             "ToolTip": GLib.Variant(
-                "(sa(iiay)ss)", (view["icon"], [], "Steno", view["tooltip"])
+                "(sa(iiay)ss)",
+                (view["icon"], [], view["title"], view["tooltip"]),
             ),
             "ItemIsMenu": GLib.Variant("b", False),
             "Menu": GLib.Variant("o", MENU_PATH),
@@ -183,7 +199,7 @@ class Tray:
             return node
 
         root = dbusmenu.Menuitem.new()
-        status = item("status", self.view["tooltip"])
+        status = item("status", self.view["status_line"])
         status.property_set_bool(dbusmenu.MENUITEM_PROP_ENABLED, False)
         root.child_append(status)
         root.child_append(item("sep1"))
@@ -211,7 +227,7 @@ class Tray:
         if self._server is None:
             return
         dbusmenu, view, items = self._dbusmenu, self.view, self._items
-        items["status"].property_set(dbusmenu.MENUITEM_PROP_LABEL, view["tooltip"])
+        items["status"].property_set(dbusmenu.MENUITEM_PROP_LABEL, view["status_line"])
         items["record"].property_set(dbusmenu.MENUITEM_PROP_LABEL, view["record_label"])
         items["record"].property_set_bool(
             dbusmenu.MENUITEM_PROP_ENABLED, view["can_record"]
