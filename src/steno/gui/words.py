@@ -79,7 +79,7 @@ SURFACES = (
     "title", "project", "speaker", "summary", "notes", "to-dos",
     "transcript", "date",
 )
-_SURFACE_ALIASES = {"todos": "to-dos"}
+_SURFACE_ALIASES = {"todo": "to-dos", "todos": "to-dos"}
 # What `has:` can ask for: open to-dos, as the row's "N to do" counts.
 _TODO_WORDS = frozenset({"todo", "todos"})
 

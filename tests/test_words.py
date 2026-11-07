@@ -580,6 +580,10 @@ class TestParseFilters(unittest.TestCase):
             ([("project", "Lab", False), ("in", "to-dos", False),
               ("has", "todo", False)], ""),
         )
+        # As has:todo is spelled.
+        self.assertEqual(
+            self.parsed("In:Todo budget"), ([("in", "to-dos", False)], "budget")
+        )
 
     def test_a_date_is_read_as_a_date_search_reads_it(self):
         for typed in ("10/1", "oct", "october", "2026-10-01", "10/1/26",
