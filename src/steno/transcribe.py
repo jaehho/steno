@@ -22,6 +22,27 @@ KEEPALIVE_S = 8.0
 # request URL enormous. Plain terms only — a weight suffix is treated literally.
 MAX_KEYTERMS = 30
 
+# Deepgram keeps the audio and transcript of every request for model
+# training unless the request says `mip_opt_out=true`
+# (developers.deepgram.com/trust-security/your-data). A meeting is other
+# people talking, so every request opts out.
+MIP_OPT_OUT = ("mip_opt_out", "true")
+
+# api.eu.deepgram.com keeps processing in the EU; together with the
+# opt-out it is Deepgram's full in-region guarantee.
+HOST_ENV = "STENO_DEEPGRAM_HOST"
+DEFAULT_HOST = "api.deepgram.com"
+
+
+def deepgram_host() -> str:
+    """The Deepgram API host: STENO_DEEPGRAM_HOST, else the global one."""
+    return os.environ.get(HOST_ENV, "").strip() or DEFAULT_HOST
+
+
+def prerecorded_url() -> str:
+    """The batch endpoint on the configured host."""
+    return f"https://{deepgram_host()}/v1/listen"
+
 
 def listen_url(keyterms: list[str] | None = None) -> str:
     """The streaming endpoint, with the brief's proper nouns boosted.
@@ -43,12 +64,13 @@ def listen_url(keyterms: list[str] | None = None) -> str:
     # Far-side diarization: who among *them* said it. The near side is one
     # person by construction and is not run through this socket.
     pairs.append(("diarize_model", "latest"))
+    pairs.append(MIP_OPT_OUT)
     pairs.extend(
         ("keyterm", term.strip())
         for term in (keyterms or [])[:MAX_KEYTERMS]
         if term.strip()
     )
-    return "wss://api.deepgram.com/v1/listen?" + urlencode(pairs)
+    return f"wss://{deepgram_host()}/v1/listen?" + urlencode(pairs)
 
 
 @dataclass
@@ -168,9 +190,6 @@ def _wav_seconds(wav: wave.Wave_write | None) -> float:
         return 0.0
 
 
-PRERECORDED_URL = "https://api.deepgram.com/v1/listen"
-
-
 async def transcribe_file(
     path: Path,
     started_at: float,
@@ -193,6 +212,7 @@ async def transcribe_file(
         ("smart_format", "true"),
         ("utterances", "true"),
         ("punctuate", "true"),
+        MIP_OPT_OUT,
     ]
     params.extend(
         ("keyterm", term.strip())
@@ -201,7 +221,7 @@ async def transcribe_file(
     )
     async with httpx.AsyncClient(timeout=timeout_s) as client:
         resp = await client.post(
-            PRERECORDED_URL,
+            prerecorded_url(),
             params=params,
             headers={
                 "Authorization": f"Token {api_key}",
