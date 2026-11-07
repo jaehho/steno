@@ -161,6 +161,31 @@ class TestCuda12(unittest.TestCase):
         self.assertEqual(set(found), {"cublas", "cudnn"})
 
 
+class TestMemory(unittest.TestCase):
+    """steno's window runs the passes and stays open; each one hands the
+    model's memory back when it ends, whether it worked or not."""
+
+    def test_a_pass_hands_its_memory_back(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(localasr, "release_freed_memory") as release:
+            path = write_wav(Path(tmp) / "x.wav")
+            self.assertEqual(
+                localasr.transcribe_wav(path, 0.0, "you", LocalConfig()), [])
+        release.assert_called_once_with()
+
+    def test_so_does_a_pass_that_fails(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(localasr, "release_freed_memory") as release:
+            path = write_wav(Path(tmp) / "x.wav", rate=8000)
+            with self.assertRaises(ValueError):
+                localasr.transcribe_wav(path, 0.0, "you", LocalConfig())
+        release.assert_called_once_with()
+
+    def test_without_glibc_it_does_nothing(self):
+        with mock.patch.object(localasr.ctypes, "CDLL", side_effect=OSError):
+            localasr.release_freed_memory()
+
+
 class TestReadWav(unittest.TestCase):
     def test_only_the_format_steno_records(self):
         with tempfile.TemporaryDirectory() as tmp:

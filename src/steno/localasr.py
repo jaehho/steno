@@ -221,6 +221,24 @@ def _decode(model, audio, language: str | None) -> list:
     return list(segments)
 
 
+def release_freed_memory() -> None:
+    """Give the memory a finished pass freed back to the system (glibc).
+
+    The model is freed when a pass ends, but glibc keeps the pages in its
+    per-thread arenas. In one process, four passes over a minute of audio
+    each left 0.98, 2.54, 3.11 and 3.40 GiB resident; with this after each,
+    0.18 GiB. steno's window runs these passes and stays open all day.
+    Does nothing where there is no glibc.
+    """
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+    except OSError:
+        return
+    trim = getattr(libc, "malloc_trim", None)
+    if trim is not None:
+        trim(0)
+
+
 def transcribe_wav(
     path: Path, started_at: float, speaker: str, config: LocalConfig
 ) -> list[dict]:
@@ -228,8 +246,18 @@ def transcribe_wav(
 
     `auto` uses the GPU when ctranslate2 can, and the CPU when it cannot
     or when the GPU pass fails (out of memory, a driver that went away):
-    a slower transcript beats none.
+    a slower transcript beats none. The model is loaded for this pass
+    alone, and its memory handed back when the pass ends.
     """
+    try:
+        return _transcribe_wav(path, started_at, speaker, config)
+    finally:
+        release_freed_memory()
+
+
+def _transcribe_wav(
+    path: Path, started_at: float, speaker: str, config: LocalConfig
+) -> list[dict]:
     audio = read_wav(path)
     if audio.size == 0:
         return []
