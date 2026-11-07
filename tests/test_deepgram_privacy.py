@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import tempfile
 import unittest
 import wave
@@ -90,15 +91,16 @@ class TestHost(unittest.TestCase):
 
 
 class TestNoOtherDeepgramCall(unittest.TestCase):
-    """A new call site would skip the opt-out without anyone noticing."""
+    """A URL written out by hand would skip the opt-out and the EU pin."""
 
-    def test_only_transcribe_names_the_host(self):
-        naming = sorted(
+    def test_no_module_writes_a_deepgram_url(self):
+        url = re.compile(r"\w+://[\w.-]*deepgram\.com")
+        writing = sorted(
             path.relative_to(SRC).as_posix()
             for path in SRC.rglob("*.py")
-            if "deepgram.com" in path.read_text(encoding="utf-8")
+            if url.search(path.read_text(encoding="utf-8"))
         )
-        self.assertEqual(naming, ["transcribe.py"])
+        self.assertEqual(writing, [])
 
 
 if __name__ == "__main__":
