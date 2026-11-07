@@ -215,14 +215,17 @@ class TestInTheWindow(Base):
         projectnotes.write(self.alpha)
         self.open(self.alpha)
         meta = json.loads((self.alpha / "meta.json").read_text())
-        row = {"ts": meta["started_at"] + 5, "speaker": "them",
-               "text": "re-timed words"}
-        (self.alpha / "transcript.jsonl").write_text(json.dumps(row) + "\n")
+        rows = [{"ts": meta["started_at"] + s, "speaker": "them",
+                 "text": "re-timed words"} for s in (5, 305)]
+        (self.alpha / "transcript.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows)
+        )
         self.page._realigned(self.alpha, 1, "")
         self.time.advance(DELAY_S)
         self.settle()
-        words = self.page_text(ALPHA_PAGE.replace(".md", ".transcript.md"))
-        self.assertIn("[00:05] them: re-timed words", words)
+        # The words stay in steno (#43); the page's length is theirs.
+        self.assertIn("duration_min: 5\n", self.page_text())
+        self.assertNotIn("re-timed words", self.page_text())
 
     def test_a_pull_that_finds_nothing_new_waits_for_nothing(self):
         projectnotes.write(self.alpha)
@@ -262,7 +265,7 @@ class TestInTheWindow(Base):
         self.open(self.charlie)
         self.assertNotIn("meeting.show-notes", self.header_actions())
         self.choose_project("demo")
-        self.assertEqual(len(list(self.meetings().glob("2026-10-07-*"))), 2)
+        self.assertEqual(len(list(self.meetings().glob("2026-10-07-*"))), 1)
         self.assertIn("meeting.show-notes", self.header_actions())
 
     def test_moving_it_to_another_project_takes_the_pages_along(self):
@@ -366,7 +369,7 @@ class TestInTheWindow(Base):
         self.assertFalse(self.meetings().exists())
 
     def test_a_copy_that_cannot_be_taken_out_keeps_the_meeting(self):
-        """Delete anyway and the transcript page stays in the project,
+        """Delete anyway and the summary page stays in the project,
         with the record of where it is gone with the meeting."""
         projectnotes.write(self.alpha)
         self.open(self.alpha)
@@ -438,7 +441,7 @@ class TestInTheApp(Base):
     def test_a_summary_that_lands_is_in_its_project(self):
         (self.charlie / "meta.json").write_text('{"project": "other"}')
         self.land(self.landed)
-        self.assertEqual(len(list(self.meetings("other").glob("*.md"))), 3)
+        self.assertEqual(len(list(self.meetings("other").glob("*.md"))), 2)
         self.assertEqual(list((self.projects / "demo").iterdir()), [])
         self.assertTrue(load_todos(self.charlie))  # and the to-dos came first
 

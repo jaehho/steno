@@ -104,8 +104,8 @@ DEEPGRAM_API_KEY=
 # Optional. 0 hides the tray icon, for a bar already running `steno bar`.
 # STENO_TRAY=0
 
-# Optional. 0 stops steno copying a meeting's summary and transcript into
-# its project's notes/meetings folder. On by default.
+# Optional. 0 stops steno copying a meeting's summary into its project's
+# notes/meetings folder (the transcript stays in steno). On by default.
 # STENO_PROJECT_NOTES=0
 
 # Optional. An rclone remote and folder that is the main store for your
@@ -642,7 +642,7 @@ def cmd_delete(args: argparse.Namespace) -> None:
     # Its copy in a project goes first: taking it out needs the meta.json
     # that says where it went, which goes with the meeting, and a copy
     # that cannot be taken out must not be left behind with nothing to
-    # say it is there. A transcript page is other people's speech.
+    # say it is there. A summary is drawn from other people's speech.
     gone = _reporting(projectnotes.try_remove, session_dir)
     if gone.error:
         print(f"could not take it out of {gone.project}'s notes: {gone.error}\n"
@@ -1423,11 +1423,12 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
 
     p_notes = sub.add_parser(
         "project-notes",
-        help="Keep a meeting's summary and transcript in its project",
-        description="Copy a meeting's summary and transcript into "
-                    "notes/meetings of the project it is filed under, "
-                    "and bring them up to date. Nothing leaves this "
-                    "machine. With --remove, take them out again.",
+        help="Keep a meeting's summary in its project",
+        description="Copy a meeting's summary into notes/meetings of "
+                    "the project it is filed under, and bring it up to "
+                    "date; the transcript stays in steno. Steno sends "
+                    "nothing anywhere, but a synced folder carries what "
+                    "is written. With --remove, take it out again.",
     )
     p_notes.add_argument("session", nargs="*", metavar="NAME",
                          help="Session name or path; default: most "

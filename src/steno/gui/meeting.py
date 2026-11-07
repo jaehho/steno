@@ -1830,7 +1830,7 @@ class MeetingPage(Gtk.Box):
         dialog = Adw.AlertDialog(
             heading="Could not take it out of the project's notes",
             body=f"{gone.error}\n\n“{s.title or s.dir.name}” was not deleted: "
-            f"its summary and transcript would stay in {gone.project}/notes/"
+            f"its summary would stay in {gone.project}/notes/"
             "meetings with nothing here to remove them. Make that folder "
             "writable and delete it again.",
         )
