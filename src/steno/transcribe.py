@@ -238,7 +238,8 @@ async def transcribe_file(  # noqa: PLR0913 - the batch pass's full config
 
     `backend` "local" does the same pass on this machine (localasr.py) and
     returns the same rows; None takes `STENO_ASR`. Keyterms are Deepgram's:
-    Whisper spells alphanumeric names unprompted, and a vocabulary prompt
+    Whisper writes spoken alphanumeric names joined ("LC10A") unprompted,
+    where Deepgram splits them ("LC 10 a"), and a vocabulary prompt
     made a long meeting worse (it dropped names), so it is given none.
     """
     if (backend or asr_backend(os.environ)) == "local":

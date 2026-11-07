@@ -7,8 +7,8 @@ the model comes from the Hugging Face cache and is never downloaded here
 (`local_files_only`), so a missing model is an error, not a 1.6 GB
 surprise on a phone hotspot.
 
-On the CPU it runs int8 on four threads, about ten times faster than real
-time on this laptop. CUDA is faster again, but ctranslate2 wants the
+On the CPU it runs int8 on four threads, four to ten times faster than
+real time on this laptop, depending on what else is running. CUDA is faster again, but ctranslate2 wants the
 CUDA 12 cuBLAS and cuDNN, and a system with only CUDA 13 has neither: the
 `local-gpu` extra installs them into the venv, and `preload_cuda12` loads
 them before the model so ctranslate2 finds them by name.

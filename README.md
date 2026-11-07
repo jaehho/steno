@@ -508,13 +508,15 @@ transcribed in one pass when the meeting ends, which is cheaper and more
 accurate than streaming it.
 
 `STENO_ASR=local` does the batch passes on this machine instead: your side
-after a call, `steno realign`, and every debrief (which is local unless
-`STENO_ASR` says otherwise). It runs faster-whisper `large-v3-turbo`
-(`STENO_LOCAL_MODEL`) from the Hugging Face cache and never downloads it; on
-a laptop, four CPU threads do five to ten minutes of audio a minute, and an
-RTX 4050 about seventy. Install it with `make venv` (the `local` extra), or
-`make venv EXTRAS=local-gpu` for the GPU, which adds CUDA 12's cuBLAS and
-cuDNN (about 1.3 GB) beside a system CUDA 13. `STENO_LOCAL_DEVICE` is `auto`
+after a call, and `steno realign`. A debrief is always done here, and so is
+its `steno realign`, unless `STENO_ASR` says otherwise. It runs
+faster-whisper `large-v3-turbo` (`STENO_LOCAL_MODEL`) from the Hugging Face
+cache and never downloads it. On a laptop, four CPU threads do four to ten
+minutes of audio a minute (a 3-minute debrief takes about 40 s, loading the
+model included), and an RTX 4050 about sixty. `make venv` installs the CPU
+version (the `local` extra); `make venv EXTRAS=local-gpu` adds CUDA 12's
+cuBLAS and cuDNN for the GPU (a 1.4 GB download, 2.1 GB installed), beside a
+system CUDA 13. `STENO_LOCAL_DEVICE` is `auto`
 (the GPU when it can, else the CPU), `cpu` or `cuda`; `STENO_LOCAL_LANGUAGE`
 is `en`, or empty to let Whisper guess. The far side of a call is still
 streamed to Deepgram, since it is shown as it is said. `meta.json` records
@@ -524,6 +526,10 @@ A debrief (`steno debrief`) is a session with only your voice in it: you
 talk through a meeting held in a room, at the door, instead of recording the
 room. Nobody else is recorded, so there is no one else's consent to get, and
 the summary is told that the promises you report from others are theirs.
+Enter, Ctrl+C or SIGTERM stops the recording, and so does the 15-minute
+limit (`--max`). If the transcription fails, the recording is kept and
+`steno realign NAME` retries it here. The summary goes to the model host
+you configured, like any other.
 
 Audio leaves the machine only to Deepgram, and transcript text only to the
 model host you configured (Anthropic through Claude Code by default; see above) for the
