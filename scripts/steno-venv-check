@@ -1,0 +1,77 @@
+#!/bin/sh
+# Keeps the checkout's .venv (or the venv at $1) usable by `uv run`
+# across a patch upgrade of the system Python (#41). `make venv` runs
+# it last, and every make target that calls `uv run` runs it first.
+#
+# uv throws away a project venv whose pyvenv.cfg records another Python
+# version than its interpreter reports, and builds the new one on its
+# own managed Python with no system site packages: no numpy for
+# clean-echo, and the site-packages under a running steno deleted. No
+# uv setting stops it short of UV_NO_SYNC, which stops syncing
+# altogether (UV_PYTHON, python-preference = "only-system" and
+# .python-version all still rebuild).
+#
+# But uv compares only as many parts as the record has: a two-part
+# 3.14 against the interpreter's major.minor, a three-part 3.14.8
+# against its full version (get_pyvenv_version_conflict in
+# crates/uv-python/src/environment.rs, uv 0.10.12). A patch upgrade
+# (3.14.8 to 3.14.9) keeps lib/python3.14, so the venv is still right.
+# So the record is cut to major.minor, and then no `uv run`, from make
+# or not, rebuilds the venv after a patch upgrade; a new minor version
+# still does. A venv on another minor version, or one that is not what
+# `make venv` builds, is refused and left as it is: rebuilding is the
+# owner's call, with steno quit.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+venv="${1:-$root/.venv}"
+cfg="$venv/pyvenv.cfg"
+
+refuse() {
+  echo "steno-venv-check: $*; run make venv (quit steno first)" >&2
+  exit 1
+}
+
+# The value of `key = value` in pyvenv.cfg; uv reads `version` and
+# `version_info` alike, the last one winning.
+value() {
+  sed -n "s/^\($1\) *= *//p" "$cfg" | tail -n 1
+}
+
+# No venv, so no steno running from one: nothing to quit.
+if [ ! -e "$venv" ]; then
+  echo "steno-venv-check: no venv at $venv; run make venv" >&2
+  exit 1
+fi
+[ -f "$cfg" ] || refuse "$venv has no pyvenv.cfg"
+home=$(value home)
+shared=$(value include-system-site-packages)
+[ "$home" = /usr/bin ] && [ "$shared" = true ] ||
+  refuse "$venv is not the one make venv builds (home = $home," \
+    "include-system-site-packages = $shared)"
+
+recorded=$(value 'version\(_info\)\{0,1\}')
+[ -n "$recorded" ] || refuse "$cfg records no Python version"
+# The major.minor uv compares a two-part record against, from the
+# venv's own interpreter. -I -S: nothing loads from the current
+# directory or the venv's site-packages, and nothing is written there.
+running=$("$venv/bin/python" -I -S -c \
+  'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null) ||
+  refuse "the python in $venv does not run"
+[ "$recorded" != "$running" ] || exit 0
+
+[ "$(echo "$recorded" | cut -d. -f1,2)" = "$running" ] ||
+  refuse "$venv was built for Python $recorded and its python is now" \
+    "$running"
+
+# A full version of the same minor, as `uv venv` writes it, or as a
+# venv from before #41 still has it. Replaced whole, never truncated in
+# place: a steno starting now reads the old file or the new one, never
+# an empty one.
+tmp=$(mktemp "$venv/.pyvenv.cfg.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+sed "s/^\(version\(_info\)\{0,1\}\) *=.*/\1 = $running/" "$cfg" >"$tmp"
+chmod 644 "$tmp"
+mv -f "$tmp" "$cfg"
+echo "steno-venv-check: $venv now records Python $running" \
+  "(was $recorded), so a patch upgrade no longer makes uv rebuild it" >&2

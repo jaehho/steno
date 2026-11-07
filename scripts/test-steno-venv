@@ -1,0 +1,219 @@
+#!/bin/sh
+# What steno-venv-check must do (#41): cut the Python version pyvenv.cfg
+# records to major.minor, so that a plain `uv run` after a patch upgrade
+# of the system Python, with no check before it, keeps the venv on
+# /usr/bin with system site packages; refuse, naming make venv and
+# changing nothing, a venv on another minor version, one make venv did
+# not build, or none; run last in `make venv` and before `uv run` in
+# every make target that calls it; and stop the target when it refuses.
+#
+# Every venv here is a scratch one, in a project with no dependencies.
+# The checkout's .venv is never touched, and its Makefile is only
+# dry-run (make -n). The targets that run for real run on a copy of the
+# Makefile, with HOME scratch and a `uv` on PATH that only leaves a
+# mark.
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# With either set, `uv run` would skip the check this test is about.
+unset UV_NO_SYNC UV_PROJECT_ENVIRONMENT
+# A rebuild, if one happens, must not download a Python.
+export UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never
+
+die() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+project="$tmp/project"
+venv="$project/.venv"
+mkdir -p "$project"
+cat >"$project/pyproject.toml" <<'EOF'
+[project]
+name = "scratch"
+version = "0"
+requires-python = ">=3.11"
+dependencies = []
+EOF
+
+# A venv as `make venv` builds it before its check, then recording $1
+# as its Python version.
+venv_at() {
+  rm -rf "$venv"
+  (cd "$project" &&
+    uv venv -q --python /usr/bin/python --system-site-packages &&
+    uv sync -q) ||
+    die "uv venv or uv sync failed"
+  sed -i "s/^version_info = .*/version_info = $1/" "$venv/pyvenv.cfg"
+}
+
+cfg() {
+  sed -n "s/^$1 = //p" "$venv/pyvenv.cfg"
+}
+
+# Every file in the venv at $1, or $venv, with its inode and
+# modification time.
+files() {
+  find "${1:-$venv}" -printf '%i %T@ %p\n' | sort
+}
+
+# $1 is refused, with a message naming make venv, and the venv is left
+# exactly as it was.
+refused() {
+  before=$(files)
+  if out=$("$here/steno-venv-check" "$venv" 2>&1); then
+    die "$1 passed the check"
+  fi
+  case $out in
+    *"run make venv"*) ;;
+    *) die "$1: no word of make venv; got: $out" ;;
+  esac
+  [ "$(files)" = "$before" ] || die "$1 was changed"
+}
+
+# $1 is cut to $running by the check, which says so once.
+cut_from() {
+  venv_at "$1"
+  out=$("$here/steno-venv-check" "$venv" 2>&1) ||
+    die "a venv recording $1 was refused: $out"
+  case $out in
+    *"now records Python $running (was $1)"*) ;;
+    *) die "$1: no line saying what changed; got: $out" ;;
+  esac
+  [ "$(cfg version_info)" = "$running" ] ||
+    die "$1 was cut to $(cfg version_info), not $running"
+}
+
+full=$(/usr/bin/python -I -c \
+  'import platform; print(platform.python_version())')
+major=${full%%.*}
+rest=${full#*.}
+minor=${rest%%.*}
+running=$major.$minor
+# Another patch of the same minor: .0, or .1 when the system is on .0.
+patch=$running.0
+[ "$patch" != "$full" ] || patch=$running.1
+
+# What `uv venv` writes, and what a venv from before a patch upgrade
+# still records: both are cut to major.minor.
+cut_from "$full"
+cut_from "$patch"
+
+# The #41 event: a plain `uv run`, and a `uv sync`, with no check
+# before them. uv compares a two-part record with the interpreter's
+# major.minor alone, so this stands for any patch the system is on.
+before=$(files)
+for cmd in "uv run python -c pass" "uv sync"; do
+  if ! out=$(cd "$project" && $cmd 2>&1); then
+    die "$cmd failed: $out"
+  fi
+  case $out in
+    *"Removed virtual environment"*) die "$cmd rebuilt the venv: $out" ;;
+  esac
+done
+[ "$(files)" = "$before" ] || die "uv run or uv sync changed the venv"
+[ "$(cfg home)" = /usr/bin ] || die "uv run moved home to $(cfg home)"
+[ "$(cfg include-system-site-packages)" = true ] ||
+  die "uv run turned system site packages off"
+[ "$(cfg version_info)" = "$running" ] ||
+  die "uv run left version_info at $(cfg version_info)"
+
+# A venv that already records major.minor is left alone, silently.
+out=$("$here/steno-venv-check" "$venv" 2>&1) ||
+  die "a matching venv was refused: $out"
+[ -z "$out" ] || die "a matching venv printed: $out"
+[ "$(files)" = "$before" ] || die "a matching venv was rewritten"
+
+# A minor upgrade moves site-packages to another lib/pythonX.Y: only a
+# rebuild helps, and that is the owner's to start.
+before_minor=$major.$((minor - 1))
+venv_at "$before_minor.0"
+refused "a venv built for the minor version before"
+venv_at "$before_minor"
+refused "a venv recording the minor version before"
+
+# Not the venv make venv builds: uv's own Python, or no system packages.
+venv_at "$running"
+sed -i 's|^home = .*|home = /opt/elsewhere/bin|' "$venv/pyvenv.cfg"
+refused "a venv on another Python"
+venv_at "$running"
+sed -i 's/^\(include-system-site-packages\) = .*/\1 = false/' \
+  "$venv/pyvenv.cfg"
+refused "a venv without system site packages"
+
+# No venv: refused too, since uv would build one without the system
+# packages; and with no venv, no steno is running from it to quit.
+if out=$("$here/steno-venv-check" "$tmp/none" 2>&1); then
+  die "a missing venv passed the check"
+fi
+case $out in
+  *"quit steno"*) die "a missing venv: asked to quit steno: $out" ;;
+  *"run make venv"*) ;;
+  *) die "a missing venv: no word of make venv; got: $out" ;;
+esac
+
+# make -n prints the recipes, prerequisites' first, and runs none.
+dry() {
+  env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
+    make -n --no-print-directory -C "$here/.." "$1" >"$tmp/dry" 2>&1 ||
+    die "make -n $1 failed: $(cat "$tmp/dry")"
+}
+
+# `make venv` cuts the record after `uv sync`, which writes it in full.
+dry venv
+awk '
+  /uv sync/ && !s { s = NR }
+  /steno-venv-check/ { c = NR }
+  END { exit !(s && c > s) }
+' "$tmp/dry" || die "make venv does not run steno-venv-check after uv sync"
+
+# Every make target whose recipe calls `uv run` runs the check before it.
+targets=$(awk '
+  /^[a-z-]+:/ { t = $1; sub(/:.*/, "", t) }
+  /^\t/ && !/^\t@?#/ && /uv run/ { print t }
+' "$here/../Makefile" | sort -u)
+echo "$targets" | grep -qx lint ||
+  die "found no make target that calls uv run"
+for t in $targets; do
+  dry "$t"
+  awk '
+    /steno-venv-check/ && !c { c = NR }
+    /uv run/ && !u { u = NR }
+    END { exit !(c && c < u) }
+  ' "$tmp/dry" || die "make $t runs uv run without steno-venv-check first"
+done
+
+# And a refusal stops the target: run each for real on a copy of the
+# Makefile and the check, with a venv on the minor version before and
+# a `uv` that only leaves a mark. A make that ignored the check's exit
+# status would run `uv run`, and the real one would rebuild the venv.
+tree="$tmp/tree"
+mkdir -p "$tree/scripts" "$tmp/bin" "$tmp/home"
+cp "$here/../Makefile" "$tree/"
+cp "$here/steno-venv-check" "$tree/scripts/"
+venv_at "$before_minor.0"
+mv "$venv" "$tree/.venv"
+cat >"$tmp/bin/uv" <<EOF
+#!/bin/sh
+: >"$tmp/uv-ran"
+EOF
+chmod +x "$tmp/bin/uv"
+before=$(files "$tree/.venv")
+for t in $targets; do
+  if env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL -u XDG_DATA_HOME \
+    HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+    make --no-print-directory -C "$tree" "$t" >"$tmp/out" 2>&1; then
+    die "make $t went on after the check refused: $(cat "$tmp/out")"
+  fi
+  [ ! -e "$tmp/uv-ran" ] ||
+    die "make $t ran uv after the check refused: $(cat "$tmp/out")"
+  grep -q 'run make venv' "$tmp/out" ||
+    die "make $t stopped, but not at the check: $(cat "$tmp/out")"
+done
+[ "$(files "$tree/.venv")" = "$before" ] ||
+  die "a refused make target changed the venv"
+
+echo "steno-venv: ok"
