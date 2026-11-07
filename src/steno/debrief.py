@@ -14,10 +14,13 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import subprocess
 import time
 import wave
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import TextIO
 
 from .audio import SAMPLE_RATE, capture_mic, open_wav, record_only
 from .session import write_transcripts
@@ -99,6 +102,76 @@ async def record(dest: Path, stop: asyncio.Event, max_s: float = MAX_SECONDS) ->
             await task
         wav.close()
     return source
+
+
+@contextlib.contextmanager
+def stop_when_told(stop: asyncio.Event, stream: TextIO | None) -> Iterator[bool]:
+    """Set `stop` on Enter (or end of input) on `stream`, or on SIGTERM.
+
+    The running loop watches the descriptor; no thread reads it. A thread
+    blocked in readline outlives the recording it was meant to stop: on a
+    timeout or Ctrl+C, asyncio.run waits minutes for it to finish, and
+    the process then waits for an Enter nobody is going to press.
+
+    Yields whether Enter can stop the recording. It cannot when `stream`
+    is not something the loop can watch (a regular file, /dev/null, no
+    stdin at all); then the time limit, Ctrl+C or SIGTERM does.
+    """
+    loop = asyncio.get_running_loop()
+    watched = _watch_for_enter(loop, stream, stop.set)
+    terms = _on_sigterm(loop, stop.set)
+    try:
+        yield watched is not None
+    finally:
+        if watched is not None:
+            loop.remove_reader(watched)
+        if terms:
+            loop.remove_signal_handler(signal.SIGTERM)
+
+
+def _watch_for_enter(
+    loop: asyncio.AbstractEventLoop, stream: TextIO | None, callback: Callable[[], None]
+) -> int | None:
+    """Call `callback` once a line, or the end of input, arrives on `stream`.
+
+    Returns the descriptor the loop now watches, or None when it cannot
+    watch one: epoll refuses regular files and /dev/null.
+    """
+    try:
+        fd = stream.fileno() if stream is not None else -1
+    except (OSError, ValueError):  # io.UnsupportedOperation is both
+        return None
+    if fd < 0:
+        return None
+
+    def readable() -> None:
+        try:
+            data = os.read(fd, 4096)
+        except BlockingIOError:
+            return
+        except OSError:
+            data = b""
+        if not data or b"\n" in data:
+            loop.remove_reader(fd)
+            callback()
+
+    try:
+        loop.add_reader(fd, readable)
+    except (OSError, ValueError, NotImplementedError):
+        return None
+    return fd
+
+
+def _on_sigterm(
+    loop: asyncio.AbstractEventLoop, callback: Callable[[], None]
+) -> bool:
+    """Call `callback` on SIGTERM while recording. False where it cannot."""
+    try:
+        loop.add_signal_handler(signal.SIGTERM, callback)
+    except (NotImplementedError, RuntimeError, ValueError):
+        # Not the main thread, or a loop without signal support.
+        return False
+    return True
 
 
 async def transcribe(

@@ -700,22 +700,21 @@ def _import_debrief(source: Path, root: Path) -> tuple[Path, float]:
 
 
 def _record_debrief(root: Path, max_s: float) -> tuple[Path, float]:
-    """Record the mic until Enter (or `max_s`), as a new session."""
+    """Record the mic until Enter (or `max_s`, Ctrl+C, SIGTERM), as a new session."""
     started_at = time.time()
     session_dir = debrief.create_session(root, started_at)
 
-    async def until_enter() -> str:
+    async def until_told() -> str:
         stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        # The reader thread outlives a timeout; it only ever sets the event.
-        loop.run_in_executor(None, lambda: (sys.stdin.readline(),
-                                            loop.call_soon_threadsafe(stop.set)))
-        return await debrief.record(session_dir / debrief.TRACK, stop, max_s)
+        with debrief.stop_when_told(stop, sys.stdin) as enter_stops:
+            how = "Enter stops" if enter_stops else "Ctrl+C stops"
+            print(f"Debrief: talk through the meeting. {how} "
+                  f"(at most {max_s / 60:.0f} min). Only your mic is recorded.",
+                  flush=True)
+            return await debrief.record(session_dir / debrief.TRACK, stop, max_s)
 
-    print(f"Debrief: talk through the meeting. Enter stops "
-          f"(at most {max_s / 60:.0f} min). Only your mic is recorded.")
     try:
-        source = asyncio.run(until_enter())
+        source = asyncio.run(until_told())
     except KeyboardInterrupt:
         source = "the default mic"
     print(f"  recorded from {source}")

@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import io
 import json
 import os
+import select
 import shutil
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -116,6 +122,142 @@ class TestRecord(unittest.TestCase):
     def test_a_forgotten_debrief_stops_at_its_limit(self):
         dest = self.record(stop_after=None, max_s=0.1)
         self.assertGreater(debrief.wav_seconds(dest), 0.0)
+
+
+class TestStopWhenTold(unittest.TestCase):
+    """Enter or the end of input stops a recording; nothing is left
+    watching stdin afterwards. SIGTERM is TestRecordingProcess's."""
+
+    def watch(self, stream, act) -> tuple[bool, bool]:
+        async def run():
+            stop = asyncio.Event()
+            with debrief.stop_when_told(stop, stream) as enter_stops:
+                act()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=2.0)
+            loop = asyncio.get_running_loop()
+            # Nothing is still watching the stream once it is done.
+            if enter_stops:
+                self.assertFalse(loop.remove_reader(stream.fileno()))
+            return enter_stops, stop.is_set()
+
+        return asyncio.run(run())
+
+    def pipe(self):
+        read_fd, write_fd = os.pipe()
+        reader = os.fdopen(read_fd, "r")
+        self.addCleanup(reader.close)
+
+        def close_writer():
+            with contextlib.suppress(OSError):  # a test may have closed it
+                os.close(write_fd)
+
+        self.addCleanup(close_writer)
+        return reader, write_fd
+
+    def test_enter_stops_it(self):
+        reader, write_fd = self.pipe()
+        self.assertEqual(
+            self.watch(reader, lambda: os.write(write_fd, b"\n")),
+            (True, True))
+
+    def test_words_without_enter_do_not(self):
+        reader, write_fd = self.pipe()
+        self.assertEqual(
+            self.watch(reader, lambda: os.write(write_fd, b"still talk")),
+            (True, False))
+
+    def test_the_end_of_input_stops_it(self):
+        reader, write_fd = self.pipe()
+        self.assertEqual(self.watch(reader, lambda: os.close(write_fd)),
+                         (True, True))
+
+    def test_a_file_cannot_stop_it(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "in").write_text("\n")
+        with (tmp / "in").open() as stream:
+            self.assertEqual(self.watch(stream, lambda: None), (False, False))
+
+    def test_no_stdin_cannot_stop_it(self):
+        self.assertEqual(self.watch(None, lambda: None), (False, False))
+
+
+# `steno debrief`'s recording, in a process of its own with a fake mic and
+# a stdin nobody types into: how it ends, and that the process then exits.
+RECORD_CHILD = """
+import asyncio, sys
+from pathlib import Path
+from unittest import mock
+from steno import cli, debrief
+
+async def fake_record_only(source, wav):
+    while True:
+        wav.writeframes(b"\\0\\0" * 160)
+        await asyncio.sleep(0.01)
+
+with mock.patch.object(debrief, "capture_mic",
+                       mock.AsyncMock(return_value="fake-mic")), \\
+     mock.patch.object(debrief, "record_only", fake_record_only):
+    session, _ = cli._record_debrief(Path(sys.argv[1]), float(sys.argv[2]))
+print("seconds", round(debrief.wav_seconds(session / debrief.TRACK), 1),
+      flush=True)
+"""
+
+
+class TestRecordingProcess(unittest.TestCase):
+    """The reader that waited for Enter in a thread kept a timed-out or
+    interrupted debrief from transcribing for five minutes, and the
+    process from exiting until Enter was pressed."""
+
+    def run_child(self, max_s: float, send=None) -> tuple[str, float]:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        began = time.monotonic()
+        child = subprocess.Popen(
+            [sys.executable, "-c", RECORD_CHILD, str(root), str(max_s)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        self.addCleanup(child.kill)
+        for pipe in (child.stdin, child.stdout, child.stderr):
+            if pipe is not None:
+                self.addCleanup(pipe.close)
+        assert child.stdout is not None
+        # Stdin stays open and empty: nobody presses Enter.
+        ready, _, _ = select.select([child.stdout], [], [], 20)
+        self.assertTrue(ready, "the debrief never started recording")
+        self.assertIn("Debrief:", child.stdout.readline())
+        if send is not None:
+            time.sleep(0.3)
+            child.send_signal(send)
+        # Not communicate(): it closes stdin, which is an Enter of sorts.
+        try:
+            child.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.fail("the debrief process did not exit")
+        took = time.monotonic() - began
+        assert child.stderr is not None
+        out, err = child.stdout.read(), child.stderr.read()
+        self.assertEqual(child.returncode, 0, err)
+        self.assertIn("recorded from", out)
+        return out, took
+
+    def test_the_time_limit_ends_it_and_the_process_exits(self):
+        out, took = self.run_child(max_s=0.5)
+        self.assertIn("seconds", out)
+        self.assertLess(took, 25)
+
+    def test_ctrl_c_ends_it_and_keeps_the_recording(self):
+        out, _ = self.run_child(max_s=600, send=signal.SIGINT)
+        self.assertIn("seconds", out)
+        self.assertNotIn("seconds 0.0", out)
+
+    def test_sigterm_ends_it_and_keeps_the_recording(self):
+        out, _ = self.run_child(max_s=600, send=signal.SIGTERM)
+        self.assertIn("recorded from fake-mic", out)
+        self.assertNotIn("seconds 0.0", out)
 
 
 class TestPrompt(unittest.TestCase):
