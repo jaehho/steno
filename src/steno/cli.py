@@ -53,8 +53,10 @@ from .export import meeting_markdown
 from .notes import (
     Dropped,
     Restored,
+    decide_owner,
     drop_open_todos,
     forget_asst,
+    load_todos,
     pull_todos,
     restore_dropped_todos,
     sync_todos,
@@ -344,7 +346,7 @@ def _say_sync(result: meeting_sync.Result, dry_run: bool) -> None:
     for item in result.held:
         print(f"held     {item}: `steno sync --allow-deletes` to go ahead")
     for item in result.busy:
-        print(f"waiting  {item} (recording, or written to a moment ago)")
+        print(f"waiting  {item} (recording, written to a moment ago, or a room kept on this laptop)")
     for item, why in result.failed.items():
         print(f"failed   {item}: {why}")
     counts = ", ".join(
@@ -1173,9 +1175,52 @@ def cmd_todos(args: argparse.Namespace) -> None:
         print(f"\n{load_title(session_dir) or session_dir.name}  ({session_dir.name})")
         for t in todos:
             mark = "x" if t.done else " "
-            print(f"  [{mark}] {t.text}   ({t.owner})")
+            owner = (
+                f"whose? steno review {session_dir.name}" if t.held else t.owner
+            )
+            print(f"  [{mark}] {t.text}   ({owner})")
     if not any_open:
         print("nothing open")
+
+
+def cmd_review(args: argparse.Namespace) -> None:
+    """A meeting's open action items, and the user's word on whose they are.
+
+    In a room the summary can only guess whose voice made a promise, so
+    every item it made waits, here and in the window's "Whose are
+    these?", instead of going to asst.
+    Numbers count the rows as listed; `--mine` files them, `--not-mine`
+    gives them to someone else, and a filed row is left as it is.
+    """
+    try:
+        session_dir = resolve_session(args.session, args.dir)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    rows = [t for t in load_todos(session_dir) if t.open]
+    picks: dict[str, bool] = {}
+    for numbers, mine in ((args.mine, True), (args.not_mine, False)):
+        for n in numbers or []:
+            if not 1 <= n <= len(rows):
+                print(f"no row {n}; there are {len(rows)}", file=sys.stderr)
+                sys.exit(1)
+            picks[rows[n - 1].key] = mine
+    for mine in (True, False):
+        if keys := [key for key, m in picks.items() if m is mine]:
+            decide_owner(session_dir, keys, mine=mine)
+    if picks:
+        rows = [t for t in load_todos(session_dir) if t.open]
+    print(f"{load_title(session_dir) or session_dir.name}  ({session_dir.name})")
+    if not rows:
+        print("  nothing open")
+        return
+    for n, t in enumerate(rows, 1):
+        state = "held " if t.held else "filed" if t.uid else "     "
+        owner = "whose?" if t.held else t.owner
+        print(f"  {n:>2}. {state}  {t.text}   ({owner})")
+    if any(t.held for t in rows):
+        print(f"Say whose: steno review {session_dir.name} --mine N... "
+              "--not-mine N...")
 
 
 def cmd_export(args: argparse.Namespace) -> None:
@@ -1586,6 +1631,19 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
                               "away stays out)")
     p_todos.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_todos.set_defaults(func=cmd_todos)
+
+    p_review = sub.add_parser(
+        "review", help="Say which of a meeting's action items are yours"
+    )
+    p_review.add_argument("session", nargs="?", default=None,
+                          help="Session name or path; default: most recent")
+    p_review.add_argument("--mine", type=int, nargs="+", metavar="N",
+                          help="Rows that are yours: filed with asst")
+    p_review.add_argument("--not-mine", type=int, nargs="+", metavar="N",
+                          help="Rows that are someone else's: never filed")
+    p_review.add_argument("--dir", type=Path, default=None,
+                          help="Sessions directory")
+    p_review.set_defaults(func=cmd_review)
 
     p_export = sub.add_parser("export", help="Print or save a meeting as markdown")
     p_export.add_argument("session", nargs="?", default=None,

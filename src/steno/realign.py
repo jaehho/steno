@@ -21,9 +21,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .kept import set_kept
 from .playback import TRACKS, audio_duration, recorded_offset, session_start, track_path
+from .room import is_room
 from .session import write_transcripts
-from .summarize import load_records, transcript_path
+from .speakers import FAR_VOICE, MIC_VOICE, NAMES_FILENAME
+from .summarize import load_meta, load_records, transcript_path
 from .transcribe import transcribe_file
 
 BACKUP_SUFFIX = ".before-realign.jsonl"
@@ -92,6 +95,10 @@ async def realign_session(session_dir: Path, started_at: float | None = None) ->
         raise FileNotFoundError(msg)
 
     anchor = started_at if started_at is not None else _anchor(session_dir)
+    # Voices are asked for on both sides: they cost nothing on a file, and
+    # without them a re-timed meeting loses every name it had learned.
+    room = is_room(load_meta(session_dir), load_records(session_dir))
+    voices_as = {"them": FAR_VOICE, "you": MIC_VOICE if room else ""}
     records: list[dict] = []
     for speaker in TRACKS:
         # The echo-cancelled copy when there is one: transcribing a microphone
@@ -100,7 +107,9 @@ async def realign_session(session_dir: Path, started_at: float | None = None) ->
         path = track_path(session_dir, speaker)
         if not path.is_file():
             continue
-        records.extend(await transcribe_file(path, anchor, speaker))
+        records.extend(await transcribe_file(
+            path, anchor, speaker, voices_as=voices_as.get(speaker, "")
+        ))
 
     if not records:
         msg = f"nothing transcribed from {session_dir}"
@@ -108,9 +117,24 @@ async def realign_session(session_dir: Path, started_at: float | None = None) ->
 
     records.sort(key=lambda r: r.get("offset", 0.0))
     _back_up(session_dir)
+    _set_names_aside(session_dir)
     write_transcripts(session_dir, records)
     _stamp(session_dir, anchor, len(records))
     return len(records)
+
+
+def _set_names_aside(session_dir: Path) -> Path | None:
+    """Move speakers.json out of the way: this pass numbered the voices
+    afresh, and an old name on a renumbered voice is a wrong name. The
+    next summary learns them again; the old map stays beside it."""
+    source = session_dir / NAMES_FILENAME
+    if not source.is_file():
+        return None
+    aside = source.with_name("speakers.before-realign.json")
+    with contextlib.suppress(OSError):
+        source.replace(aside)
+        return aside
+    return None
 
 
 def _anchor(session_dir: Path) -> float:
@@ -156,3 +180,4 @@ def _stamp(session_dir: Path, anchor: float, lines: int) -> None:
     meta.pop("mic_pending", None)
     with contextlib.suppress(OSError):
         meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+        set_kept(session_dir, kept=False)

@@ -193,14 +193,24 @@ def _wav_seconds(wav: wave.Wave_write | None) -> float:
         return 0.0
 
 
-async def transcribe_file(
+async def transcribe_file(  # noqa: PLR0913 - one call shape: a file and how to read it
     path: Path,
     started_at: float,
     speaker: str,
+    *,
     timeout_s: float = 600.0,
     keyterms: list[str] | None = None,
+    voices_as: str = "",
 ) -> list[dict]:
     """Batch-transcribe a finished WAV into transcript records.
+
+    `voices_as` asks Deepgram for the voices in the file and names each
+    record's `who` `<voices_as>_<n>`: `speaker` for the far side, where
+    the live stream uses the same names, and `mic` for a room, where
+    everyone speaks into the one microphone. The two must differ, or a
+    name learned for a far-side voice would land on a room voice. Empty
+    asks for no voices. Prerecorded diarization costs nothing extra
+    (Deepgram's pricing page, 2026-11-07), only streaming's does.
 
     Used for the microphone side, which the daemon records but does not stream:
     the prerecorded API is cheaper per minute than streaming and more accurate,
@@ -217,6 +227,9 @@ async def transcribe_file(
         ("punctuate", "true"),
         *PRIVACY_PARAMS,
     ]
+    if voices_as:
+        # `diarize=true` is deprecated, and a request with both is refused.
+        params.append(("diarize_model", "latest"))
     params.extend(
         ("keyterm", term.strip())
         for term in (keyterms or [])[:MAX_KEYTERMS]
@@ -250,7 +263,7 @@ async def transcribe_file(
         }
         # Prerecorded diarization puts the number on the utterance itself.
         spk = u.get("speaker")
-        if isinstance(spk, int):
-            row["who"] = f"speaker_{spk}"
+        if voices_as and isinstance(spk, int):
+            row["who"] = f"{voices_as}_{spk}"
         records.append(row)
     return records

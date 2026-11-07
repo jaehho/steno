@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from . import asstlink, citations
+from .room import recorded_in_room
 
 NOTES_FILENAME = "notes.md"
 TODOS_FILENAME = "todos.json"
@@ -114,6 +115,12 @@ class Todo:
     # a tick: a pull keeps them rather than asst's old title, and the next
     # pull sends them again.
     retitle: bool = False
+    # Said in a room, where the summary could only guess whose voice
+    # promised it: not filed with asst, nor counted as the user's or
+    # anyone's, until the user says whose it is (`decide_owner`).
+    held: bool = False
+    # The user said whose this is. Their word beats any later summary's.
+    owner_by_user: bool = False
     # Where in the meeting this was said, as seconds on the transcript's
     # timeline. Comes from the summary's markers, never from the text.
     cites: list[citations.Cite] = field(default_factory=list)
@@ -239,6 +246,8 @@ def load_todos(session_dir: Path) -> list[Todo]:
             dropped=bool(row.get("dropped", False)),
             edited=bool(row.get("edited", False)),
             retitle=bool(row.get("retitle", False)),
+            held=bool(row.get("held", False)),
+            owner_by_user=bool(row.get("owner_by_user", False)),
             cites=citations.coerce(row.get("cites")),
         )
         for row in raw if isinstance(raw, list) and isinstance(row, dict) and row.get("text")
@@ -316,8 +325,12 @@ def _words(text: str) -> tuple[set[str], set[str]]:
 
 
 def _likeness(a: Todo, b: Todo) -> float:
-    """How alike two action items read, 0.0 when they cannot be one."""
-    if a.owner != b.owner:
+    """How alike two action items read, 0.0 when they cannot be one.
+
+    Different owners cannot be one item, unless the user gave one its
+    owner: then the summary is only disagreeing with them.
+    """
+    if a.owner != b.owner and not (a.owner_by_user or b.owner_by_user):
         return 0.0
     words_a, facts_a = _words(a.text)
     words_b, facts_b = _words(b.text)
@@ -376,6 +389,23 @@ def _carry_state(fresh: Todo, prior: Todo) -> None:
     fresh.retitle = bool(prior.uid) and (
         prior.retitle or fresh.text != prior.text
     )
+    if prior.owner_by_user:
+        fresh.owner = prior.owner
+        fresh.owner_by_user = True
+
+
+def _hold_in_room(todos: list[Todo], *, room: bool) -> None:
+    """In a room, hold every open item of the summary's, whoever it says
+    promised it.
+
+    Under "You" it may be a labmate's promise heard on a voice taken for
+    the user's; under "Them" it may be the user's own, when the user's
+    voice was never named, or was split in two. Not one already filed,
+    nor one whose owner the user gave: those are settled. Off a room,
+    nothing is held.
+    """
+    for t in todos:
+        t.held = room and t.open and not t.uid and not t.owner_by_user
 
 
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
@@ -420,6 +450,7 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
         for fresh, prior in matched:
             _carry_state(fresh, prior)
             taken.add(id(prior))
+        _hold_in_room(fresh_items, room=recorded_in_room(session_dir))
         merged = fresh_items + [
             t for t in existing
             if id(t) not in taken and (t.done or t.uid or t.owner == "you")
@@ -483,7 +514,10 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
     """
     if not asstlink.available() or asstlink.archived(session_dir):
         return todos
-    pending = [t for t in todos if t.owner == "you" and not t.uid and t.open]
+    pending = [
+        t for t in todos
+        if t.owner == "you" and not t.uid and t.open and not t.held
+    ]
     if not pending:
         return todos
     list_name = asstlink.target_list(session_dir)
@@ -763,6 +797,39 @@ def deliver_remove(uid: str) -> bool:
     return asstlink.rm_todo(uid)
 
 
+def settle_owner(session_dir: Path, keys: list[str], *, mine: bool) -> list[Todo]:
+    """The user's word on whose rows these are (by `key`), in todos.json
+    alone, fast. Returns the whole list as saved.
+
+    Mine makes a row the user's, free to go to asst (`file_with_asst`);
+    not mine makes it someone else's, which is never filed. Either way
+    the row is no longer held, and a later summary keeps the user's word.
+    A row already filed is left as it is.
+    """
+    wanted = set(keys)
+
+    def patch(todos: list[Todo]) -> bool:
+        changed = False
+        for t in todos:
+            if t.key in wanted and not t.uid:
+                t.owner = "you" if mine else "them"
+                t.owner_by_user = True
+                t.held = False
+                changed = True
+        return changed
+
+    return _edit(session_dir, patch)
+
+
+def decide_owner(session_dir: Path, keys: list[str], *, mine: bool) -> list[Todo]:
+    """`settle_owner`, then filing those rows when they are the user's,
+    and none else. Slow when `mine`: it files with asst."""
+    todos = settle_owner(session_dir, keys, mine=mine)
+    if mine:
+        file_with_asst(session_dir, [t for t in todos if t.key in set(keys)])
+    return load_todos(session_dir)
+
+
 def add_todo_row(session_dir: Path, text: str) -> Todo | None:
     """Add an item of your own to todos.json, fast. None when the wording
     is empty or a row already says it.
@@ -952,7 +1019,11 @@ def restore_dropped_todos(session_dir: Path) -> Restored:
         if not woken:
             return Restored(0, 0)
         todos = file_with_asst(session_dir, todos)
-    mine = [t for t in todos if t.key in woken and t.owner == "you"]
+    # A row said in a room waits for the user, not for asst.
+    mine = [
+        t for t in todos
+        if t.key in woken and t.owner == "you" and not t.held
+    ]
     filed = sum(1 for t in mine if t.uid)
     # With no asst at all there is nothing it failed to take.
     failed = len(mine) - filed if asstlink.available() else 0
@@ -979,16 +1050,33 @@ def ensure_todos(session_dir: Path) -> list[Todo]:
         return []
 
 
-def open_count(session_dir: Path) -> int:
-    """Open items that are yours.
+class TodoCounts(NamedTuple):
+    """A meeting's open items, as the list of meetings counts them."""
 
-    What someone else promised is not a to-do on this machine; counting it
-    made the sidebar badge shout about other people's work. A meeting
-    put away has none: its to-dos were closed with it.
-    """
+    # Yours. What someone else promised is not a to-do on this machine;
+    # counting it made the sidebar badge shout about other people's work.
+    open: int
+    # Said in a room and held: nobody's until the user says whose.
+    to_sort: int
+
+
+def todo_counts(session_dir: Path) -> TodoCounts:
+    """Open items that are yours, and those still to sort. A meeting put
+    away has none: its to-dos were closed with it."""
     if asstlink.archived(session_dir):
-        return 0
-    return sum(
-        1 for t in ensure_todos(session_dir)
-        if t.open and t.owner != "them"
+        return TodoCounts(0, 0)
+    todos = [t for t in ensure_todos(session_dir) if t.open]
+    return TodoCounts(
+        open=sum(1 for t in todos if t.owner != "them" and not t.held),
+        to_sort=sum(1 for t in todos if t.held),
     )
+
+
+def open_count(session_dir: Path) -> int:
+    """Open items that are yours (`todo_counts`)."""
+    return todo_counts(session_dir).open
+
+
+def held_count(session_dir: Path) -> int:
+    """Open items said in a room that wait for the user to say whose."""
+    return todo_counts(session_dir).to_sort

@@ -528,6 +528,7 @@ class Window(Adw.ApplicationWindow):
         """Called by the app, on the GTK thread."""
         if isinstance(event, MeetingStarted):
             self.live.clear()
+            self.live.set_by_hand(event.manual)
             self._begin_live(event.session_dir, event.app, event.started_at)
         elif isinstance(event, Heard):
             if event.final:

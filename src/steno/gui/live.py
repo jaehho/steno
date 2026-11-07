@@ -18,7 +18,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, GLib, Gtk, Pango
 
-from . import prefs
+from . import prefs, words
 from .style import TRANSCRIPT_PT_DEFAULT, TRANSCRIPT_PT_MAX, TRANSCRIPT_PT_MIN
 from .widgets import AskBox, NotesBox, section
 
@@ -139,8 +139,7 @@ class LivePage(Gtk.Box):
         self.lines.set_margin_bottom(4)
 
         self.empty_hint = Gtk.Label(
-            label="Nothing heard yet.\nTheir words appear here as they speak.",
-            justify=Gtk.Justification.CENTER,
+            label=words.LIVE_EMPTY, justify=Gtk.Justification.CENTER,
         )
         self.empty_hint.add_css_class("empty-hint")
         self.empty_hint.set_vexpand(True)
@@ -219,6 +218,13 @@ class LivePage(Gtk.Box):
         if text:
             self.empty_hint.set_visible(False)
             self._scroll_to_end()
+
+    def set_by_hand(self, by_hand: bool) -> None:
+        """Say, before anything is heard, that a recording started by hand
+        shows nothing of a room: its microphone is not streamed live
+        (`Engine._may_be_room`)."""
+        self.empty_hint.set_label(
+            words.LIVE_EMPTY_BY_HAND if by_hand else words.LIVE_EMPTY)
 
     def clear(self) -> None:
         while (child := self.lines.get_first_child()) is not None:

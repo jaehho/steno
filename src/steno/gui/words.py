@@ -43,6 +43,40 @@ TAG_MAX_CHARS = 12
 # The href of the "Summarize again" link in the note by the heading.
 SUMMARIZE_AGAIN = "summarize"
 
+# A meeting in a room (steno.room): its recording waits on the laptop for
+# the user's word that everyone agreed, and its to-dos wait to be sorted.
+ROOM_KEPT_TITLE = "Recorded in a room"
+ROOM_KEPT_BODY = (
+    "Nothing has left this laptop. Open it to transcribe it once "
+    "everyone there has agreed."
+)
+ROOM_KEPT_SLOT = (
+    "Recorded in a room, and kept on this laptop: nothing has gone to "
+    "Deepgram or the model. Once everyone who spoke has agreed, "
+    "transcribe and summarize it."
+)
+# The live view before anything is heard. A recording started by hand
+# may be a room, whose microphone is not streamed (Engine._may_be_room).
+LIVE_EMPTY = "Nothing heard yet.\nTheir words appear here as they speak."
+LIVE_EMPTY_BY_HAND = (
+    "Nothing heard yet.\nOn a call, their words appear here as they "
+    "speak. In a room, nothing is transcribed until everyone has agreed."
+)
+ROOM_SEND = "Transcribe and summarize…"
+ROOM_AGREE_HEADING = "Did everyone agree?"
+ROOM_AGREE_BODY = (
+    "This was recorded in a room. Transcribing it sends the recording to "
+    "Deepgram, and summarizing it sends the transcript to the model. Go on "
+    "only if everyone who spoke agreed to be recorded, and to that."
+)
+ROOM_AGREE_CONFIRM = "Everyone agreed"
+HELD_HEAD = "Whose are these?"
+HELD_HINT = (
+    "Said in a room, where steno can't be sure who promised what. None "
+    "goes to asst until you say it's yours."
+)
+HELD_REST = "The rest are theirs"
+
 # The words a date search is made of: each name whole, or one of the
 # short forms people write, never any prefix ("marc" is a person).
 _WEEKDAYS = {
@@ -252,6 +286,24 @@ def reworded_warning(n: int) -> str:
     )
 
 
+def to_sort_count(n: int) -> str:
+    """A meeting's room items that wait for the user to say whose."""
+    return f"{n} to sort" if n else ""
+
+
+def session_badge(open_todos: int, to_sort: int) -> str:
+    """The count at the end of a meeting's row in the list."""
+    return " · ".join(p for p in (todo_count(open_todos), to_sort_count(to_sort)) if p)
+
+
+def summary_ready_body(to_sort: int) -> str:
+    """The notification's line when a summary lands."""
+    if not to_sort:
+        return "Summary and todos are ready."
+    which = "its to-do is" if to_sort == 1 else f"its {to_sort} to-dos are"
+    return f"Summary ready. Said in a room: say whether {which} yours."
+
+
 def owed_label(n: int) -> str:
     """The sidebar's cross-meeting count: what you still owe, everywhere."""
     return f"{n} to-do{'' if n == 1 else 's'} open"
@@ -411,20 +463,22 @@ def notes_running_text(phase: NotesPhase | None) -> str:
     return "Writing the summary…"
 
 
-def summary_missing(
+def summary_missing(  # noqa: PLR0913 - every state the slot can be in
     lines: int,
     *,
     state: NotesState | None = None,
     phase: NotesPhase | None = None,
     error: str = "",
     joined: bool = False,
+    room_kept: bool = False,
 ) -> tuple[str, bool]:
     """(what the summary slot says, whether to offer "Summarize now").
 
     A meeting with no summary is a failed meeting, not a quiet one, so the
     page says which is true: work is under way (and whose), it failed and
-    why, there was nothing to write it from, or it can be written now.
-    A failure still offers the button — that is the retry.
+    why, a room's recording waits for the user (`room_kept`), there was
+    nothing to write it from, or it can be written now. A failure still
+    offers the button — that is the retry.
     """
     if state is NotesState.RUNNING:
         text = notes_running_text(phase)
@@ -432,6 +486,8 @@ def summary_missing(
     if state is NotesState.FAILED:
         detail = error or "no reason given"
         return f"No summary: {detail}", True
+    if room_kept:
+        return ROOM_KEPT_SLOT, True
     if lines <= 0:
         return "Nothing was transcribed in this meeting, so there is no summary.", False
     return "No summary yet.", True

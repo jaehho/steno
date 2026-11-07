@@ -251,6 +251,8 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
     .todo-list {{ color: {colors['overlay0']}; }}
     button.todo-list {{ padding: 0 6px; min-height: 0; border-radius: 8px; }}
     button.add-todo {{ padding: 2px 8px; min-height: 0; border-radius: 8px; color: {colors['overlay2']}; }}
+    /* Mine / Not mine on a row said in a room: quiet, under its words. */
+    button.todo-whose {{ padding: 1px 8px; min-height: 0; border-radius: 8px; font-size: 9pt; font-weight: normal; color: {colors['teal']}; }}
 
     .player-bar {{
         background: {colors['mantle']};

@@ -12,11 +12,23 @@ from pathlib import Path
 
 from . import citations, claude, data_dir
 from .cost import prerecorded_cost, stream_cost
+from .kept import set_kept
 from .notes import Todo, load_todos
 from .playback import display_offset, format_offset, repair_started_at
 from .redact import redact_text
+from .room import (
+    awaits_agreement,
+    calendar_attendees,
+    earlier_names,
+    is_room,
+    names_from_reply,
+    room_prompt,
+    room_schema,
+    room_voices,
+    roster,
+)
+from .speakers import add_names, learn_from
 from .speakers import label as speaker_label
-from .speakers import learn_from
 
 MIN_RECORDS_FOR_DURATION = 2  # first and last timestamps
 # Asks per summary: a flash model sometimes returns only a title, and
@@ -28,6 +40,11 @@ FLAWED_ATTEMPTS = 2
 
 SUMMARY_FILENAME = "summary.md"
 META_FILENAME = "meta.json"
+# Who the user is, so a room voice can be theirs: "Ana", as people say it.
+USER_NAME_ENV = "STENO_USER_NAME"
+# Folders of .ics files (vdirsyncer's copies), joined with ":", whose
+# events say who was expected at a room meeting.
+CALENDAR_ENV = "STENO_CALENDAR_DIR"
 
 SYSTEM_PROMPT = """\
 You summarize meeting transcripts. 'you' is the person wearing the mic (the user \
@@ -139,6 +156,9 @@ class Summary:
     project: str | None = None
     # How many of the body's items carry a citation marker.
     coverage: citations.Coverage = field(default_factory=citations.Coverage)
+    # Room voices the model could name (`mic_1` -> "Ana"), checked
+    # against who was expected; saved beside the session with the rest.
+    voices: dict[str, str] = field(default_factory=dict)
 
 
 def projects_root() -> Path:
@@ -260,7 +280,7 @@ def format_for_model(
         text = r.get("text", "")
         if redact:
             text = redact_text(str(text))
-        who = speaker_label(r, names) if names else r.get("speaker", "?")
+        who = speaker_label(r, names)
         lines.append(f"[{stamp}] {who}: {text}")
     return "\n".join(lines)
 
@@ -348,9 +368,12 @@ async def summarize_session(
     if not records:
         msg = f"no transcript in {session_dir}"
         raise ValueError(msg)
+    meta = load_meta(session_dir)
+    room = is_room(meta, records)
+    user_name = os.environ.get(USER_NAME_ENV, "").strip()
     # Names before the model sees the lines: "Alice will send it" is the whole
     # point of diarizing the far side.
-    names = learn_from(session_dir, records)
+    names = learn_from(session_dir, records, user_name)
     # The model cites lines by id; they are stored as the gutter's seconds, so
     # that `steno realign` does not strand them. `repair_started_at` is what
     # the window computes (and keeps), so both count from the same zero.
@@ -372,6 +395,12 @@ async def summarize_session(
         system += "\n\n" + earlier
     if due := due_prompt(started_at):
         system += "\n\n" + due
+    schema = SCHEMA
+    people: list[str] = []
+    if room:
+        people = _settle_room(session_dir, meta, started_at)
+        system += "\n\n" + room_prompt(people, user_name)
+        schema = room_schema(SCHEMA)
 
     transcript = format_for_model(records, names=names, offsets=offsets)
     # A heading-only reply is a known flake, not a short meeting: ask again.
@@ -385,7 +414,7 @@ async def summarize_session(
             transcript,
             system=system,
             model=model,
-            schema=SCHEMA,
+            schema=schema,
             read_root=root if known else None,
         )
         # The model's `[L12-15]` tags become markers here, before anything is
@@ -398,6 +427,11 @@ async def summarize_session(
         summary.coverage = citations.coverage(summary.body)
         project = out.get("project")
         summary.project = project if project in known else None
+        if room:
+            summary.voices = names_from_reply(
+                out.get("voices"), heard=room_voices(records),
+                people=people, user_name=user_name,
+            )
         if not (flaws := _flaws(summary)):
             return _store(session_dir, summary, records, wrote)
         flawed.append((flaws, summary, wrote))
@@ -411,10 +445,43 @@ async def summarize_session(
     raise claude.ClaudeError(msg)
 
 
+def _settle_room(session_dir: Path, meta: dict, started_at: float) -> list[str]:
+    """Mark the meeting a room in meta.json and say who may be in it.
+
+    Stamped for what reads it later: the to-dos, which wait for the
+    user, and a re-run that no longer has the far side to go by.
+    """
+    if meta.get("room") is not True:
+        update_meta(session_dir, room=True)
+    return room_people(session_dir, meta.get("project"), started_at)
+
+
+def room_people(
+    session_dir: Path, project: str | None, started_at: float
+) -> list[str]:
+    """Who may be at a room meeting: the calendar's guests for its slot
+    first, then the names learned in earlier meetings (of `project`, when
+    it is known)."""
+    folders = [
+        Path(d).expanduser()
+        for d in os.environ.get(CALENDAR_ENV, "").split(os.pathsep) if d
+    ]
+    at = datetime.fromtimestamp(started_at).astimezone()
+    return roster([
+        calendar_attendees(folders, at),
+        earlier_names(
+            iter_sessions(session_dir.parent), project=project,
+            leave_out=session_dir,
+        ),
+    ])
+
+
 def _store(
     session_dir: Path, summary: Summary, records: list[dict], model: str
 ) -> Summary:
     _write_atomic(session_dir / SUMMARY_FILENAME, summary.body + "\n")
+    if summary.voices:
+        add_names(session_dir, summary.voices)
     # A name the user gave stays, as a project they set does.
     if load_meta(session_dir).get("title_by_user"):
         summary.title = load_title(session_dir) or summary.title
@@ -492,18 +559,30 @@ def load_meta(session_dir: Path) -> dict:
 
 
 def update_meta(session_dir: Path, **changes: object) -> None:
-    """Set keys in meta.json, dropping any whose value is None. The rest stays."""
+    """Set keys in meta.json, dropping any whose value is None. The rest stays.
+
+    A change to `mic_pending` or `room` also writes or removes the
+    `.steno-kept` marker of a room kept for the user's word
+    (`steno.kept`): written before meta.json says the room waits,
+    removed after it no longer does.
+    """
     meta = load_meta(session_dir)
     for key, value in changes.items():
         if value is None:
             meta.pop(key, None)
         else:
             meta[key] = value
+    marks = "mic_pending" in changes or "room" in changes
+    waits = marks and awaits_agreement(meta, load_records(session_dir))
+    if waits:
+        set_kept(session_dir, kept=True)
     # Whole or not at all: the window reads this file while a terminal
     # writes it (`steno archive`), and half a file reads as no meta.
     _write_atomic(
         session_dir / META_FILENAME, json.dumps(meta, indent=2) + "\n"
     )
+    if marks and not waits:
+        set_kept(session_dir, kept=False)
 
 
 def save_title(session_dir: Path, title: str) -> None:
