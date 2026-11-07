@@ -40,7 +40,7 @@ class TestMenuModel(unittest.TestCase):
         menu = meeting_menu_model()
         last = menu.get_item_link(menu.get_n_items() - 1, Gio.MENU_LINK_SECTION)
         self.assertEqual(
-            menu_actions(last), ["meeting.delete-audio", "meeting.delete"]
+            menu_actions(last), ["meeting.delete-audio", "meeting.delete", "meeting.erase"]
         )
 
     def test_a_menu_is_built_per_call(self):
@@ -89,7 +89,7 @@ class TestMenuModel(unittest.TestCase):
                 menu.get_n_items() - 1, Gio.MENU_LINK_SECTION
             )
             self.assertEqual(
-                menu_actions(last), ["meeting.delete-audio", "meeting.delete"]
+                menu_actions(last), ["meeting.delete-audio", "meeting.delete", "meeting.erase"]
             )
 
 

@@ -12,8 +12,9 @@ really say that?" is to hear it.
 from __future__ import annotations
 
 # ruff: noqa: E402  # gi.require_version must precede gi.repository imports
+import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import gi
@@ -23,7 +24,8 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from .. import asstlink, citations, projectnotes
+from .. import asstlink, citations, projectnotes, retention
+from .. import erase as erasing
 from ..cost import SUMMARY_GUESS, format_usd, prerecorded_cost
 from ..events import NotesStatus
 from ..export import default_filename, meeting_markdown
@@ -73,6 +75,7 @@ from ..summarize import (
     save_title,
     set_archived,
 )
+from ..sync import remote as sync_remote
 from . import words
 from .player import Player
 from .rewrite import QUIT_WAIT_S, Rewriter
@@ -237,6 +240,7 @@ class MeetingPage(Gtk.Box):
             ("unarchive", self._unarchive),
             ("delete-audio", self._confirm_delete_audio),
             ("delete", self._confirm_delete),
+            ("erase", self._confirm_erase),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", lambda _a, _p, fn=handler: fn())
@@ -1881,6 +1885,109 @@ class MeetingPage(Gtk.Box):
             self._on_deleted(s.dir)
         elif gone.altered and self._rewriter is not None:
             self._rewriter.write(s.dir)
+
+    # ------------------------------------------------------------- erase
+
+    def _confirm_erase(self) -> None:
+        """Ask before erasing the open meeting from every copy: for
+        someone who was recorded and said no."""
+        s = self.current
+        if s is None:
+            return
+        restic_env = erasing.restic_environment(os.environ)
+        dialog = Adw.AlertDialog(
+            heading=words.erase_heading(s.title or s.dir.name),
+            body=f"{self._describe(s)}\n\n{words.ERASE_BODY}",
+        )
+        # A check button's own label never wraps, and this one is a
+        # sentence: the dialog would grow as wide as it.
+        backups = Gtk.CheckButton(child=wrapping_label(
+            words.ERASE_BACKUPS if restic_env else words.ERASE_NO_BACKUPS,
+            selectable=False))
+        backups.set_active(bool(restic_env))
+        backups.set_sensitive(bool(restic_env))
+        dialog.set_extra_child(backups)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("go", "Erase everywhere")
+        dialog.set_response_appearance(
+            "go", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.connect(
+            "response",
+            lambda _d, response: self._erase(
+                s, restic_env if backups.get_active() else None
+            ) if response == "go" else None,
+        )
+        dialog.present(self)
+
+    def _erase(self, s: Session, restic_env: Mapping[str, str] | None) -> None:
+        """Let the meeting go here at once, for good, as a delete does,
+        then remove its other copies on a worker: they take the network,
+        and the backups can take an hour."""
+        gone = self._take_out_of_project(s)
+        if gone is None:
+            return
+        self.stop_pull()
+        self.stop_playback()
+        self.notes.bind(None)
+        forget_asst(s.dir)
+        outcome, _ = delete_session(s.dir, permanent=True)
+        if outcome != "deleted":
+            if gone.altered and self._rewriter is not None:
+                self._rewriter.write(s.dir)  # it is still here
+            self._toast(f"Could not erase it: {s.dir} is still there")
+            return
+        self.current = None
+        self._on_deleted(s.dir)
+        title = s.title or s.dir.name
+        self._toast(words.erasing_toast(title, backups=restic_env is not None))
+        self._erase_rest(s.dir, title, restic_env)
+
+    def _erase_rest(
+        self, session_dir: Path, title: str,
+        restic_env: Mapping[str, str] | None,
+    ) -> None:
+        def work() -> None:
+            erased = erasing.erase_everywhere(
+                session_dir.name, sessions=session_dir.parent,
+                trash=retention.trash_dir(), target_root=sync_remote(),
+                projects=projects_root(), vault=projectnotes.vault_root(),
+                restic_env=restic_env,
+            )
+            GLib.idle_add(self._erased, erased, session_dir, title,
+                          restic_env)
+
+        worker = threading.Thread(target=work, name="steno-erase",
+                                  daemon=True)
+        self.asst_workers = [
+            w for w in self.asst_workers if w.is_alive()
+        ] + [worker]
+        worker.start()
+
+    def _erased(
+        self, erased: erasing.Erased, session_dir: Path, title: str,
+        restic_env: Mapping[str, str] | None,
+    ) -> None:
+        """Called back on the GTK thread when the erase is done."""
+        if not erased.error:
+            self._toast(words.erased_toast(title, backups=erased.backups))
+            return
+        dialog = Adw.AlertDialog(
+            heading=words.ERASE_STOPPED,
+            body=words.erase_stopped_body(title, erased.name, erased.error),
+        )
+        dialog.add_response("close", "Close")
+        dialog.add_response("retry", "Try again")
+        dialog.set_response_appearance(
+            "retry", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("retry")
+        dialog.connect(
+            "response",
+            lambda _d, response: self._erase_rest(
+                session_dir, title, restic_env
+            ) if response == "retry" else None,
+        )
+        dialog.present(self)
 
     def _confirm_delete_audio(self) -> None:
         s = self.current
