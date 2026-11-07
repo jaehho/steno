@@ -83,6 +83,21 @@ def mark_spans(label: Gtk.Label, spans: list[tuple[int, int]]) -> None:
     )))
 
 
+def tint_spans(text: Gtk.Text, spans: list[tuple[int, int]]) -> None:
+    """Set these character spans of a text box apart in teal, as the
+    search box does a filter or a date; none clears it."""
+    byte_spans = words.byte_spans(text.get_text(), spans)
+    if not byte_spans:
+        text.set_attributes(None)
+        return
+    teal = palette()["teal"]
+    text.set_attributes(Pango.AttrList.from_string("\n".join(
+        f"{start} {end} {name} {value}"
+        for start, end in byte_spans
+        for name, value in (("foreground", teal), ("weight", "semibold"))
+    )))
+
+
 class NotesBox(Gtk.Overlay):
     """The user's notes for one meeting: a plain sheet, saved as they type.
 

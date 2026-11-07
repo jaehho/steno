@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from steno import citations, projectnotes
@@ -522,6 +522,292 @@ class TestDateSearch(unittest.TestCase):
     def test_another_day_lights_nothing(self):
         self.assertEqual(self.lit("wed oct 20"), [])
         self.assertEqual(self.lit("10/21"), [])
+
+
+class TestParseFilters(unittest.TestCase):
+    """Issue #40: `key:value` words beside the phrase."""
+
+    def parsed(self, query: str) -> tuple[list[tuple], str]:
+        """`(key, value, negated)` of each filter, and the phrase."""
+        filters, phrase = words.parse_filters(query)
+        return [(f.key, f.value, f.negated) for f in filters], phrase
+
+    def test_each_key_is_a_filter(self):
+        for query, read in (
+            ("project:lab", ("project", "lab", False)),
+            ("speaker:priya", ("speaker", "priya", False)),
+            ("after:10/1", ("after", "10/1", False)),
+            ("before:oct", ("before", "oct", False)),
+            ("has:todo", ("has", "todo", False)),
+            ("in:transcript", ("in", "transcript", False)),
+        ):
+            self.assertEqual(self.parsed(query), ([read], ""), query)
+
+    def test_a_filter_knows_where_it_was_typed(self):
+        (found,), _ = words.parse_filters("budget !project:lab")
+        self.assertEqual(found.span, (7, 19))
+
+    def test_a_bang_negates_the_one_filter_it_is_on(self):
+        self.assertEqual(
+            self.parsed("!project:lab speaker:priya"),
+            ([("project", "lab", True), ("speaker", "priya", False)], ""),
+        )
+
+    def test_an_unknown_key_is_text(self):
+        self.assertEqual(self.parsed("foo:bar"), ([], "foo:bar"))
+        self.assertEqual(self.parsed("see http://x"), ([], "see http://x"))
+
+    def test_a_value_its_key_cannot_read_is_text(self):
+        for query in ("after:soon", "before:tue", "after:20", "has:summary",
+                      "in:everything", "project:", "!speaker:"):
+            self.assertEqual(self.parsed(query), ([], query), query)
+
+    def test_a_value_ends_at_the_space(self):
+        self.assertEqual(
+            self.parsed("project:lab budget"),
+            ([("project", "lab", False)], "budget"),
+        )
+
+    def test_the_rest_is_one_phrase_in_order(self):
+        self.assertEqual(
+            words.search_phrase(" budget  project:lab review "),
+            "budget review",
+        )
+
+    def test_keys_and_kept_values_ignore_case(self):
+        self.assertEqual(
+            self.parsed("Project:Lab IN:Todos HAS:TODO"),
+            ([("project", "Lab", False), ("in", "to-dos", False),
+              ("has", "todo", False)], ""),
+        )
+
+    def test_a_date_is_read_as_a_date_search_reads_it(self):
+        for typed in ("10/1", "oct", "october", "2026-10-01", "10/1/26",
+                      "20/10", "sept"):
+            self.assertEqual(
+                self.parsed(f"after:{typed}"),
+                ([("after", typed, False)], ""),
+                typed,
+            )
+
+    def test_the_box_sets_apart_each_filter(self):
+        query = "budget project:lab !has:todo"
+        spans = words.box_spans(query)
+        self.assertEqual(
+            [query[a:b] for a, b in spans], ["project:lab", "!has:todo"]
+        )
+
+    def test_the_box_sets_apart_a_date_phrase_too(self):
+        query = "project:lab  oct 20"
+        self.assertEqual(
+            [query[a:b] for a, b in words.box_spans(query)],
+            ["project:lab", "oct", "20"],
+        )
+        self.assertEqual(words.box_spans("foo:bar budget"), [])
+
+    def test_in_picks_where_the_phrase_is_looked_for(self):
+        def searched(query):
+            return words.searched(words.parse_filters(query)[0])
+
+        self.assertEqual(searched("budget"), frozenset(words.SURFACES))
+        self.assertEqual(
+            searched("in:title in:summary"), {"title", "summary"}
+        )
+        self.assertEqual(
+            searched("!in:transcript"),
+            set(words.SURFACES) - {"transcript"},
+        )
+        self.assertEqual(words.phrase_in("in:title budget", "title"), "budget")
+        self.assertEqual(words.phrase_in("in:title budget", "summary"), "")
+
+
+class TestFilterDay(unittest.TestCase):
+    TODAY = date(2026, 11, 7)
+
+    def day(self, query: str, today: date = TODAY) -> date:
+        (found,), _ = words.parse_filters(query)
+        return words.filter_day(found, today)
+
+    def test_the_day_named(self):
+        self.assertEqual(self.day("after:10/1"), date(2026, 10, 1))
+        self.assertEqual(self.day("before:2026-10-20"), date(2026, 10, 20))
+        self.assertEqual(self.day("after:10/1/25"), date(2025, 10, 1))
+
+    def test_a_month_alone_is_its_first_day_before_and_last_after(self):
+        self.assertEqual(self.day("before:oct"), date(2026, 10, 1))
+        self.assertEqual(self.day("after:oct"), date(2026, 10, 31))
+        self.assertEqual(self.day("after:feb"), date(2026, 2, 28))
+
+    def test_no_year_is_the_last_such_day_to_have_come(self):
+        self.assertEqual(self.day("after:11/7"), date(2026, 11, 7))
+        self.assertEqual(self.day("after:12/1"), date(2025, 12, 1))
+        january = date(2027, 1, 5)
+        self.assertEqual(self.day("after:12/1", january), date(2026, 12, 1))
+        self.assertEqual(self.day("before:dec", january), date(2026, 12, 1))
+
+    def test_a_day_past_the_end_of_its_month_is_the_last(self):
+        self.assertEqual(self.day("before:2/30"), date(2026, 2, 28))
+
+    def test_only_a_date_filter_names_a_day(self):
+        (found,), _ = words.parse_filters("project:lab")
+        with self.assertRaises(ValueError):
+            words.filter_day(found, self.TODAY)
+
+
+def write_meeting(
+    root: Path, stamp: str, title: str, lines: list[dict], **extra
+) -> Session:
+    """A meeting folder: transcript lines, a title and whatever `extra`
+    holds (`project`, `names`, `todos`, `summary`)."""
+    folder = root / stamp
+    folder.mkdir()
+    (folder / "transcript.jsonl").write_text(
+        "".join(json.dumps({"ts": i, **line}) + "\n"
+                for i, line in enumerate(lines))
+    )
+    meta = {"title": title}
+    if "project" in extra:
+        meta["project"] = extra["project"]
+    (folder / "meta.json").write_text(json.dumps(meta))
+    if "names" in extra:
+        (folder / "speakers.json").write_text(json.dumps(extra["names"]))
+    if "todos" in extra:
+        (folder / "todos.json").write_text(json.dumps(extra["todos"]))
+    if "summary" in extra:
+        (folder / "summary.md").write_text(extra["summary"])
+    return Session(folder)
+
+
+class TestSearchFilters(unittest.TestCase):
+    """Issue #40: every filter holds, then the phrase is looked for."""
+
+    TODAY = date(2026, 11, 7)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        them = {"speaker": "them"}
+        self.sessions = [
+            write_meeting(
+                root, "20261005-100000", "Alpha",
+                [{**them, "who": "speaker_0", "text": "the budget is fine"}],
+                project="lab", names={"speaker_0": "Priya"},
+                todos=[{"text": "send the deck", "owner": "you"}],
+            ),
+            write_meeting(
+                root, "20261015-100000", "Bravo",
+                [{**them, "text": "see foo:bar for the numbers"}],
+                project="lab",
+                todos=[{"text": "they send it", "owner": "them"}],
+            ),
+            write_meeting(
+                root, "20261019-100000", "Charlie",
+                [{"speaker": "you", "text": "ask priya about the budget"}],
+                project="thesis",
+            ),
+            write_meeting(
+                root, "20260920-100000", "Budget review",
+                [{"speaker": "you", "text": "nothing about money"}],
+            ),
+            write_meeting(
+                root, "20261025-100000", "Echo",
+                [{"speaker": "you", "text": "hello"}],
+                project="Lab", summary="# Echo\n\nThe budget holds.\n",
+            ),
+        ]
+
+    def found(self, query: str, today: date = TODAY) -> set[str]:
+        return {
+            s.title for s in self.sessions if s.matches(query, today)
+        }
+
+    def session(self, title: str) -> Session:
+        return next(s for s in self.sessions if s.title == title)
+
+    def test_a_phrase_alone_is_as_before(self):
+        self.assertEqual(
+            self.found("budget"), {"Alpha", "Charlie", "Budget review", "Echo"}
+        )
+
+    def test_project_keeps_the_meetings_of_that_project(self):
+        self.assertEqual(self.found("budget project:lab"), {"Alpha", "Echo"})
+        self.assertEqual(self.found("project:LA"), {"Alpha", "Bravo", "Echo"})
+
+    def test_a_bang_leaves_them_out(self):
+        self.assertEqual(
+            self.found("!project:lab"), {"Charlie", "Budget review"}
+        )
+        self.assertEqual(self.found("budget !project:lab"),
+                         {"Charlie", "Budget review"})
+
+    def test_after_and_before_make_a_range(self):
+        self.assertEqual(
+            self.found("after:10/1 before:10/20"),
+            {"Alpha", "Bravo", "Charlie"},
+        )
+
+    def test_the_days_named_are_in_the_range(self):
+        self.assertEqual(
+            self.found("after:10/5 before:10/15"), {"Alpha", "Bravo"}
+        )
+
+    def test_a_month_alone(self):
+        self.assertEqual(self.found("before:oct"), {"Budget review"})
+        self.assertEqual(
+            self.found("after:sep"), {"Alpha", "Bravo", "Charlie", "Echo"}
+        )
+        self.assertEqual(self.found("!after:10/1"), {"Budget review"})
+
+    def test_a_date_with_no_year_is_the_last_one_to_have_come(self):
+        """In January, October is last year's."""
+        self.assertEqual(
+            self.found("after:10/1 before:10/20", date(2027, 1, 5)),
+            {"Alpha", "Bravo", "Charlie"},
+        )
+        self.assertEqual(
+            self.found("after:10/1 before:10/20", date(2026, 9, 1)), set()
+        )
+
+    def test_speaker_reads_the_learned_names(self):
+        """Charlie says "priya"; only Alpha has a voice called Priya."""
+        self.assertEqual(self.found("speaker:priya"), {"Alpha"})
+        self.assertEqual(self.found("speaker:PRI budget"), {"Alpha"})
+        self.assertEqual(self.found("speaker:them"), {"Bravo"})
+        self.assertEqual(
+            self.found("speaker:you"), {"Charlie", "Budget review", "Echo"}
+        )
+
+    def test_has_todo_counts_as_the_row_does(self):
+        """Bravo's to-do is somebody else's: no chip, no hit."""
+        self.assertEqual(self.found("has:todo"), {"Alpha"})
+        self.assertEqual(
+            self.found("!has:todo budget"),
+            {"Charlie", "Budget review", "Echo"},
+        )
+
+    def test_in_skips_a_hit_elsewhere(self):
+        """Budget review has the word only in its title, Echo only in
+        its summary."""
+        self.assertEqual(
+            self.found("in:transcript budget"), {"Alpha", "Charlie"}
+        )
+        self.assertEqual(
+            self.found("!in:title budget"), {"Alpha", "Charlie", "Echo"}
+        )
+        hit = self.session("Alpha").locate("in:transcript budget")
+        self.assertEqual((hit["where"], hit["line"]), ("transcript", 0))
+        hit = self.session("Echo").locate("in:summary in:title budget")
+        self.assertEqual(hit["where"], "summary")
+
+    def test_an_unknown_key_is_searched_as_text(self):
+        self.assertEqual(self.found("foo:bar"), {"Bravo"})
+
+    def test_filters_alone_find_meetings_at_no_line(self):
+        hit = self.session("Alpha").locate("project:lab", self.TODAY)
+        self.assertEqual(hit, {"where": "", "line": -1})
+        self.assertEqual(len(self.found("in:summary")), len(self.sessions))
+
 
 class TestSummaryMissing(unittest.TestCase):
     def test_offers_to_write_it_when_there_is_a_transcript(self):

@@ -25,7 +25,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Graphene", "1.0")
 
-from gi.repository import Gdk, GLib, Graphene, Gtk
+from gi.repository import Gdk, GLib, Graphene, Gtk, Pango
 
 from steno.gui.meeting import (
     FIRST_LINES,
@@ -34,6 +34,7 @@ from steno.gui.meeting import (
     _line_tag,
     _line_text,
 )
+from steno.gui.style import palette
 from steno.gui.window import Window
 from tests.gtk_sidebar_menu import StubApp, settle
 
@@ -253,14 +254,68 @@ class TestSpeakerNames(OnTheShortMeeting):
         self.assertIn("in speaker", meta.get_text())
         self.assertIsNone(meta.get_attributes())
 
+    def tinted(self) -> list[str]:
+        """The words in the search box that are set apart in teal."""
+        text = self.window.sidebar.search.get_delegate()
+        attrs = text.get_attributes()
+        if attrs is None:
+            return []
+        typed = text.get_text().encode()
+        teal = Pango.Color()
+        self.assertTrue(teal.parse(palette()["teal"]))
+        found = []
+        for attr in attrs.get_attributes():
+            if attr.klass.type != Pango.AttrType.FOREGROUND:
+                continue
+            color = attr.as_color().color
+            self.assertEqual(
+                (color.red, color.green, color.blue),
+                (teal.red, teal.green, teal.blue),
+            )
+            found.append(typed[attr.start_index:attr.end_index].decode())
+        return found
+
     def test_the_box_says_when_a_search_is_read_as_a_date(self):
         box = self.window.sidebar.search
         self.search("1/9")
-        self.assertTrue(box.has_css_class("date-query"))
+        self.assertEqual(self.tinted(), ["1/9"])
         self.assertIsNotNone(box.get_tooltip_text())
         self.search("priya")
-        self.assertFalse(box.has_css_class("date-query"))
+        self.assertEqual(self.tinted(), [])
         self.assertIsNone(box.get_tooltip_text())
+
+    def test_each_filter_in_the_box_is_teal_and_the_phrase_is_not(self):
+        """Issue #40."""
+        row = self.search("in:speaker  priya")
+        self.assertEqual(self.tinted(), ["in:speaker"])
+        self.assertIn("in speaker", " ".join(label_texts(row)))
+        self.search("!in:title speaker:pri thanks")
+        self.assertEqual(self.tinted(), ["!in:title", "speaker:pri"])
+
+    def test_a_search_that_finds_nothing_is_red_not_teal(self):
+        sidebar = self.window.sidebar
+        sidebar.search.set_text("speaker:nobody")
+        self.assertTrue(wait_for(lambda: sidebar.query == "speaker:nobody"))
+        self.assertTrue(sidebar.search.has_css_class("error"))
+        self.assertEqual(self.tinted(), [])
+
+    def test_filters_alone_open_the_meeting_at_no_line(self):
+        self.window.sidebar.list.select_row(self.search("speaker:priya"))
+        self.assertEqual(self.page.current.title, "Named")
+        self.assertEqual(self.page._hits, [])
+        self.assertFalse(
+            any(r.has_css_class("line-hit") for r in self.page._rows)
+        )
+
+    def test_the_page_looks_only_where_in_says(self):
+        self.page.load(self.session())
+        self.page.show_search("the budget")
+        self.assertEqual(self.page._hits, [0])
+        self.page.show_search("in:summary the budget")
+        self.assertEqual(self.page._hits, [])
+        self.page.show_search("in:speaker priya")
+        self.assertEqual(self.page._hits, [0, 3])
+        self.assertIsNone(_line_text(self.page._rows[0]).get_attributes())
 
 
 class TestTranscriptScroll(OnTheShortMeeting):

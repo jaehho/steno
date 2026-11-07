@@ -422,7 +422,9 @@ class Window(Adw.ApplicationWindow):
         self._update_header()
 
     def _mark_title(self) -> None:
-        mark_matches(self.page_title, words.search_phrase(self.sidebar.query))
+        mark_matches(
+            self.page_title, words.phrase_in(self.sidebar.query, "title")
+        )
 
     def _on_breakpoint(self) -> None:
         current = self.get_current_breakpoint()
