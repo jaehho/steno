@@ -37,6 +37,8 @@ from .. import (
 from .. import log as steno_log
 from ..control import APP_ID
 from ..events import (
+    CallDetected,
+    CallGone,
     EngineError,
     Event,
     MeetingEnded,
@@ -61,6 +63,7 @@ from .tray import Tray
 log = logging.getLogger(__name__)
 
 RECORDING_NOTIFICATION = "recording"
+CALL_NOTIFICATION = "call"
 REPUBLISH_S = 20
 # How often finished meetings are pushed, when STENO_SYNC_REMOTE is set. The
 # first push waits a minute so it does not compete with start-up.
@@ -195,6 +198,7 @@ class App(Adw.Application):
         add("show", lambda _a, _p: self.present_window())
         add("toggle-record", lambda _a, _p: self.toggle_record())
         add("stop-record", lambda _a, _p: self.stop_record())
+        add("record-call", lambda _a, _p: self.record_call())
         add("pause", lambda _a, p: self.pause(p.get_int32()), "i")
         add("unpause", lambda _a, _p: self.pause(None))
         add("quit", lambda _a, _p: self.request_quit())
@@ -273,6 +277,11 @@ class App(Adw.Application):
         else:
             engine.stop_now()
 
+    def record_call(self) -> None:
+        engine = self.engine
+        if engine is not None:
+            engine.record_call()
+
     def stop_record(self) -> None:
         engine = self.engine
         if engine is not None and engine.current is not None:
@@ -335,7 +344,14 @@ class App(Adw.Application):
             since = paused_until() if event.status == "paused" else None
             self._publish(event.status, event.detail, since=since)
 
+        elif isinstance(event, CallDetected):
+            self._notify_call(event.app)
+
+        elif isinstance(event, CallGone):
+            self.withdraw_notification(CALL_NOTIFICATION)
+
         elif isinstance(event, MeetingStarted):
+            self.withdraw_notification(CALL_NOTIFICATION)
             self._notify_recording(event.app)
 
         elif isinstance(event, MeetingEnded):
@@ -473,6 +489,22 @@ class App(Adw.Application):
         note.set_default_action("app.show")
         note.set_priority(Gio.NotificationPriority.NORMAL)
         self.send_notification(RECORDING_NOTIFICATION, note)
+
+    def _notify_call(self, app: str) -> None:
+        """Offer to record a call, with nothing recorded yet.
+
+        Under `STENO_CONSENT=ask` this replaces the start of a recording:
+        the people on the call have not agreed until you say they have.
+        """
+        note = Gio.Notification.new("Call detected: record?")
+        note.set_body(
+            f"{app} opened the microphone. Nothing is being recorded; "
+            "record once everyone on the call has agreed."
+        )
+        note.add_button("Record", "app.record-call")
+        note.set_default_action("app.show")
+        note.set_priority(Gio.NotificationPriority.NORMAL)
+        self.send_notification(CALL_NOTIFICATION, note)
 
     def _notify_summary(self, session_dir: Path, title: str) -> None:
         note = Gio.Notification.new(title or "Meeting summarized")

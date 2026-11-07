@@ -7,6 +7,7 @@ It starts itself. When an app opens the microphone — Zoom, Discord, Slack, a
 browser tab on Meet — it begins recording; when the mic is released it stops,
 transcribes your side, writes a summary, and pulls out what you agreed to do.
 You are not expected to press anything during a meeting, because you won't.
+Where the law wants everyone on a call to agree first, it asks instead: see [Where everyone must agree](#where-everyone-must-agree).
 
 Steno runs with **no window open** — it has to, since a meeting rarely begins
 with you opening a meeting app. The window is a view onto a listener that is
@@ -530,6 +531,12 @@ It records other people automatically. That is a deliberate choice, and getting
 their consent is yours to handle — a notification with a Stop button appears
 every time recording starts, and `steno pause`, the bar's middle click, and the
 header's pause menu all exist to make stopping easy rather than an afterthought.
+
+### Where everyone must agree
+
+In Portugal, recording another person's words that were not meant for the public is a crime without their consent, even when they were said to you, and so is using such a recording, however lawfully it was made (Código Penal art. 199(1); up to a year in prison or a fine). `STENO_CONSENT=ask` in `~/.config/steno/.env` makes a detected call record nothing: a notification says **Call detected: record?**, and its **Record** button starts the recording, which ends when the app lets go of the microphone, like one that started by itself. If nobody presses it, the notification goes when the call does and nothing is kept. `STENO_CONSENT=auto` records at once, as above.
+
+Unset, Steno asks when the machine's time zone is in `Europe/` and records anywhere else. It reads the zone at each call, so `timedatectl set-timezone` changes it without a restart. `steno toggle` still starts a recording that only you end. Asking is not consent: say you are recording, and press **Record** after everyone has agreed.
 
 Meetings recorded before v0.7 place their lines in the audio by inference,
 accurate to a second or two. `steno realign` re-times one against its own audio

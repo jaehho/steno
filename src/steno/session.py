@@ -24,10 +24,13 @@ from typing import IO
 from . import claude, config_dir, data_dir, model_default
 from .audio import capture_mic, default_sink_monitor, open_wav, record_only
 from .brief import BRIEF_FILENAME, brief_for, load_brief, proper_nouns
+from .consent import ASK, consent_from_env
 from .detect import DEFAULT_ALLOW, END_GRACE_S, START_HOLD_S, watch_meetings
 from .events import (
     AdviceDelta,
     AdviceDone,
+    CallDetected,
+    CallGone,
     EngineError,
     Event,
     Heard,
@@ -149,6 +152,7 @@ class Engine:
         start_hold_s: float = START_HOLD_S,
         end_grace_s: float = END_GRACE_S,
         notes_timeout_s: float = NOTES_TIMEOUT_S,
+        consent: Callable[[], str] = consent_from_env,
     ) -> None:
         self.emit = emit
         self.allow = allow
@@ -160,8 +164,13 @@ class Engine:
         self.start_hold_s = start_hold_s
         self.end_grace_s = end_grace_s
         self.notes_timeout_s = notes_timeout_s
+        # Asked at each detection, not once: the machine's zone can change
+        # under a running app, and the answer changes with it.
+        self.consent = consent
 
         self.current: Recording | None = None
+        # The app whose call was detected and offered, not yet recorded.
+        self.offered: str | None = None
         # Post-meeting work in flight (batch transcription, a summary). `current`
         # is already None while it runs, so a quit that only looked at `current`
         # cancelled the very work that makes a recording worth keeping.
@@ -222,11 +231,30 @@ class Engine:
 
     async def _on_detect(self, event) -> None:
         if event.kind == "start":
-            await self._start(event.app)
+            if self.current is None and self.consent() == ASK:
+                self._offer(event.app)
+            else:
+                await self._start(event.app)
+        elif self.offered is not None:
+            self._withdraw_offer()
         elif self.current is not None and not self.current.manual:
             # A manually started recording outlives the app that triggered
             # detection: the user asked for it, so only they end it.
             await self._end()
+
+    def _offer(self, app: str) -> None:
+        """Say a call started, and record nothing until told to.
+
+        Where everyone on a call must agree to its recording, starting by
+        itself would make the tool commit the offence on your behalf.
+        """
+        self.offered = app
+        log.info("call detected (%s); asking before recording", app)
+        self.emit(CallDetected(app))
+
+    def _withdraw_offer(self) -> None:
+        app, self.offered = self.offered or "", None
+        self.emit(CallGone(app))
 
     async def _guarded(self, handler, *args) -> None:
         """Run one step of the watch or command loop; a failure is not the end.
@@ -244,13 +272,16 @@ class Engine:
             self._settle()
 
     async def _serve_commands(self) -> None:
-        """Serve `start_now()` / `stop_now()` / `set_audience()` from our loop."""
+        """Serve `start_now()`, `record_call()`, `stop_now()`, `set_audience()`."""
         while True:
             await self._guarded(self._on_command, await self._commands.get())
 
     async def _on_command(self, cmd: str) -> None:
         if cmd == "start" and self.current is None:
             await self._start(MANUAL, manual=True)
+        elif cmd == "accept" and self.offered is not None:
+            app, self.offered = self.offered, None
+            await self._start(app)
         elif cmd == "stop" and self.current is not None:
             await self._end()
         elif cmd == "audience-on":
@@ -268,6 +299,14 @@ class Engine:
     def start_now(self) -> None:
         """Ask the engine to begin recording. Safe to call from another thread."""
         self._command("start")
+
+    def record_call(self) -> None:
+        """Record the call that was offered. Thread-safe.
+
+        Unlike `start_now`, the recording belongs to the call: it ends when
+        the app releases the microphone.
+        """
+        self._command("accept")
 
     def stop_now(self) -> None:
         """Ask the engine to end the current recording. Thread-safe."""

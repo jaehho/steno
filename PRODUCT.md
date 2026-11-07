@@ -130,3 +130,5 @@ transcripts stay local except for the transcription and summary calls, and
 nothing is ever shared or uploaded on the tool's own initiative. Consent is the
 user's responsibility, and the tool should make it easy to honor rather than
 easy to forget.
+
+Where the law asks for everyone's consent, as in Portugal, the tool asks before it records (`STENO_CONSENT=ask`, the default in a European time zone): a detected call raises an offer, never a recording, until the user accepts it.

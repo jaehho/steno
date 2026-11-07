@@ -21,6 +21,25 @@ class MeetingStarted:
 
 
 @dataclass(frozen=True)
+class CallDetected:
+    """An app opened the microphone and `STENO_CONSENT` is `ask`.
+
+    Nothing is being recorded. `Engine.record_call()` starts the recording,
+    which then ends when the app lets go of the mic, as one that started by
+    itself does.
+    """
+
+    app: str
+
+
+@dataclass(frozen=True)
+class CallGone:
+    """The call that was offered ended before anyone said to record it."""
+
+    app: str
+
+
+@dataclass(frozen=True)
 class Heard:
     """One utterance from the far side. Interim text is provisional and will be
     replaced by a final with the same speaker."""
@@ -102,6 +121,8 @@ class StatusChanged:
 
 Event = (
     MeetingStarted
+    | CallDetected
+    | CallGone
     | Heard
     | MeetingEnded
     | NotesStatus
