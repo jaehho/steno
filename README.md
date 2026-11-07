@@ -331,7 +331,9 @@ The transcript is not there. It is other people's speech word for word, and a
 project gets pushed, synced and read by agents, so it stays in Steno (#43):
 `steno export NAME` prints a meeting with it, and each page says so. A
 transcript page an earlier Steno wrote beside a summary is taken away the next
-time its meeting is written; `steno project-notes --all` does them all at once.
+time its meeting is written: `steno project-notes --all` does that now, and
+`steno project-notes NAME` does it for an archived meeting, which `--all`
+leaves out.
 
 The project is the one the summary picked from `~/projects` (or
 `STENO_PROJECTS_DIR`); **Set project...** in the ⋯ menu changes it, and
