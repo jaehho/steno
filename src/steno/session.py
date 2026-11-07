@@ -42,6 +42,7 @@ from .playback import session_start
 from .redact import redact_text
 from .speakers import label as speaker_label
 from .speakers import load_names
+from .state import MANUAL
 from .summarize import (
     META_FILENAME,
     load_meta,
@@ -249,7 +250,7 @@ class Engine:
 
     async def _on_command(self, cmd: str) -> None:
         if cmd == "start" and self.current is None:
-            await self._start("manual", manual=True)
+            await self._start(MANUAL, manual=True)
         elif cmd == "stop" and self.current is not None:
             await self._end()
         elif cmd == "audience-on":

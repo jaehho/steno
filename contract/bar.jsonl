@@ -1,0 +1,6 @@
+{"text": "3m", "alt": "recording", "class": "recording", "tooltip": "Recording \u00b7 manual \u00b7 3m", "percentage": 0, "manual": true}
+{"text": "3m", "alt": "recording", "class": "recording", "tooltip": "Recording \u00b7 Zoom \u00b7 3m", "percentage": 0, "manual": false}
+{"text": "\u00b7\u00b7\u00b7", "alt": "finalizing", "class": "finalizing", "tooltip": "Finishing up \u00b7 20261012-100000", "percentage": 0, "manual": false}
+{"text": "", "alt": "paused", "class": "paused", "tooltip": "Paused \u00b7 63m left", "percentage": 0, "manual": false}
+{"text": "", "alt": "idle", "class": "idle", "tooltip": "Listening for a meeting", "percentage": 0, "manual": false}
+{"text": "", "alt": "off", "class": "off", "tooltip": "Steno is not running", "percentage": 0, "manual": false}
