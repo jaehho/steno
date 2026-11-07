@@ -90,17 +90,29 @@ class TestHost(unittest.TestCase):
         self.assertEqual(request.url.params.get("mip_opt_out"), "true")
 
 
+# An API address, global or regional. A link to Deepgram's console or
+# docs in help text is not a request and may stay.
+API_URL = re.compile(r"\w+://api\.(?:[\w-]+\.)*deepgram\.com")
+
+
 class TestNoOtherDeepgramCall(unittest.TestCase):
     """A URL written by hand would skip the opt-out and the EU pin."""
 
     def test_no_module_writes_a_deepgram_url(self):
-        url = re.compile(r"\w+://[\w.-]*deepgram\.com")
         writing = sorted(
             path.relative_to(SRC).as_posix()
             for path in SRC.rglob("*.py")
-            if url.search(path.read_text(encoding="utf-8"))
+            if API_URL.search(path.read_text(encoding="utf-8"))
         )
         self.assertEqual(writing, [])
+
+    def test_pattern_is_api_hosts_only(self):
+        for url in ("https://api.deepgram.com/v1/listen",
+                    "wss://api.eu.deepgram.com/v1/listen"):
+            self.assertRegex(url, API_URL)
+        for url in ("https://console.deepgram.com/",
+                    "https://developers.deepgram.com/docs"):
+            self.assertNotRegex(url, API_URL)
 
 
 if __name__ == "__main__":
