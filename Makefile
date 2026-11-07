@@ -1,6 +1,7 @@
 # steno - listens to your meetings, hands you notes and todos.
 
-.PHONY: help run listen test test-live lint sources watch venv link unlink \
+.PHONY: help run listen test test-live test-venv lint sources watch venv \
+	venv-check link unlink \
 	desktop undesktop \
 	hypr unhypr autostart unautostart waybar unwaybar \
 	install uninstall package aur release status clean
@@ -12,19 +13,22 @@ help:            ## this list
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) \
 	  | sed 's/:.*## /\t/' | expand -t14
 
-run:             ## the window, from the source tree
+run: venv-check  ## the window, from the source tree
 	uv run steno gui
 
-listen:          ## background listener, no window (what autostart runs)
+listen: venv-check  ## background listener, no window (what autostart runs)
 	uv run steno gui --background
 
-test: test-live  ## headless suite - no audio, no network, no display
+test: venv-check test-live test-venv  ## headless suite - no audio, no network, no display
 	uv run python -m unittest discover -s tests -t . -v
 
 test-live:       ## the launcher runs the checkout's .venv, or STENO_SRC's
 	scripts/test-steno-live
 
-lint:            ## ruff
+test-venv:       ## .venv survives a Python patch upgrade; make targets check it
+	scripts/test-steno-venv
+
+lint: venv-check  ## ruff
 	uv run ruff check src tests packaging
 
 venv:            ## (re)create .venv - needed after moving the checkout
@@ -39,6 +43,12 @@ venv:            ## (re)create .venv - needed after moving the checkout
 	  gi.require_version("Gst", "1.0"); \
 	  from gi.repository import Adw, Gst, Gtk; \
 	  print("ok: window and playback are importable")'
+
+# Before every `uv run`: after a patch upgrade of the system Python, uv
+# would throw .venv away and rebuild it without the system packages
+# (#41). The check writes the new version in; anything else it refuses.
+venv-check:
+	@scripts/steno-venv-check
 
 link:            ## put `steno` on PATH, running from this checkout (no sudo)
 	@mkdir -p $(PREFIX)/bin
@@ -81,23 +91,23 @@ undesktop:       ## remove the launcher entry and icon
 	rm -f $(DATADIR)/applications/dev.jaeho.Steno.desktop \
 		$(DATADIR)/icons/hicolor/scalable/apps/dev.jaeho.Steno.svg
 
-hypr:            ## start listening with the Hyprland session (this machine)
+hypr: venv-check  ## start listening with the Hyprland session (this machine)
 	uv run python packaging/install-hypr.py
 
-unhypr:          ## stop starting with the session
+unhypr: venv-check  ## stop starting with the session
 	uv run python packaging/install-hypr.py --remove
 
-autostart:       ## start at login (same as the window menu's toggle)
+autostart: venv-check  ## start at login (same as the window menu's toggle)
 	uv run steno autostart on
 
-unautostart:     ## stop starting at login
+unautostart: venv-check  ## stop starting at login
 	uv run steno autostart off
 	rm -f $(HOME)/.config/autostart/dev.jaeho.MeetingCopilot.desktop
 
-waybar:          ## add the recording indicator to waybar (backs up your config)
+waybar: venv-check  ## add the recording indicator to waybar (backs up your config)
 	uv run python packaging/install-waybar.py
 
-unwaybar:        ## take the indicator back out
+unwaybar: venv-check  ## take the indicator back out
 	uv run python packaging/install-waybar.py --remove
 
 install:         ## live launcher and entry in ~/.local for this user (no sudo)
@@ -127,11 +137,11 @@ release:         ## tag v$(VERSION) so a non-`-git` package can pin a version
 	fi
 	@echo "keep packaging/PKGBUILD pkgver in step with pyproject.toml"
 
-status:          ## is it running, and what does the bar say
+status: venv-check  ## is it running, and what does the bar say
 	@uv run steno status
 	@printf 'bar:      '; uv run steno bar --once
 
-watch:           ## print apps as they open the mic, to tune --allow/--deny
+watch: venv-check  ## print apps as they open the mic, to tune --allow/--deny
 	uv run steno watch
 
 sources:         ## what's available to capture

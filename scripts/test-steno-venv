@@ -1,0 +1,151 @@
+#!/bin/sh
+# What steno-venv-check must do (#41): after a patch upgrade of the
+# system Python, write the new version into pyvenv.cfg, so the `uv run`
+# after it keeps the venv on /usr/bin with system site packages; refuse,
+# naming make venv and changing nothing, a venv on another minor version
+# or one make venv did not build; and run before `uv run` in every make
+# target that calls it.
+#
+# Every venv here is a scratch one, in a project with no dependencies.
+# The checkout's .venv is never touched, and its Makefile is only
+# dry-run (make -n), so none of its targets runs.
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# With either set, `uv run` would skip the check this test is about.
+unset UV_NO_SYNC UV_PROJECT_ENVIRONMENT
+# A rebuild, if one happens, must not download a Python.
+export UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never
+
+die() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+project="$tmp/project"
+venv="$project/.venv"
+mkdir -p "$project"
+cat >"$project/pyproject.toml" <<'EOF'
+[project]
+name = "scratch"
+version = "0"
+requires-python = ">=3.11"
+dependencies = []
+EOF
+
+# A venv as `make venv` builds it, recording $1 as its Python version.
+venv_at() {
+  rm -rf "$venv"
+  (cd "$project" &&
+    uv venv -q --python /usr/bin/python --system-site-packages) ||
+    die "uv venv failed"
+  sed -i "s/^version_info = .*/version_info = $1/" "$venv/pyvenv.cfg"
+}
+
+cfg() {
+  sed -n "s/^$1 = //p" "$venv/pyvenv.cfg"
+}
+
+# Every file in the venv, with its inode and modification time.
+files() {
+  find "$venv" -printf '%i %T@ %p\n' | sort
+}
+
+# $1 is refused, with a message naming make venv, and the venv is left
+# exactly as it was.
+refused() {
+  before=$(files)
+  if out=$("$here/steno-venv-check" "$venv" 2>&1); then
+    die "$1 passed the check"
+  fi
+  case $out in
+    *"run make venv"*) ;;
+    *) die "$1: no word of make venv; got: $out" ;;
+  esac
+  [ "$(files)" = "$before" ] || die "$1 was changed"
+}
+
+running=$(/usr/bin/python -I -c \
+  'import platform; print(platform.python_version())')
+major=${running%%.*}
+rest=${running#*.}
+minor=${rest%%.*}
+# Another patch of the same minor: .0, or .1 when the system is on .0.
+patch=$major.$minor.0
+[ "$patch" != "$running" ] || patch=$major.$minor.1
+
+# A patch upgrade: the check writes the new version and says so once,
+# and uv then keeps the venv as make venv built it.
+venv_at "$patch"
+out=$("$here/steno-venv-check" "$venv" 2>&1) ||
+  die "a patch upgrade was refused: $out"
+case $out in
+  *"now records Python $running (was $patch)"*) ;;
+  *) die "no line saying what changed; got: $out" ;;
+esac
+[ "$(cfg version_info)" = "$running" ] ||
+  die "version_info is $(cfg version_info), not $running"
+if ! out=$(cd "$project" && uv run python -c pass 2>&1); then
+  die "uv run failed: $out"
+fi
+case $out in
+  *"Removed virtual environment"*) die "uv rebuilt the venv: $out" ;;
+esac
+[ "$(cfg home)" = /usr/bin ] || die "uv run moved home to $(cfg home)"
+[ "$(cfg include-system-site-packages)" = true ] ||
+  die "uv run turned system site packages off"
+[ "$(cfg version_info)" = "$running" ] ||
+  die "uv run left version_info at $(cfg version_info)"
+
+# A venv that matches is left alone, silently.
+before=$(files)
+out=$("$here/steno-venv-check" "$venv" 2>&1) ||
+  die "a matching venv was refused: $out"
+[ -z "$out" ] || die "a matching venv printed: $out"
+[ "$(files)" = "$before" ] || die "a matching venv was rewritten"
+
+# A minor upgrade moves site-packages to another lib/pythonX.Y: only a
+# rebuild helps, and that is the owner's to start.
+venv_at "$major.$((minor - 1)).0"
+refused "a venv built for the minor version before"
+
+# Not the venv make venv builds: uv's own Python, or no system packages.
+venv_at "$running"
+sed -i 's|^home = .*|home = /opt/elsewhere/bin|' "$venv/pyvenv.cfg"
+refused "a venv on another Python"
+venv_at "$running"
+sed -i 's/^\(include-system-site-packages\) = .*/\1 = false/' \
+  "$venv/pyvenv.cfg"
+refused "a venv without system site packages"
+rm -rf "$venv"
+if out=$("$here/steno-venv-check" "$venv" 2>&1); then
+  die "a missing venv passed the check"
+fi
+case $out in
+  *"run make venv"*) ;;
+  *) die "a missing venv: no word of make venv; got: $out" ;;
+esac
+
+# Every make target whose recipe calls `uv run` runs the check before
+# it. make -n prints the recipes, prerequisites' first, and runs none.
+targets=$(awk '
+  /^[a-z-]+:/ { t = $1; sub(/:.*/, "", t) }
+  /^\t/ && !/^\t@?#/ && /uv run/ { print t }
+' "$here/../Makefile" | sort -u)
+echo "$targets" | grep -qx lint ||
+  die "found no make target that calls uv run"
+for t in $targets; do
+  env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
+    make -n --no-print-directory -C "$here/.." "$t" >"$tmp/dry" 2>&1 ||
+    die "make -n $t failed: $(cat "$tmp/dry")"
+  awk '
+    /steno-venv-check/ && !c { c = NR }
+    /uv run/ && !u { u = NR }
+    END { exit !(c && c < u) }
+  ' "$tmp/dry" || die "make $t runs uv run without steno-venv-check first"
+done
+
+echo "steno-venv: ok"
