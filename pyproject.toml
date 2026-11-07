@@ -14,6 +14,18 @@ dependencies = [
 # PipeWire canceller was installed. Imported where it is used, so the rest of
 # the tool runs without it.
 clean = ["numpy>=1.24"]
+# `STENO_ASR=local` and `steno debrief`: batch transcription on this
+# machine with faster-whisper (localasr.py). The model is read from the
+# Hugging Face cache and never downloaded by steno.
+local = ["faster-whisper>=1.2"]
+# The same on an NVIDIA GPU. ctranslate2 wants CUDA 12's cuBLAS and cuDNN 9,
+# which a system on CUDA 13 does not have; localasr.preload_cuda12 loads
+# these wheels' copies. About 1.3 GB.
+local-gpu = [
+    "faster-whisper>=1.2",
+    "nvidia-cublas-cu12>=12.4",
+    "nvidia-cudnn-cu12>=9.1,<10",
+]
 
 [project.scripts]
 steno = "steno.cli:main"

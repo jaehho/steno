@@ -11,11 +11,16 @@ It costs one transcription pass per track, so it asks before spending anything.
 
 It is also a quality upgrade for the far side: the live stream was transcribed
 in fragments as it arrived, while this sees the whole conversation at once.
+
+With STENO_ASR=local the pass runs on this machine instead (localasr.py):
+nothing is uploaded and nothing is spent, and Whisper writes spoken
+alphanumeric names ("X ten a") the way they are written ("X10a").
 """
 from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -24,7 +29,7 @@ from pathlib import Path
 from .playback import TRACKS, audio_duration, recorded_offset, session_start, track_path
 from .session import write_transcripts
 from .summarize import load_records, transcript_path
-from .transcribe import transcribe_file
+from .transcribe import asr_backend, asr_label, transcribe_file
 
 BACKUP_SUFFIX = ".before-realign.jsonl"
 
@@ -40,10 +45,12 @@ class Plan:
     session_dir: Path
     minutes: float
     already_aligned: bool
+    # Nothing when the pass runs on this machine.
+    per_minute: float = COST_PER_MINUTE
 
     @property
     def cost(self) -> float:
-        return self.minutes * COST_PER_MINUTE
+        return self.minutes * self.per_minute
 
     @property
     def name(self) -> str:
@@ -76,11 +83,15 @@ def format_plan(plans: list[Plan]) -> str:
         + ("  (already aligned)" if p.already_aligned else "")
         for p in plans
     ]
-    lines.append(f"  {'total':<15} {total:6.1f} min  ~${total * COST_PER_MINUTE:.2f}")
+    lines.append(f"  {'total':<15} {total:6.1f} min  ~${sum(p.cost for p in plans):.2f}")
     return "\n".join(lines)
 
 
-async def realign_session(session_dir: Path, started_at: float | None = None) -> int:
+async def realign_session(
+    session_dir: Path,
+    started_at: float | None = None,
+    backend: str | None = None,
+) -> int:
     """Rewrite one session's transcript with exact offsets. Returns line count.
 
     The previous transcript is kept beside the new one. This replaces words the
@@ -100,7 +111,9 @@ async def realign_session(session_dir: Path, started_at: float | None = None) ->
         path = track_path(session_dir, speaker)
         if not path.is_file():
             continue
-        records.extend(await transcribe_file(path, anchor, speaker))
+        records.extend(
+            await transcribe_file(path, anchor, speaker, backend=backend)
+        )
 
     if not records:
         msg = f"nothing transcribed from {session_dir}"
@@ -109,7 +122,8 @@ async def realign_session(session_dir: Path, started_at: float | None = None) ->
     records.sort(key=lambda r: r.get("offset", 0.0))
     _back_up(session_dir)
     write_transcripts(session_dir, records)
-    _stamp(session_dir, anchor, len(records))
+    engine = asr_label(backend or asr_backend(os.environ), os.environ)
+    _stamp(session_dir, anchor, len(records), engine)
     return len(records)
 
 
@@ -137,7 +151,7 @@ def _back_up(session_dir: Path) -> Path | None:
     return backup
 
 
-def _stamp(session_dir: Path, anchor: float, lines: int) -> None:
+def _stamp(session_dir: Path, anchor: float, lines: int, engine: str) -> None:
     meta_path = session_dir / "meta.json"
     try:
         meta = json.loads(meta_path.read_text())
@@ -149,6 +163,8 @@ def _stamp(session_dir: Path, anchor: float, lines: int) -> None:
         "started_at": anchor,
         "realigned_at": time.time(),
         "lines": lines,
+        # Which engine wrote these words, since either may have.
+        "asr": engine,
     })
     # It is no longer an inference: every line now carries a measured offset.
     meta.pop("started_at_derived", None)

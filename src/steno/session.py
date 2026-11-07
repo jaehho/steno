@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import shutil
 import time
 from collections.abc import Callable
@@ -53,7 +54,13 @@ from .summarize import (
     summarize_session,
     update_meta,
 )
-from .transcribe import Utterance, stream_speaker, transcribe_file
+from .transcribe import (
+    Utterance,
+    asr_backend,
+    asr_label,
+    stream_speaker,
+    transcribe_file,
+)
 
 PAUSE_FILENAME = "paused-until"
 # One notes job (mic pass + summary) gets this long before it is cut off.
@@ -603,8 +610,15 @@ class Engine:
         if mic_done:
             # Only now, with your lines on disk: a kill before this point
             # leaves the meeting marked as missing your side.
+            changes: dict[str, object] = {"mic_pending": None}
+            if need_mic:
+                # Which engine wrote your side; the cost estimate reads it.
+                with contextlib.suppress(ValueError):
+                    changes["asr"] = asr_label(
+                        asr_backend(os.environ), os.environ
+                    )
             with contextlib.suppress(OSError):
-                update_meta(session_dir, mic_pending=None)
+                update_meta(session_dir, **changes)
 
         if not self.summarize:
             return

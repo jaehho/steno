@@ -7,6 +7,9 @@
 	install uninstall package aur release status clean
 
 PREFIX  ?= $(HOME)/.local
+# Optional extras `make venv` installs; `uv sync` removes any it is not
+# given. `local` transcribes on this machine; `local-gpu` adds CUDA 12.
+EXTRAS  ?= local
 DATADIR ?= $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
 
 help:            ## this list
@@ -37,7 +40,7 @@ venv:            ## (re)create .venv - needed after moving the checkout
 	@# site-packages of whichever python uv picks, and uv prefers its own
 	@# managed build, which has neither python-gobject nor numpy.
 	@uv venv --python /usr/bin/python --system-site-packages
-	@uv sync
+	@uv sync $(EXTRAS:%=--extra %)
 	@scripts/steno-venv-check
 	@.venv/bin/python -c 'import gi; \
 	  gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1"); \

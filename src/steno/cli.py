@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import datetime as _dt
 import json as _json
 import logging
@@ -28,6 +29,7 @@ from . import (
     __version__,
     config_dir,
     data_dir,
+    debrief,
     icon_host_report,
     icon_theme_dir,
     log,
@@ -79,6 +81,7 @@ from .summarize import (
     summarize_session,
     transcript_path,
 )
+from .transcribe import asr_backend
 
 ENV_TEMPLATE = """\
 # steno config - required keys
@@ -553,12 +556,23 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _realigns_here() -> bool:
+    """True when STENO_ASR=local; exits when Deepgram is needed and has no key."""
+    try:
+        local = asr_backend(os.environ) == "local"
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    if not local and not os.environ.get("DEEPGRAM_API_KEY"):
+        print(f"Missing DEEPGRAM_API_KEY (see {config_dir() / '.env'})", file=sys.stderr)
+        sys.exit(1)
+    return local
+
+
 def cmd_realign(args: argparse.Namespace) -> None:
     """Re-time old sessions against their audio, after saying what it costs."""
     load_dotenv(config_dir() / ".env")
-    if not os.environ.get("DEEPGRAM_API_KEY"):
-        print(f"Missing DEEPGRAM_API_KEY (see {config_dir() / '.env'})", file=sys.stderr)
-        sys.exit(1)
+    local = _realigns_here()
     if args.all:
         targets = _leave_out_archived(
             [s for s in iter_sessions(args.dir) if has_audio(s)]
@@ -576,11 +590,16 @@ def cmd_realign(args: argparse.Namespace) -> None:
         return
 
     plans = [plan(t) for t in targets]
-    print(f"re-timing {len(plans)} session{'s' if len(plans) != 1 else ''}:")
+    if local:
+        plans = [dataclasses.replace(p, per_minute=0.0) for p in plans]
+    where = " on this machine" if local else ""
+    print(f"re-timing {len(plans)} session{'s' if len(plans) != 1 else ''}{where}:")
     print(format_plan(plans))
     if args.dry_run:
         return
-    if not args.yes and not _confirm("spend that? [y/N] "):
+    question = ("replace their transcripts? [y/N] " if local
+                else "spend that? [y/N] ")
+    if not args.yes and not _confirm(question):
         print("nothing done")
         return
 
@@ -610,6 +629,97 @@ def _confirm(prompt: str) -> bool:
     except (EOFError, KeyboardInterrupt):
         print()
         return False
+
+
+def cmd_debrief(args: argparse.Namespace) -> None:
+    """Record (or import) a spoken debrief, transcribe it here, summarize it."""
+    load_dotenv(config_dir() / ".env")
+    try:
+        backend = asr_backend(os.environ, default="local")
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    root = args.dir if args.dir is not None else data_dir() / "sessions"
+    if args.source is not None:
+        session_dir, started_at = _import_debrief(args.source, root)
+    else:
+        session_dir, started_at = _record_debrief(root, args.max)
+    seconds = debrief.wav_seconds(session_dir / debrief.TRACK)
+    where = "on this machine" if backend == "local" else f"with {backend}"
+    progress = _progress_line(
+        f"  {session_dir.name}: transcribing {seconds:.0f} s {where}...")
+    began = time.monotonic()
+    try:
+        lines = asyncio.run(debrief.transcribe(session_dir, started_at, backend))
+    except Exception as e:
+        _replace_line(f"  {session_dir.name}: transcription failed - {e}", progress)
+        print(f"    the recording is kept in {session_dir}", file=sys.stderr)
+        sys.exit(1)
+    took = time.monotonic() - began
+    _replace_line(
+        f"  {session_dir.name}: {lines} lines from {seconds:.0f} s of audio "
+        f"in {took:.1f} s {where}", progress)
+    if args.no_summary or not lines:
+        print(f"    -> {session_dir / 'transcript.txt'}")
+        return
+    if err := check_ready():
+        print(f"{err} -- the summary needs it; "
+              f"`steno summarize {session_dir.name}` later.", file=sys.stderr)
+        sys.exit(1)
+    if not _summarize_one(session_dir, model_default(), load_brief(_brief_path(args))):
+        sys.exit(1)
+
+
+def _import_debrief(source: Path, root: Path) -> tuple[Path, float]:
+    """A debrief recorded elsewhere (a phone memo), as a new session.
+
+    Dated by when the file was last written, less its length: a memo is
+    saved when it stops.
+    """
+    if not source.is_file():
+        print(f"no such file: {source}", file=sys.stderr)
+        sys.exit(1)
+    staging = root / f".import-{os.getpid()}.wav"
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        seconds = debrief.convert_audio(source, staging)
+    except (OSError, subprocess.CalledProcessError) as e:
+        staging.unlink(missing_ok=True)
+        print(f"could not read {source}: {e}", file=sys.stderr)
+        sys.exit(1)
+    started_at = source.stat().st_mtime - seconds
+    try:
+        session_dir = debrief.create_session(root, started_at)
+    except FileExistsError as e:
+        staging.unlink(missing_ok=True)
+        print(f"a session already exists for that time: {e.filename}",
+              file=sys.stderr)
+        sys.exit(1)
+    staging.replace(session_dir / debrief.TRACK)
+    return session_dir, started_at
+
+
+def _record_debrief(root: Path, max_s: float) -> tuple[Path, float]:
+    """Record the mic until Enter (or `max_s`), as a new session."""
+    started_at = time.time()
+    session_dir = debrief.create_session(root, started_at)
+
+    async def until_enter() -> str:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        # The reader thread outlives a timeout; it only ever sets the event.
+        loop.run_in_executor(None, lambda: (sys.stdin.readline(),
+                                            loop.call_soon_threadsafe(stop.set)))
+        return await debrief.record(session_dir / debrief.TRACK, stop, max_s)
+
+    print(f"Debrief: talk through the meeting. Enter stops "
+          f"(at most {max_s / 60:.0f} min). Only your mic is recorded.")
+    try:
+        source = asyncio.run(until_enter())
+    except KeyboardInterrupt:
+        source = "the default mic"
+    print(f"  recorded from {source}")
+    return session_dir, started_at
 
 
 def _recording_session(root: Path | None) -> Path | None:
@@ -1486,6 +1596,22 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     p_realign.add_argument("--yes", action="store_true", help="Skip the prompt")
     p_realign.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_realign.set_defaults(func=cmd_realign)
+
+    p_debrief = sub.add_parser(
+        "debrief",
+        help="Record yourself recounting a meeting you just left; "
+             "transcribed on this machine",
+    )
+    p_debrief.add_argument("source", nargs="?", type=Path, default=None,
+                           help="An audio file to import instead of recording "
+                                "(a phone's voice memo)")
+    p_debrief.add_argument("--max", type=_parse_duration,
+                           default=debrief.MAX_SECONDS,
+                           help="Stop recording after this long (default 15m)")
+    p_debrief.add_argument("--no-summary", action="store_true",
+                           help="Transcribe only")
+    p_debrief.add_argument("--dir", type=Path, default=None, help="Sessions directory")
+    p_debrief.set_defaults(func=cmd_debrief)
 
     p_clean = sub.add_parser(
         "clean-echo",

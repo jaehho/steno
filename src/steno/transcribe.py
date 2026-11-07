@@ -1,10 +1,11 @@
-"""Deepgram streaming and transcript-level helpers."""
+"""Deepgram streaming, batch passes (Deepgram or local) and transcript helpers."""
 from __future__ import annotations
 
 import asyncio
 import json
 import os
 import wave
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
@@ -13,6 +14,7 @@ import httpx
 import websockets
 
 from .audio import CHUNK_BYTES, SAMPLE_RATE, spawn_parec, stop_parec
+from .localasr import config_from_env, transcribe_file_local
 
 # Deepgram closes an idle socket after ~10s of silence, and a meeting where
 # nobody speaks for ten seconds is a normal meeting.
@@ -193,12 +195,37 @@ def _wav_seconds(wav: wave.Wave_write | None) -> float:
         return 0.0
 
 
-async def transcribe_file(
+# Which engine does the batch passes (your side after a call, `steno
+# realign`, a debrief): Deepgram's prerecorded API, or faster-whisper on
+# this machine. The live far-side stream is Deepgram's either way.
+ASR_ENV = "STENO_ASR"
+BACKENDS = ("deepgram", "local")
+
+
+def asr_backend(environ: Mapping[str, str], default: str = "deepgram") -> str:
+    """The batch engine `environ` asks for, `default` when it names none."""
+    name = environ.get(ASR_ENV, "").strip().lower() or default
+    if name not in BACKENDS:
+        msg = f"{ASR_ENV}={name!r}; use one of {', '.join(BACKENDS)}"
+        raise ValueError(msg)
+    return name
+
+
+def asr_label(backend: str, environ: Mapping[str, str]) -> str:
+    """What meta.json records as the engine behind a batch pass."""
+    if backend == "local":
+        return config_from_env(environ).label
+    return "deepgram:nova-3"
+
+
+async def transcribe_file(  # noqa: PLR0913 - the batch pass's full config
     path: Path,
     started_at: float,
     speaker: str,
     timeout_s: float = 600.0,
     keyterms: list[str] | None = None,
+    *,
+    backend: str | None = None,
 ) -> list[dict]:
     """Batch-transcribe a finished WAV into transcript records.
 
@@ -208,7 +235,14 @@ async def transcribe_file(
     each utterance's *end*, matching the live path — where a line's timestamp is
     when Deepgram finalized it, not when the speaker began — while `offset`
     keeps the exact position in the file, for playback.
+
+    `backend` "local" does the same pass on this machine (localasr.py) and
+    returns the same rows; None takes `STENO_ASR`. Keyterms are Deepgram's:
+    Whisper spells alphanumeric names unprompted, and a vocabulary prompt
+    made a long meeting worse (it dropped names), so it is given none.
     """
+    if (backend or asr_backend(os.environ)) == "local":
+        return await transcribe_file_local(path, started_at, speaker)
     api_key = os.environ["DEEPGRAM_API_KEY"]
     params: list[tuple[str, str]] = [
         ("model", "nova-3"),
