@@ -130,6 +130,8 @@ class Tray:
             self._emit("NewIcon")
         if old["tooltip"] != self.view["tooltip"]:
             self._emit("NewToolTip")
+        if old["status"] != self.view["status"]:
+            self._emit("NewStatus", GLib.Variant("(s)", (self.view["status"],)))
         self._sync_menu()
 
     def _emit(self, signal: str, params: GLib.Variant | None = None) -> None:
@@ -147,7 +149,7 @@ class Tray:
             "Category": GLib.Variant("s", "ApplicationStatus"),
             "Id": GLib.Variant("s", "steno"),
             "Title": GLib.Variant("s", "Steno"),
-            "Status": GLib.Variant("s", "Active"),
+            "Status": GLib.Variant("s", view["status"]),
             "IconName": GLib.Variant("s", view["icon"]),
             "IconThemePath": GLib.Variant("s", str(icon_dir())),
             "ToolTip": GLib.Variant(

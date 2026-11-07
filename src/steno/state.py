@@ -178,6 +178,10 @@ def tray_view(status: str, detail: str = "") -> dict:
     recording = status == "recording"
     return {
         "icon": TRAY_ICONS.get(status, TRAY_ICONS["idle"]),
+        # NeedsAttention while recording: a host that greys resting tray
+        # icons (or hides them in a drawer) still shows a recording, which
+        # the icon's colour alone no longer does once it is desaturated.
+        "status": "NeedsAttention" if recording else "Active",
         "tooltip": bar_json({"status": status, "detail": detail})["tooltip"],
         "record_label": "Stop recording" if recording else "Start recording",
         "can_record": status != "finalizing",
