@@ -78,9 +78,9 @@ class TestRecordingNotice(unittest.TestCase):
         app._install_actions()
         self.app = app
 
-    def started(self, app: str = APP, *, kept: bool = True) -> Note:
+    def started(self, app: str = APP, *, keep_at_end: bool = True) -> Note:
         self.app._on_event(
-            MeetingStarted(Path("/nonexistent"), app, 0.0, app == "manual", kept)
+            MeetingStarted(Path("/nonexistent"), app, 0.0, app == "manual", keep_at_end)
         )
         return self.sent["recording"]
 
@@ -97,7 +97,7 @@ class TestRecordingNotice(unittest.TestCase):
         self.assertEqual(note.buttons, [("Stop", "app.stop-record")])
 
     def test_a_call_not_kept_yet_says_it_will_be_deleted(self):
-        note = self.started(kept=False)
+        note = self.started(keep_at_end=False)
         self.assertEqual(note.title, "Recording: keep it?")
         self.assertIn("deleted when the call ends", note.body)
         self.assertEqual(note.buttons, [
@@ -106,7 +106,7 @@ class TestRecordingNotice(unittest.TestCase):
         ])
 
     def test_keeping_turns_it_into_the_plain_notice(self):
-        self.started(kept=False)
+        self.started(keep_at_end=False)
         self.app._on_event(MeetingKept(Path("/nonexistent"), APP))
         note = self.sent["recording"]
         self.assertEqual(note.title, "Recording")

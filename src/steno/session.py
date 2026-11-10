@@ -122,7 +122,7 @@ class Recording:
     manual: bool = False
     # False for a call recorded under `STENO_CONSENT=ask` until you keep
     # it: it is deleted when it ends.
-    kept: bool = True
+    keep_at_end: bool = True
     tasks: list[asyncio.Task] = field(default_factory=list)
     handles: list = field(default_factory=list)
     transcript_jsonl: IO[str] | None = None
@@ -237,7 +237,7 @@ class Engine:
             # Recorded from its first second either way, so the start of a
             # meeting is never lost to a question; `ask` only changes what
             # happens to it at the end if nobody kept it.
-            await self._start(event.app, kept=self.consent() != ASK)
+            await self._start(event.app, keep_at_end=self.consent() != ASK)
         elif self.current is not None and not self.current.manual:
             # A manually started recording outlives the app that triggered
             # detection: the user asked for it, so only they end it.
@@ -319,14 +319,16 @@ class Engine:
             return
         self._loop.call_soon_threadsafe(self._commands.put_nowait, cmd)
 
-    async def _start(self, app: str, manual: bool = False, kept: bool = True) -> None:
+    async def _start(
+        self, app: str, manual: bool = False, keep_at_end: bool = True
+    ) -> None:
         if self.current is not None:
             return
         started_at = time.time()
         session_dir = new_session_dir(self.root, started_at)
         rec = Recording(
             session_dir=session_dir, started_at=started_at, app=app, manual=manual,
-            kept=kept or manual,
+            keep_at_end=keep_at_end or manual,
         )
         self.current = rec
         self.transcript = []
@@ -371,7 +373,7 @@ class Engine:
                 asyncio.create_task(self._stream_them(sink_mon, them_wav)),
                 asyncio.create_task(self._pump()),
             ]
-            self.emit(MeetingStarted(session_dir, app, started_at, manual, rec.kept))
+            self.emit(MeetingStarted(session_dir, app, started_at, manual, rec.keep_at_end))
             self._status("recording", app)
             if self._audience:
                 self._start_you_display()
@@ -396,7 +398,7 @@ class Engine:
         rec = self.current
         if rec is None:
             return
-        if not rec.kept:
+        if not rec.keep_at_end:
             await self._discard()
             return
         # Counted before `current` clears, so there is no instant at which a
@@ -426,9 +428,9 @@ class Engine:
 
     def _keep(self) -> None:
         rec = self.current
-        if rec is None or rec.kept:
+        if rec is None or rec.keep_at_end:
             return
-        rec.kept = True
+        rec.keep_at_end = True
         log.info("keeping %s", rec.session_dir.name)
         self.emit(MeetingKept(rec.session_dir, rec.app))
 

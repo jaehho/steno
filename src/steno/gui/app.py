@@ -355,7 +355,7 @@ class App(Adw.Application):
             self._publish(event.status, event.detail, since=since)
 
         elif isinstance(event, MeetingStarted):
-            self._notify_recording(event.app, kept=event.kept)
+            self._notify_recording(event.app, keep_at_end=event.keep_at_end)
 
         elif isinstance(event, MeetingKept):
             self._notify_recording(event.app)
@@ -481,7 +481,7 @@ class App(Adw.Application):
 
     # ------------------------------------------------------------ notifications
 
-    def _notify_recording(self, app: str, *, kept: bool = True) -> None:
+    def _notify_recording(self, app: str, *, keep_at_end: bool = True) -> None:
         """Say it out loud, every time, with the stop button attached.
 
         Recording other people without their knowing is the one thing this tool
@@ -492,18 +492,18 @@ class App(Adw.Application):
         """
         # "manual" is the engine's label for a start you asked for.
         manual = app == "manual"
-        note = Gio.Notification.new("Recording" if kept else "Recording: keep it?")
+        note = Gio.Notification.new("Recording" if keep_at_end else "Recording: keep it?")
         if manual:
             note.set_body("Recording started.")
-        elif kept:
+        elif keep_at_end:
             note.set_body(f"{app} opened the microphone.")
         else:
             note.set_body(
                 f"{app} opened the microphone. The recording is deleted when "
                 "the call ends unless you keep it."
             )
-        note.add_button("Stop" if kept else "Keep",
-                        "app.stop-record" if kept else "app.keep-record")
+        note.add_button("Stop" if keep_at_end else "Keep",
+                        "app.stop-record" if keep_at_end else "app.keep-record")
         if not manual:
             note.add_button("Don't record", "app.discard-record")
         note.set_default_action("app.show")

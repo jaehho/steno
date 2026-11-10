@@ -79,7 +79,7 @@ class TestBusy(unittest.TestCase):
         return SimpleNamespace(
             stop=lambda: None, transcript_jsonl=None,
             started_at=time.time() - 60, session_dir=self.root, app="zoom",
-            kept=True,
+            keep_at_end=True,
             keyterms=[],
         )
 

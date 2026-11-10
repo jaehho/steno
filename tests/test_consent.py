@@ -130,7 +130,7 @@ class TestKeepOrDiscard(unittest.TestCase):
         meta = json.loads((made / "meta.json").read_text())
         self.assertEqual((meta["app"], meta["manual"]), (APP, False))
         [started] = self.of(MeetingStarted)
-        self.assertTrue(started.kept)
+        self.assertTrue(started.keep_at_end)
         self.run_steps("end")
         self.assertEqual(self.sessions(), [made])
         self.assertEqual(len(self.of(MeetingEnded)), 1)
@@ -155,7 +155,7 @@ class TestKeepOrDiscard(unittest.TestCase):
         self.run_steps("start")
         self.assertEqual(len(self.sessions()), 1)
         [started] = self.of(MeetingStarted)
-        self.assertFalse(started.kept)
+        self.assertFalse(started.keep_at_end)
 
     def test_ask_deletes_a_call_nobody_kept_when_it_ends(self):
         self.mode = "ask"
@@ -177,7 +177,7 @@ class TestKeepOrDiscard(unittest.TestCase):
         self.mode = "ask"
         self.run_steps("toggle", "end", "stop")
         [started] = self.of(MeetingStarted)
-        self.assertTrue(started.kept)
+        self.assertTrue(started.keep_at_end)
         self.assertEqual(len(self.sessions()), 1)
         self.assertEqual(len(self.of(MeetingEnded)), 1)
 
