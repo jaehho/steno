@@ -82,6 +82,10 @@ ENV_TEMPLATE = """\
 # steno config - required keys
 DEEPGRAM_API_KEY=
 
+# Optional. Deepgram's EU host keeps audio inside the EU (requests are
+# opted out of Deepgram's model training on any host).
+# STENO_DEEPGRAM_HOST=api.eu.deepgram.com
+
 # Model calls go to `claude -p` on the Claude subscription, or as one
 # OpenAI-style chat-completions POST to the other providers.
 #   STENO_PROVIDER=claude-code|openrouter|mimo  (default: claude-code, the
