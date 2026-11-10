@@ -83,6 +83,13 @@ class TestTrayView(unittest.TestCase):
         self.assertEqual(view["tooltip"], "Recording · Zoom")
         self.assertNotEqual(view["icon"], state.tray_view("idle")["icon"])
 
+    def test_only_a_recording_asks_for_attention(self):
+        # The bar greys every tray icon that is not NeedsAttention, and the
+        # recording icon differs from idle by colour alone.
+        self.assertEqual(state.tray_view("recording")["status"], "NeedsAttention")
+        for status in ("idle", "paused", "finalizing", "off"):
+            self.assertEqual(state.tray_view(status)["status"], "Active", status)
+
     def test_finalizing_cannot_start_another(self):
         self.assertFalse(state.tray_view("finalizing")["can_record"])
 

@@ -221,7 +221,12 @@ def tray_view(status: str, detail: str = "", src: str = "") -> dict:
     return {
         "icon": TRAY_ICONS.get(status, TRAY_ICONS["idle"]),
         "title": f"Steno{named}",
-        "status": "NeedsAttention" if src else "Active",
+        # NeedsAttention while recording or while a test build runs: a
+        # host that greys resting tray icons (or hides them in a drawer)
+        # still shows a recording, which the icon's colour alone no
+        # longer does once it is desaturated, and still shows which
+        # build would record the next meeting.
+        "status": "NeedsAttention" if recording or src else "Active",
         "tooltip": tooltip,
         "status_line": f"{tooltip}{named}",
         "record_label": "Stop recording" if recording else "Start recording",
