@@ -35,6 +35,7 @@ from . import (
     model_default,
     projectnotes,
 )
+from . import erase as meeting_erase
 from . import sync as meeting_sync
 from .brief import BRIEF_FILENAME, brief_age_days, estimate_tokens, load_brief
 from .claude import check_ready
@@ -60,7 +61,7 @@ from .notes import (
 )
 from .playback import TRACKS, clean_path
 from .realign import format_plan, has_audio, plan, realign_session
-from .retention import audio_bytes, delete_session, human_bytes
+from .retention import audio_bytes, delete_session, human_bytes, trash_dir
 from .session import paused_until, set_pause
 from .state import bar_json, read_state
 from .summarize import (
@@ -73,6 +74,7 @@ from .summarize import (
     needs_citations,
     projects_root,
     resolve_session,
+    sessions_root,
     set_archived,
     summarize_session,
     transcript_path,
@@ -672,6 +674,109 @@ def cmd_delete(args: argparse.Namespace) -> None:
               f"(try --permanent if the trash is on another filesystem)",
               file=sys.stderr)
         sys.exit(1)
+
+
+def _say_copies(copies: meeting_erase.Copies) -> None:
+    """Every copy `steno erase` found where it can remove it."""
+    for entry in copies.trashed:
+        print(f"  in the trash:          {entry.files}")
+    for path in copies.server:
+        print(f"  on the server:         {path}")
+    for path in copies.in_bin:
+        print(f"  in its trash bin:      {path.rpartition(':')[2]}")
+    if copies.server and copies.bin:
+        print("  what the server copies leave in its trash bin goes too")
+    elif copies.server:
+        print("  if the server keeps deleted files of its own, empty them "
+              "there: steno knows only Nextcloud's trash bin")
+
+
+def _say_backups(holds: meeting_erase.BackupHolds) -> None:
+    """What the backups hold of a meeting, and what a full prune costs."""
+    if not holds.paths:
+        print("  in the backups:        nothing")
+        return
+    print(f"  in {holds.snapshots} backup snapshots:")
+    for path in holds.paths:
+        print(f"    {path}")
+    if holds.repack:
+        print(f"  taking it out repacks at least {holds.repack} of the "
+              "repository (restic prune --dry-run --max-unused 0)")
+
+
+def _restic_env_or_exit() -> dict[str, str]:
+    env = meeting_erase.restic_environment(os.environ)
+    if not env:
+        print("no restic repository: set RESTIC_REPOSITORY and a password, "
+              f"or {meeting_erase.RESTIC_UNIT_ENV} to the systemd user unit "
+              f"that runs your backups ({meeting_erase.RESTIC_UNIT} by "
+              "default)", file=sys.stderr)
+        sys.exit(1)
+    return env
+
+
+def cmd_erase(args: argparse.Namespace) -> None:
+    """Remove a deleted meeting from every copy: for consent withdrawn."""
+    load_dotenv(config_dir() / ".env")
+    name = Path(args.session).name
+    try:
+        copies = meeting_erase.find_copies(
+            name, sessions=sessions_root(args.dir), trash=trash_dir(),
+            target_root=meeting_sync.remote(), projects=projects_root(),
+            vault=projectnotes.vault_root(),
+        )
+    except meeting_sync.SyncError as e:
+        print(f"the server is not reachable ({e}); nothing done",
+              file=sys.stderr)
+        sys.exit(1)
+    if copies.local is not None:
+        print(f"{name} is still in the list. Delete it first (in the window, "
+              f"or `steno delete {name}`), which also takes it out of project "
+              "notes and asst; then erase it.", file=sys.stderr)
+        sys.exit(1)
+    restic_env = _restic_env_or_exit() if args.restic else None
+    print(f"every copy of {name}:")
+    _say_copies(copies)
+    if restic_env is not None and args.dry_run:
+        try:
+            _say_backups(meeting_erase.backups_holding(
+                copies.backup_patterns, restic_env))
+        except (OSError, subprocess.CalledProcessError) as e:
+            print(f"  the backups could not be read: {e}", file=sys.stderr)
+    elif restic_env is None:
+        print("  backups taken while it was here still hold it; add "
+              "--restic to take it out of them")
+    if args.dry_run:
+        print("dry run: nothing removed")
+        return
+    if not copies.anywhere and restic_env is None:
+        print(f"nothing of {name} left here, in the trash or on the server")
+        return
+    if not args.yes and not _confirm(
+        f"erase every copy of {name}? This cannot be undone. [y/N] "
+    ):
+        print("nothing done")
+        return
+    try:
+        with meeting_erase.sync_lock():
+            meeting_erase.remove_local(copies)
+            meeting_erase.remove_on_server(copies)
+    except BlockingIOError:
+        print("a sync is running; try again in a minute", file=sys.stderr)
+        sys.exit(1)
+    except (OSError, meeting_sync.SyncError) as e:
+        print(f"stopped part way: {e}; run it again", file=sys.stderr)
+        sys.exit(1)
+    if restic_env is not None:
+        try:
+            meeting_erase.run_restic(
+                meeting_erase.restic_commands(copies.backup_patterns),
+                restic_env,
+            )
+        except (OSError, subprocess.CalledProcessError) as e:
+            print(f"the backups still hold it: {e}", file=sys.stderr)
+            sys.exit(1)
+    print(f"erased {name}")
 
 
 def _archive_each(args: argparse.Namespace, archive: bool) -> None:
@@ -1404,6 +1509,25 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     p_delete.add_argument("--yes", action="store_true", help="Skip the prompt")
     p_delete.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_delete.set_defaults(func=cmd_delete)
+
+    p_erase = sub.add_parser(
+        "erase",
+        help="Remove a deleted meeting from every copy (consent withdrawn)",
+    )
+    p_erase.add_argument("session", help="Session name")
+    p_erase.add_argument("--restic", action="store_true",
+                         help="Also take it and its project pages out of every "
+                              "restic snapshot (the shell's RESTIC_* "
+                              "settings, else those of STENO_RESTIC_UNIT, "
+                              "restic-backup.service by default); with "
+                              "--dry-run, say what they hold and what "
+                              "taking it out repacks")
+    p_erase.add_argument("--dry-run", action="store_true",
+                         help="List every copy; remove nothing")
+    p_erase.add_argument("--yes", action="store_true", help="Skip the prompt")
+    p_erase.add_argument("--dir", type=Path, default=None,
+                         help="Sessions directory")
+    p_erase.set_defaults(func=cmd_erase)
 
     p_archive = sub.add_parser(
         "archive",

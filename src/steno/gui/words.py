@@ -767,3 +767,49 @@ def inline(text: str) -> str:
                 rebuilt += (f"<{tag}>{part}</{tag}>" if i % 2 else part)
             out = rebuilt
     return out
+
+
+# Erasing a meeting from every copy (steno.erase): for someone who was
+# recorded and said no. Delete keeps a way back; this does not.
+ERASE_BODY = (
+    "For when someone who was recorded says no. The recording, "
+    "transcript, summary, to-dos and your notes go for good: from this "
+    "laptop, its trash, the project's notes, the sync server, the "
+    "server's .trash folder and its trash bin. This cannot be undone."
+)
+ERASE_BACKUPS = (
+    "Also take it out of the backups. Every snapshot that holds it is "
+    "rewritten and the repository repacked, which can move gigabytes "
+    "and take an hour."
+)
+ERASE_NO_BACKUPS = (
+    "No restic backup found to take it out of (see STENO_RESTIC_UNIT)."
+)
+ERASE_STOPPED = "Not erased everywhere yet"
+
+
+def erase_heading(title: str) -> str:
+    return f"Erase “{title}” everywhere?"
+
+
+def erasing_toast(title: str, backups: bool) -> str:
+    """Said as the meeting leaves the list, while its other copies go."""
+    rest = "the server and the backups" if backups else "the server"
+    return f"Erasing “{title}” from {rest}…"
+
+
+def erased_toast(title: str, backups: bool) -> str:
+    """Said once every copy steno can reach is gone."""
+    if backups:
+        return f"Erased “{title}” everywhere, the backups included"
+    return f"Erased “{title}”. The backups still hold it."
+
+
+def erase_stopped_body(title: str, name: str, error: str) -> str:
+    """Why an erase stopped, and how to finish it. The meeting is out of
+    the list already, so the terminal names it by its folder."""
+    return (
+        f"“{title}” is gone from this laptop, but erasing stopped at "
+        f"{error}. Try again once that is fixed, or later run "
+        f"`steno erase {name} --restic`."
+    )

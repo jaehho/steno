@@ -37,6 +37,7 @@ def meeting_menu_model(
     danger = Gio.Menu()
     danger.append("Delete the audio, keep the text...", "meeting.delete-audio")
     danger.append("Delete this meeting...", "meeting.delete")
+    danger.append("Erase everywhere...", "meeting.erase")
     menu.append_section(None, danger)
     return menu
 

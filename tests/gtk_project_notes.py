@@ -16,6 +16,8 @@ from __future__ import annotations
 import errno
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -405,6 +407,95 @@ class TestInTheWindow(Base):
         self.settle()
         self.assertFalse(self.alpha.exists())
         self.assertFalse(self.meetings().exists())
+
+    # ----------------------------------------------------------------- erase
+
+    def erase(self, *, backups: bool) -> Adw.AlertDialog:
+        """Erase the open meeting from the menu, as a person would, and
+        wait for the copies elsewhere to go; the dialog it asked with."""
+        dialogs: list[Adw.AlertDialog] = []
+        real_present = Adw.AlertDialog.present
+
+        def present(dialog, parent):
+            dialogs.append(dialog)
+            real_present(dialog, parent)
+
+        with mock.patch.object(Adw.AlertDialog, "present", present):
+            self.page.actions.activate_action("erase", None)
+            settle()
+        (asked,) = dialogs
+        check = asked.get_extra_child()
+        self.assertEqual(check.get_sensitive(), backups)
+        self.assertEqual(check.get_active(), backups)
+        asked.emit("response", "go")
+        asked.force_close()
+        for worker in self.page.asst_workers:
+            worker.join(timeout=120)
+        self.settle()
+        return asked
+
+    def test_erase_everywhere_takes_the_meeting_and_its_server_copy(self):
+        projectnotes.write(self.alpha)
+        server = Path(self._tmp.name) / "server"
+        (server / ALPHA).mkdir(parents=True)
+        (server / ALPHA / "you.wav").write_bytes(b"alpha")
+        (server / BRAVO).mkdir()
+        self.open(self.alpha)
+        with mock.patch.dict(os.environ, {"STENO_SYNC_REMOTE": str(server)}), \
+                mock.patch.object(meeting.erasing, "restic_environment",
+                                  return_value={}):
+            asked = self.erase(backups=False)
+        self.assertEqual(asked.get_heading(),
+                         "Erase “Vendor Pricing Call” everywhere?")
+        self.assertFalse(self.alpha.exists())
+        self.assertFalse(self.meetings().exists())  # its page went first
+        self.assertEqual(sorted(p.name for p in server.iterdir()), [BRAVO])
+        self.assertEqual(self.toasts[-1], "Erased “Vendor Pricing Call”. "
+                         "The backups still hold it.")
+
+    @unittest.skipUnless(shutil.which("restic"), "needs restic")
+    def test_erase_everywhere_takes_it_out_of_the_backups_too(self):
+        projectnotes.write(self.alpha)
+        projectnotes.write(self.bravo)
+        base = Path(self._tmp.name)
+        restic = {
+            "RESTIC_REPOSITORY": str(base / "repo"),
+            "RESTIC_PASSWORD": "throwaway-test-only",
+            "RESTIC_CACHE_DIR": str(base / "cache"),
+            "STENO_SYNC_REMOTE": "",
+        }
+        with mock.patch.dict(os.environ, restic):
+            for args in (["init"], ["backup", str(self.root),
+                                    str(self.projects)]):
+                subprocess.run(["restic", "-q", *args], check=True,
+                               capture_output=True)
+            self.open(self.alpha)
+            self.erase(backups=True)
+            listed = subprocess.run(
+                ["restic", "-q", "ls", "latest"], check=True,
+                capture_output=True, text=True).stdout
+        self.assertNotIn(ALPHA, listed)
+        self.assertNotIn(ALPHA_PAGE, listed)
+        self.assertIn(f"{BRAVO}/summary.md", listed)
+        self.assertIn("2026-10-06-1612-bravo.md", listed)
+        self.assertEqual(self.toasts[-1], "Erased “Vendor Pricing Call” "
+                         "everywhere, the backups included")
+
+    def test_an_erase_that_stops_says_so_and_offers_to_try_again(self):
+        self.open(self.charlie)
+        with mock.patch.object(meeting.erasing, "restic_environment",
+                               return_value={}), \
+                mock.patch.object(meeting.erasing, "erase_everywhere",
+                                  return_value=meeting.erasing.Erased(
+                                      CHARLIE, error="the server: offline")):
+            self.erase(backups=False)
+        self.assertFalse(self.charlie.exists())
+        dialog = self.window.get_visible_dialog()
+        self.assertEqual(dialog.get_heading(), "Not erased everywhere yet")
+        self.assertIn("the server: offline", dialog.get_body())
+        self.assertIn(f"steno erase {CHARLIE}", dialog.get_body())
+        dialog.force_close()
+        settle()
 
     # --------------------------------------------------------------- problem
 

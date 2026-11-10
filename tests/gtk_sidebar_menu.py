@@ -43,6 +43,7 @@ EXPECTED = [
     "meeting.archive",
     "meeting.delete-audio",
     "meeting.delete",
+    "meeting.erase",
 ]
 # The oldest meeting has nothing before it to join with.
 OLDEST = [name for name in EXPECTED if name != "meeting.merge"]
@@ -182,7 +183,7 @@ class TestRowMenu(unittest.TestCase):
             model.get_n_items() - 1, Gio.MENU_LINK_SECTION
         )
         self.assertEqual(
-            menu_actions(last), ["meeting.delete-audio", "meeting.delete"]
+            menu_actions(last), ["meeting.delete-audio", "meeting.delete", "meeting.erase"]
         )
 
     def test_right_click_on_the_open_meeting_does_not_reload_it(self):
