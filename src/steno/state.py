@@ -25,6 +25,10 @@ SECONDS_PER_HOUR = 3600
 
 STATE_FILENAME = "state.json"
 
+# The app name, and so the published detail, of a recording the user
+# started by hand rather than one a call app triggered.
+MANUAL = "manual"
+
 # One icon per state. Nerd Font glyphs, matching the rest of the user's bar.
 ICONS = {
     "recording": "󰑊",
@@ -137,6 +141,9 @@ def bar_json(state: dict, now: float | None = None) -> dict:
     `text` stays short enough to live in a bar; everything else goes in the
     tooltip. `class` is what the user's stylesheet colours — the recording state
     has to be unmissable, and every other state has to be quiet.
+
+    `class` and `manual` are read by other programs (`contract/`), so
+    they are only ever added to, never renamed.
     """
     now = time.time() if now is None else now
     status = state.get("status", "off")
@@ -166,6 +173,9 @@ def bar_json(state: dict, now: float | None = None) -> dict:
         "class": status,
         "tooltip": tooltip,
         "percentage": 0,
+        # A recording you started rather than one a call app opened:
+        # only you end it (`Engine._on_detect`).
+        "manual": status == "recording" and detail == MANUAL,
     }
 
 

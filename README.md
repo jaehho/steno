@@ -489,6 +489,8 @@ window, right-click starts or stops recording, middle-click pauses for an hour.
 The indicator is not decoration: with the window usually closed, it is where you
 find out that something is being recorded.
 
+Other programs read the same line: `steno bar --once` prints it once and exits. `contract/bar.jsonl` holds that line for each state, and `contract/consumers.json` says who reads which fields: `class`, and `manual`, which is true only while recording a meeting you started yourself. `tests/test_contract.py` holds steno to both.
+
 ## What it records, and what leaves the machine
 
 Both sides of every detected call are recorded to

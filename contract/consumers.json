@@ -1,0 +1,11 @@
+{
+  "hypr-suspend-ok": {
+    "code": "dotfiles/home/hypr/.local/bin/hypr-suspend-ok",
+    "calls": [
+      ["bar", "--once"]
+    ],
+    "reads": {
+      "bar.jsonl": ["class", "manual"]
+    }
+  }
+}
