@@ -23,7 +23,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 from .. import citations, projectnotes
 from ..cost import format_meter
 from ..merge import previous_session
-from ..notes import ensure_todos, load_todos, open_count
+from ..notes import ensure_todos, load_todos, todo_counts
 from ..speakers import load_names, name_of, names_path
 from ..speakers import tag as speaker_tag
 from ..summarize import (
@@ -69,7 +69,7 @@ class Session:
             self.start = datetime.strptime(path.name, "%Y%m%d-%H%M%S")
         except ValueError:
             self.start = datetime.fromtimestamp(path.stat().st_mtime)
-        self.open_todos = open_count(path)
+        self.open_todos, self.to_sort = todo_counts(path)
         self.minutes = duration_minutes(load_records(path))
         self.cost = _session_cost(path, self.minutes)
         self.stamp = session_stamp(path)
@@ -406,7 +406,7 @@ class Sidebar(Gtk.Box):
                 continue
             mine = [
                 t for t in ensure_todos(s.dir)
-                if t.open and t.owner != "them"
+                if t.open and t.owner != "them" and not t.held
             ]
             if not mine:
                 continue
@@ -634,7 +634,7 @@ class Sidebar(Gtk.Box):
         session.archived = is_archived(session.dir)
         session.has_notes = projectnotes.read_record(session.dir) is not None
         session.project = load_project(session.dir)
-        session.open_todos = open_count(session.dir)
+        session.open_todos, session.to_sort = todo_counts(session.dir)
         session._haystack = None  # search includes title and project
         # The flag is part of the stamp, and was just read again.
         session.stamp = stamp_with_archived(session.stamp, session.archived)
@@ -762,8 +762,10 @@ class Sidebar(Gtk.Box):
         if spans:
             mark_spans(meta, spans)
         line.append(meta)
-        if s.open_todos:
-            badge = Gtk.Label(label=words.todo_count(s.open_todos), xalign=1.0)
+        if s.open_todos or s.to_sort:
+            badge = Gtk.Label(
+                label=words.session_badge(s.open_todos, s.to_sort), xalign=1.0
+            )
             badge.add_css_class("count")
             line.append(badge)
         box.append(line)

@@ -17,6 +17,15 @@ import re
 from pathlib import Path
 
 NAMES_FILENAME = "speakers.json"
+# A room's voices are everyone on the one microphone (`room`), named
+# `mic_0`, `mic_1`, ... apart from the far side's `speaker_<n>`, so a name
+# learned for one never lands on the other.
+MIC_VOICE = "mic"
+# What the live stream names a far-side voice; a file pass uses it too.
+FAR_VOICE = "speaker"
+# The name a voice is given when it turns out to be the user's own: the
+# window then tags it "You", as it tags the microphone on a call.
+USER = "You"
 
 # "my name is Alice", "I'm Alice", "this is Alice" - the moments a voice
 # announces itself. Deliberately narrow: a false name on a transcript is worse
@@ -82,25 +91,80 @@ def name_of(record: dict, names: dict[str, str]) -> str:
     return names.get(str(record.get("who") or ""), "")
 
 
+def room_voice(who: str) -> str:
+    """`voice 2` for the room voice `mic_1`; "" for any other voice.
+
+    Counted from 1, as people count, and never "you": in a room the
+    microphone is not one person.
+    """
+    prefix, _, number = who.partition("_")
+    if prefix != MIC_VOICE or not number.isdigit():
+        return ""
+    return f"voice {int(number) + 1}"
+
+
 def label(record: dict, names: dict[str, str]) -> str:
-    """What a line should call its speaker: a name if we have one, else `them`."""
-    return name_of(record, names) or str(record.get("speaker", "them"))
-
-
-def tag(record: dict, names: dict[str, str]) -> str:
-    """`label` as the window prints it: the name, else "Them" or "You"."""
-    return name_of(record, names) or (
-        "Them" if record.get("speaker", "them") == "them" else "You"
+    """What a line should call its speaker: a name if we have one, else
+    the room voice, else `them` or `you`."""
+    return (
+        name_of(record, names)
+        or room_voice(str(record.get("who") or ""))
+        or str(record.get("speaker", "them"))
     )
 
 
-def _introduced(text: str) -> str | None:
-    """The name in "I'm Alice" / "my name is Alice" / an opening "This is Alice"."""
-    for pattern in (_INTRODUCED, _OPENING):
+def tag(record: dict, names: dict[str, str]) -> str:
+    """`label` as the window prints it: the name, else "Voice 2", else
+    "Them" or "You"."""
+    if name := name_of(record, names):
+        return name
+    if voice := room_voice(str(record.get("who") or "")):
+        return voice.capitalize()
+    return "Them" if record.get("speaker", "them") == "them" else "You"
+
+
+def as_user(name: str, user_name: str) -> str:
+    """`USER` when `name` is the user's own, else `name` unchanged."""
+    if user_name and name.casefold() == user_name.casefold():
+        return USER
+    return name
+
+
+def add_names(session_dir: Path, found: dict[str, str]) -> dict[str, str]:
+    """Merge `found` into the session's name map and return the map.
+
+    Only ever adds: a voice already named keeps its name, whoever gave
+    it, so a later summary cannot rename a voice the user corrected.
+    """
+    names = load_names(session_dir)
+    fresh = {who: name for who, name in found.items() if who not in names}
+    if fresh:
+        names.update(fresh)
+        save_names(session_dir, names)
+    return names
+
+
+def _introduced(text: str, *, opening: bool = True) -> str | None:
+    """The name in "I'm Alice" / "my name is Alice", or, with `opening`,
+    in an opening "This is Alice"."""
+    for pattern in (_INTRODUCED, _OPENING) if opening else (_INTRODUCED,):
         m = pattern.search(text)
         if m and m.group(1) not in _NOT_NAMES:
             return m.group(1)
     return None
+
+
+def _self_named(text: str, *, in_room: bool) -> str | None:
+    """The name a speaker gives as their own, or None.
+
+    On a call "This is Alice" and "Alice here" are how a voice on the
+    line says who it is. In a room they are how one person introduces,
+    or points at, another ("This is Sam, who joins us"), so there only
+    "I'm Alice" or "my name is Alice" counts.
+    """
+    if in_room:
+        return _introduced(text, opening=False)
+    return _introduced(text) or _called(text)
 
 
 def _called(text: str) -> str | None:
@@ -118,25 +182,26 @@ def _called(text: str) -> str | None:
     return None
 
 
-def learn_from(session_dir: Path, records: list[dict]) -> dict[str, str]:
+def learn_from(
+    session_dir: Path, records: list[dict], user_name: str = ""
+) -> dict[str, str]:
     """Fill the name map from introductions in the transcript.
 
     Only ever adds; a name already decided is not overwritten by a later
-    sentence that happens to start with a capital.
+    sentence that happens to start with a capital. A voice that
+    introduces itself by `user_name` is the user's (`USER`), as when the
+    user says who they are to a room. A room voice (`mic_<n>`) is named
+    only by a first-person introduction (`_self_named`).
     """
-    names = load_names(session_dir)
-    learned = False
+    found: dict[str, str] = {}
     for row in records:
         who = str(row.get("who") or "")
         text = str(row.get("text") or "")
-        if not who or who in names or not text:
+        if not who or who in found or not text:
             continue
-        name = _introduced(text) or _called(text)
+        name = _self_named(text, in_room=bool(room_voice(who)))
         if name:
-            names[who] = name
-            learned = True
+            found[who] = as_user(name, user_name)
     # A file with nothing new in it is left as the user, or an earlier
     # summary, wrote it: summarizing again does not touch it.
-    if learned:
-        save_names(session_dir, names)
-    return names
+    return add_names(session_dir, found)

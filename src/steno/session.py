@@ -41,11 +41,13 @@ from .events import (
     StatusChanged,
     SummaryReady,
 )
+from .kept import set_kept
 from .notesjob import NotesPhase, NotesState
 from .playback import session_start
 from .redact import redact_text
+from .room import is_room, several_voices, without_voices
+from .speakers import MIC_VOICE, load_names
 from .speakers import label as speaker_label
-from .speakers import load_names
 from .state import MANUAL
 from .summarize import (
     META_FILENAME,
@@ -127,7 +129,7 @@ class Recording:
     manual: bool = False
     # False for a call recorded under `STENO_CONSENT=ask` until you keep
     # it: it is deleted when it ends.
-    kept: bool = True
+    keep_at_end: bool = True
     tasks: list[asyncio.Task] = field(default_factory=list)
     handles: list = field(default_factory=list)
     transcript_jsonl: IO[str] | None = None
@@ -242,7 +244,7 @@ class Engine:
             # Recorded from its first second either way, so the start of a
             # meeting is never lost to a question; `ask` only changes what
             # happens to it at the end if nobody kept it.
-            await self._start(event.app, kept=self.consent() != ASK)
+            await self._start(event.app, keep_at_end=self.consent() != ASK)
         elif self.current is not None and not self.current.manual:
             # A manually started recording outlives the app that triggered
             # detection: the user asked for it, so only they end it.
@@ -314,7 +316,8 @@ class Engine:
 
         The far side is always streamed — that is the live use case. Your own
         words are only streamed while someone can see them, because a second
-        Deepgram stream for a room nobody is looking at is pure spend.
+        Deepgram stream for a room nobody is looking at is pure spend, and
+        never for a recording that may be a room (`_may_be_room`).
         """
         self._command("audience-on" if watching else "audience-off")
 
@@ -323,14 +326,16 @@ class Engine:
             return
         self._loop.call_soon_threadsafe(self._commands.put_nowait, cmd)
 
-    async def _start(self, app: str, manual: bool = False, kept: bool = True) -> None:
+    async def _start(
+        self, app: str, manual: bool = False, keep_at_end: bool = True
+    ) -> None:
         if self.current is not None:
             return
         started_at = time.time()
         session_dir = new_session_dir(self.root, started_at)
         rec = Recording(
             session_dir=session_dir, started_at=started_at, app=app, manual=manual,
-            kept=kept or manual,
+            keep_at_end=keep_at_end or manual,
         )
         self.current = rec
         self.transcript = []
@@ -375,7 +380,7 @@ class Engine:
                 asyncio.create_task(self._stream_them(sink_mon, them_wav)),
                 asyncio.create_task(self._pump()),
             ]
-            self.emit(MeetingStarted(session_dir, app, started_at, manual, rec.kept))
+            self.emit(MeetingStarted(session_dir, app, started_at, manual, rec.keep_at_end))
             self._status("recording", app)
             if self._audience:
                 self._start_you_display()
@@ -400,7 +405,7 @@ class Engine:
         rec = self.current
         if rec is None:
             return
-        if not rec.kept:
+        if not rec.keep_at_end:
             await self._discard()
             return
         # Counted before `current` clears, so there is no instant at which a
@@ -430,9 +435,9 @@ class Engine:
 
     def _keep(self) -> None:
         rec = self.current
-        if rec is None or rec.kept:
+        if rec is None or rec.keep_at_end:
             return
-        rec.kept = True
+        rec.keep_at_end = True
         log.info("keeping %s", rec.session_dir.name)
         self.emit(MeetingKept(rec.session_dir, rec.app))
 
@@ -533,7 +538,7 @@ class Engine:
             session_dir, NotesPhase.TRANSCRIBING, requested=requested
         )
         try:
-            await asyncio.wait_for(
+            ended = await asyncio.wait_for(
                 self._notes_pipeline(session_dir, rec, requested=requested),
                 timeout=self.notes_timeout_s,
             )
@@ -554,11 +559,9 @@ class Engine:
             log.exception("notes failed %s", session_dir.name)
             self._fail_notes(session_dir, str(e) or type(e).__name__)
         else:
-            log.info("notes written %s", session_dir.name)
+            log.info("notes %s %s", ended, session_dir.name)
             self.emit(NotesStatus(
-                session_dir=session_dir,
-                state=NotesState.WRITTEN,
-                requested=requested,
+                session_dir=session_dir, state=ended, requested=requested,
             ))
         finally:
             if self._notes_tasks.get(session_dir) is task:
@@ -576,17 +579,35 @@ class Engine:
 
     async def _notes_pipeline(
         self, session_dir: Path, rec: Recording | None, *, requested: bool
-    ) -> None:
+    ) -> NotesState:
         """Transcribe what is missing, merge, then write the summary.
 
         Raises on failure; `_run_notes_job` turns that into a failed job.
         The SummaryReady event is emitted here, once the file exists.
+        Returns HELD when a room's recording was kept back instead
+        (`room.awaits_agreement`), WRITTEN otherwise.
         """
         started_at = rec.started_at if rec is not None else session_start(
             session_dir, load_records(session_dir)
         )
         keyterms = rec.keyterms if rec is not None else self._load_keyterms("")
         you_wav = session_dir / "you.wav"
+        if rec is not None and you_wav.is_file() and is_room(
+            load_meta(session_dir), load_records(session_dir)
+        ):
+            # A room: everyone in it is on that file, and none of them
+            # has said yes to Deepgram or the model yet. It waits, marked
+            # `mic_pending` (`room.awaits_agreement`), for the user to ask
+            # (`summarize_now`).
+            update_meta(session_dir, mic_pending=True)
+            log.info("room kept on the laptop %s", session_dir.name)
+            return NotesState.HELD
+        if rec is not None:
+            # A recording that ended and is not a room: nothing is kept
+            # back, so a manual one that turned out to be a call loses the
+            # marker it began with, even if the mic pass below fails.
+            with contextlib.suppress(OSError):
+                set_kept(session_dir, kept=False)
         # End of a meeting always merges your side; a later ask only does
         # that pass when the meeting is still marked missing it.
         need_mic = you_wav.is_file() and (
@@ -621,7 +642,7 @@ class Engine:
                 update_meta(session_dir, **changes)
 
         if not self.summarize:
-            return
+            return NotesState.WRITTEN
 
         self._notes_running(
             session_dir, NotesPhase.SUMMARIZING, requested=requested
@@ -631,15 +652,28 @@ class Engine:
         self.emit(SummaryReady(
             session_dir, summary.title, summary.body, requested=requested
         ))
+        return NotesState.WRITTEN
 
     async def _mic_pass(
         self, session_dir: Path, started_at: float, keyterms: list[str]
     ) -> tuple[list[dict], bool]:
         """Batch-transcribe your side. (records, whether it worked)."""
         try:
+            # In a room every voice is on the microphone, so ask whose
+            # each line is; on a call it is the user's alone.
+            meta = load_meta(session_dir)
+            room = is_room(meta, load_records(session_dir))
             mine = await transcribe_file(
-                session_dir / "you.wav", started_at, "you", keyterms=keyterms
+                session_dir / "you.wav", started_at, "you",
+                keyterms=keyterms, voices_as=MIC_VOICE if room else "",
             )
+            if room and meta.get("room") is None and not several_voices(mine):
+                # Record pressed, and one voice on the file: a voice memo.
+                # Its lines and to-dos are the user's, as on a call.
+                mine = without_voices(mine)
+                update_meta(session_dir, room=False)
+            elif room:
+                update_meta(session_dir, room=True)
         except Exception as e:
             self.emit(EngineError(
                 "transcribe", f"mic transcription failed: {e}", session_dir=session_dir
@@ -689,6 +723,10 @@ class Engine:
             if u.who:
                 row["who"] = u.who
             self.transcript.append(row)
+            if u.speaker == "them" and rec.manual and self._audience:
+                # A recording started by hand whose far side speaks is a
+                # call: the window may show your words now.
+                self._start_you_display()
             try:
                 rec.transcript_jsonl.write(json.dumps(row) + "\n")
                 rec.transcript_jsonl.flush()
@@ -781,7 +819,19 @@ class Engine:
         rec = self.current
         if rec is None or self._you_display is not None:
             return
+        if self._may_be_room(rec):
+            return
         self._you_display = asyncio.create_task(self._stream_you_display())
+
+    def _may_be_room(self, rec: Recording) -> bool:
+        """Whether the meeting being recorded may be a room: started by
+        hand, and the far side has said nothing yet (`room.is_room`, as
+        it will be judged when it ends). Its microphone is everyone in
+        the room, so none of it is streamed to Deepgram for the live view
+        until the far side speaks and it is a call after all."""
+        return rec.manual and not any(
+            r.get("speaker") == "them" for r in self.transcript
+        )
 
     def _stop_you_display(self) -> None:
         task, self._you_display = self._you_display, None
@@ -833,8 +883,11 @@ def new_session_dir(root: Path, started_at: float) -> Path:
 def _rewrite_meta(session_dir: Path, started_at: float, app: str, manual: bool) -> None:
     # `mic_pending` from the first second: a kill or crash mid-meeting leaves
     # your side untranscribed, and retention must not read that as finished.
-    # It is cleared once your lines are merged into the transcript.
+    # It is cleared once your lines are merged into the transcript. A
+    # recording started by hand may be a room, so its `.steno-kept` marker
+    # goes first and no backup takes it while it may be kept (`steno.kept`).
     with contextlib.suppress(OSError):
+        set_kept(session_dir, kept=manual)
         (session_dir / META_FILENAME).write_text(json.dumps({
             "started_at": started_at, "app": app, "manual": manual,
             "mic_pending": True,

@@ -22,3 +22,6 @@ class NotesState(enum.StrEnum):
     RUNNING = "running"
     WRITTEN = "written"
     FAILED = "failed"
+    # A room recording kept on the laptop until the user says everyone
+    # in it agreed (`room.awaits_agreement`); asking for notes sends it.
+    HELD = "held"

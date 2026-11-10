@@ -26,6 +26,8 @@ from .summarize import (
     load_title,
 )
 
+# The group of action items said in a room that wait for the user.
+HELD = "held"
 _ACTION_HEADING_RE = re.compile(r"^##\s+action\s+items?\s*$", re.IGNORECASE)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -149,9 +151,12 @@ def _action_items(todos: list[Todo]) -> str:
         if t.dropped and not t.done:
             closed.append(t)
         else:
-            groups.setdefault(t.owner, []).append(t)
+            groups.setdefault(HELD if t.held and t.open else t.owner, []).append(t)
     lines: list[str] = ["## Action items"]
-    for owner, label in (("you", "You"), ("them", "Them"), ("unassigned", "Unassigned")):
+    for owner, label in (
+        (HELD, "Whose? (said in a room, not sorted yet)"),
+        ("you", "You"), ("them", "Them"), ("unassigned", "Unassigned"),
+    ):
         items = groups.get(owner)
         if not items:
             continue

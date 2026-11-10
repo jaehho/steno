@@ -50,6 +50,7 @@ from ..notes import (
     rename_todo,
     restore_dropped_todos,
     set_done_local,
+    settle_owner,
 )
 from ..notesjob import NotesState
 from ..playback import (
@@ -63,6 +64,7 @@ from ..playback import (
 )
 from ..realign import plan
 from ..retention import audio_bytes, delete_audio, delete_session, human_bytes
+from ..room import awaits_agreement
 from ..speakers import load_names, name_of
 from ..speakers import tag as speaker_tag
 from ..summarize import (
@@ -81,7 +83,7 @@ from .player import Player
 from .rewrite import QUIT_WAIT_S, Rewriter
 from .sidebar import Session
 from .summary import CiteBar, CitedBox, CiteSource, SummaryView, make_citable
-from .todoedit import RowMenus, ask_list, ask_text
+from .todoedit import RowMenus, ask_list, ask_text, whose_offered
 from .widgets import AskBox, NotesBox, hint_label, mark_matches, section, wrapping_label
 
 NUDGE_S = 10.0
@@ -601,6 +603,7 @@ class MeetingPage(Gtk.Box):
                 phase=None if status is None else status.phase,
                 error="" if status is None else status.error,
                 joined=bool(status and status.joined),
+                room_kept=self._room_kept(s),
             )
             self.summary_view.clear()
             self.summary_view.set_visible(False)
@@ -608,6 +611,9 @@ class MeetingPage(Gtk.Box):
             self._show_note(s)
             self.summary_label.set_markup(f"<i>{words.escape(text)}</i>")
             self.summary_label.set_visible(True)
+            self.summarize_button.set_label(
+                words.ROOM_SEND if self._room_kept(s) else "Summarize now"
+            )
             self.summarize_button.set_visible(offer and self._on_summarize is not None)
         self._load_todos(s, todos)
         self._update_actions()
@@ -632,12 +638,23 @@ class MeetingPage(Gtk.Box):
     def _can_summarize(self) -> bool:
         """Not while a job is running (a second ask would only be told
         it is already running), and not with nothing to write it from.
-        A failed job stays selectable: that button is the retry."""
+        A failed job stays selectable: that button is the retry. A room
+        kept on the laptop has nothing transcribed, and asking is how it
+        is sent."""
         s = self.current
-        if s is None or self._on_summarize is None or not self._records:
+        if s is None or self._on_summarize is None:
+            return False
+        if not self._records and not self._room_kept(s):
             return False
         status = self._notes.get(s.dir)
         return status is None or status.state is not NotesState.RUNNING
+
+    def _room_kept(self, s: Session) -> bool:
+        """Whether this meeting's room recording waits on the laptop for
+        the user's word that everyone in it agreed."""
+        return (s.dir / "you.wav").is_file() and awaits_agreement(
+            load_meta(s.dir), self._records
+        )
 
     def _can_archive(self) -> bool:
         """Not the meeting being recorded (its folder is still being
@@ -707,8 +724,10 @@ class MeetingPage(Gtk.Box):
                 self._show_cites(active, scroll=False)
 
     def apply_notes(self, status: NotesStatus) -> None:
-        """Record the engine's word on this meeting's notes job, and redraw."""
-        if status.state is NotesState.WRITTEN:
+        """Record the engine's word on this meeting's notes job, and redraw.
+        A room kept on the laptop is read from disk (`_room_kept`), so its
+        HELD, like WRITTEN, leaves nothing to remember."""
+        if status.state in (NotesState.WRITTEN, NotesState.HELD):
             self._notes.pop(status.session_dir, None)
         else:
             self._notes[status.session_dir] = status
@@ -738,9 +757,15 @@ class MeetingPage(Gtk.Box):
         self._show_summary(current, ensure_todos(current.dir))
 
     def _summarize_now(self) -> None:
-        """The button of a meeting that has no summary, or whose last try failed."""
-        if self.current is not None:
-            self._summarize(self.current)
+        """The button of a meeting that has no summary, or whose last try
+        failed. A room kept on the laptop asks first whether everyone
+        agreed: nothing else stands between it and Deepgram."""
+        if self.current is None:
+            return
+        if self._room_kept(self.current):
+            self._confirm_summarize()
+            return
+        self._summarize(self.current)
 
     def _summarize(self, s: Session) -> None:
         """Hand the meeting to the engine. The page waits for NotesStatus
@@ -769,6 +794,17 @@ class MeetingPage(Gtk.Box):
     def _confirm_summarize(self) -> None:
         s = self.current
         if s is None or not self._can_summarize():
+            return
+        if self._room_kept(s):
+            # The one place a room's recording is let off the laptop.
+            self._dialog(
+                words.ROOM_AGREE_HEADING,
+                f"{words.ROOM_AGREE_BODY} It costs about "
+                f"{format_usd(self._summary_cost(s))}.",
+                words.ROOM_AGREE_CONFIRM,
+                lambda: self._summarize(s),
+                destructive=False,
+            )
             return
         again = s.summary_path.is_file()
         body = (
@@ -934,8 +970,11 @@ class MeetingPage(Gtk.Box):
         self._todo_rows = {}
         self.add_todo_button = None
         self._ticks = _ticks(todos)
-        yours = [t for t in todos if t.owner != "them"]
-        theirs = [t for t in todos if t.owner == "them"]
+        # Said in a room and not yet sorted: nobody's until the user says.
+        unsorted = [t for t in todos if t.held and t.open]
+        sorted_ = [t for t in todos if not (t.held and t.open)]
+        yours = [t for t in sorted_ if t.owner != "them"]
+        theirs = [t for t in sorted_ if t.owner == "them"]
         # A meeting put away has nothing to do in it: its to-dos were
         # closed, and the list is for reading.
         self.todo_count.set_text(
@@ -961,6 +1000,8 @@ class MeetingPage(Gtk.Box):
                 note = hint_label(line)
                 note.set_wrap(True)
                 self.todo_box.append(note)
+        if unsorted:
+            self._append_unsorted(s, unsorted)
         # Add files one of yours, so it closes your group, not the list:
         # under "Waiting on them" it would read as adding to theirs.
         if yours or not s.archived:
@@ -973,6 +1014,89 @@ class MeetingPage(Gtk.Box):
             for todo in theirs:
                 self.todo_box.append(self._todo_row(s, todo))
         self._keep_todo_cite()
+
+    def _append_unsorted(self, s: Session, unsorted: list[Todo]) -> None:
+        """The room's items, first, under a head that asks whose they are:
+        each row says Mine or Not mine, and the head can give the rest
+        away at once."""
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title = self._group_label(words.HELD_HEAD)
+        title.set_hexpand(True)
+        head.append(title)
+        if len(unsorted) > 1 and not s.archived:
+            rest = Gtk.Button(label=words.HELD_REST)
+            rest.add_css_class("flat")
+            rest.add_css_class("todo-whose")
+            rest.set_valign(Gtk.Align.CENTER)
+            rest.set_tooltip_text("None of these is yours: none goes to asst")
+            keys = [t.key for t in unsorted]
+            rest.connect(
+                "clicked", lambda _b: self._settle_owner(s, keys, mine=False)
+            )
+            head.append(rest)
+        self.todo_box.append(head)
+        note = hint_label(words.HELD_HINT)
+        note.set_wrap(True)
+        self.todo_box.append(note)
+        for todo in unsorted:
+            self.todo_box.append(self._todo_row(s, todo))
+
+    def _asking_whose(self, s: Session, todo: Todo, row: Gtk.Box) -> Gtk.Box:
+        """`row`, and under it Mine and Not mine when it was said in a room
+        and is not sorted yet: on a line of its own, so the words keep the
+        column's width."""
+        if not (todo.held and todo.open and not s.archived):
+            return row
+        asking = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        asking.append(row)
+        asking.append(self._whose_buttons(s, todo))
+        return asking
+
+    def _whose_buttons(self, s: Session, todo: Todo) -> Gtk.Widget:
+        """Mine and Not mine, on a row said in a room, in line with its
+        words rather than its tick box."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        box.set_halign(Gtk.Align.START)
+        box.set_margin_start(22)
+        for label, mine, tip in (
+            ("Mine", True, "Yours: it goes to asst"),
+            ("Not mine", False, "Someone else's: never filed"),
+        ):
+            button = Gtk.Button(label=label)
+            button.add_css_class("flat")
+            button.add_css_class("todo-whose")
+            button.set_tooltip_text(tip)
+            button.connect(
+                "clicked",
+                lambda _b, m=mine: self._settle_owner(s, [todo.key], mine=m),
+            )
+            box.append(button)
+        return box
+
+    def _settle_owner(self, s: Session, keys: list[str], *, mine: bool) -> None:
+        """The user's word on whose these rows are: written here at once,
+        and the ones now theirs filed with asst on a thread. Focus, when it
+        was on a row, goes on to the next row still to sort."""
+        root = self.get_root()
+        focus = root.get_focus() if root is not None else None
+        in_list = focus is not None and focus.is_ancestor(self.todo_box)
+        shown = list(self._todo_rows)
+        after = shown[shown.index(keys[-1]) + 1:] if keys[-1] in shown else []
+        todos = settle_owner(s.dir, keys, mine=mine)
+        self._todos_changed(s)
+        if in_list:
+            waiting = {t.key for t in todos if t.held and t.open}
+            self._focus_todo(next((k for k in after if k in waiting), keys[-1]))
+        if not mine:
+            return
+        rows = [t for t in todos if t.key in set(keys)]
+
+        def file() -> bool:
+            file_with_asst(s.dir, rows)
+            GLib.idle_add(self._refresh_todos, s)
+            return True
+
+        self._in_asst(s, file, "")
 
     def _append_add_row(self, s: Session) -> None:
         """The way to add a to-do the model missed. A meeting put away is
@@ -1058,6 +1182,7 @@ class MeetingPage(Gtk.Box):
         where = self._list_name(todo)
         if where is not None:
             row.append(where)
+        row = self._asking_whose(s, todo, row)
 
         def toggled(button):
             done = button.get_active()
@@ -1073,7 +1198,7 @@ class MeetingPage(Gtk.Box):
             if done:
                 label.add_css_class("todo-done")
             self.todo_count.set_text(words.todo_count(
-                sum(t.open and t.owner != "them" for t in now)
+                sum(t.open and t.owner != "them" and not t.held for t in now)
             ))
             self._ticks = _ticks(now)
             self._changed(s.dir)
@@ -1082,14 +1207,25 @@ class MeetingPage(Gtk.Box):
         check.connect("toggled", toggled)
         self._todo_rows[todo.key] = (row, check)
         if not s.archived:
-            self._row_menus.attach(row, check, bool(todo.uid), {
-                "edit": lambda: self._edit_todo(s, todo),
-                "remove": lambda: self._confirm_remove_todo(s, todo),
-                "open": lambda: self._open_todo(todo),
-                "move": lambda: self._move_todo(s, todo),
-                "add": lambda: self._add_todo(s),
-            })
+            self._row_menus.attach(
+                row, check, bool(todo.uid), self._row_handlers(s, todo)
+            )
         return row
+
+    def _row_handlers(self, s: Session, todo: Todo) -> dict:
+        """What each item of a row's menu does."""
+        handlers = {
+            "edit": lambda: self._edit_todo(s, todo),
+            "remove": lambda: self._confirm_remove_todo(s, todo),
+            "open": lambda: self._open_todo(todo),
+            "move": lambda: self._move_todo(s, todo),
+            "add": lambda: self._add_todo(s),
+        }
+        for name in whose_offered(todo):
+            handlers[name] = lambda m=(name == "mine"): self._settle_owner(
+                s, [todo.key], mine=m
+            )
+        return handlers
 
     def _list_name(self, todo: Todo) -> Gtk.Widget | None:
         """The asst list the task sits in, right-aligned (the group header

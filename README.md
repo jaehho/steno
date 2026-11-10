@@ -105,6 +105,8 @@ steno project-notes --all   ... every meeting filed under a project (--dry-run f
 steno project-notes --remove NAME...  take a meeting's pages out again
 steno todos                what you owe, across every meeting not put away
 steno todos --all          ... and the ones you ticked
+steno review [NAME]        a meeting's open to-dos; --mine N... files them,
+                           --not-mine N... gives them away (a room's wait for it)
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context
@@ -220,6 +222,26 @@ the date, written any of the usual ways ("oct 12", "10/12", "10/12/26",
 "2026-10-12", "weds", "tue oct 12th"), but not the time of a line or the
 folder name. A date counts after the words, so "may" in a line still finds the
 line.
+
+A meeting in a room is recorded by pressing Record (`steno toggle`) with no
+call app open. When nothing was said on the far side, steno treats it as a
+room and keeps the recording on the laptop: the page says so and offers
+Transcribe and summarize…, which first asks whether everyone who spoke agreed
+to be recorded and to have it sent to Deepgram and the model. Then the
+microphone's pass asks Deepgram for voices (free on a file) and the page tags
+them "Voice 1", "Voice 2" rather than "You"; one voice alone is a voice memo,
+whose lines and to-dos are yours as on a call. A voice is named by a
+first-person introduction ("I'm Ana"; in a room "This is Ana" is usually
+someone introducing Ana, so it names nobody), or by the summary, with a name
+someone was expected by: the calendar event at that hour (`STENO_CALENDAR_DIR`,
+folders of `.ics` files joined with `:`), names learned in earlier meetings of
+the same project, and your own (`STENO_USER_NAME`), which makes that voice
+"You". Every to-do of a room summary waits under "Whose are these?" with Mine
+and Not mine (in the row's menu too, keys y and t), and none goes to asst until
+you say it is yours: a voice taken for yours would put a colleague's promise in
+your task list, and yours taken for someone else's would lose it. `"room":
+true` or `false` in `meta.json` overrides the guess, for a hybrid meeting say,
+followed by `steno realign` and `steno summarize --force`.
 A hit in the title, date or project is highlighted in the meeting's row, which
 spells its date out for a date hit; a hit anywhere else is named instead (`in
 speaker`, `in transcript`, and so on).
@@ -560,6 +582,14 @@ It records other people automatically. That is a deliberate choice, and getting
 their consent is yours to handle — a notification with a Stop button appears
 every time recording starts, and `steno pause`, the bar's middle click, and the
 header's pause menu all exist to make stopping easy rather than an afterthought.
+A room has no call app to tell anyone they are being recorded, so ask first;
+steno then keeps a room's recording on the laptop until you say everyone
+agreed. Kept means three things. The live view never streams the microphone
+of a recording started by hand until its far side speaks, so a room shows
+nothing live. Sync leaves it alone. And the empty `.steno-kept` file in its
+folder keeps it out of a backup that honours it (restic:
+`--exclude-if-present .steno-kept`); a backup that does not will carry it off
+the laptop. A call is never kept, even one whose microphone pass failed.
 
 ### Where everyone must agree
 
@@ -577,7 +607,7 @@ keeps the old transcript beside the new one. Newer recordings need none of this.
 
 A file changed on one side is copied to the other. A file changed on both sides takes the server's version, and yours is kept beside it as `summary.md.conflict-<host>-<time>` on this device only, listed by `steno status`; delete it when you have settled which to keep. A file missing on one side is restored from the other, never deleted. Audio is written once: audio you record goes up, audio from another device comes down for meetings in the last `STENO_SYNC_AUDIO_DAYS` days (30; 0 is text only), and `steno fetch NAME` downloads one meeting's audio whatever its age. Audio trimmed here (`STENO_KEEP_AUDIO_DAYS`, or deleting a meeting's audio) stays on the server and is not downloaded again.
 
-Deleting a meeting here moves the server's copy to `.trash/` beside the sessions, and a meeting moved there from another device goes to this device's trash; nothing is removed outright. A round that would trash more than a few meetings at once, or that finds the server folder empty, is held back until you run `steno sync --allow-deletes`. A meeting being recorded, or written to in the last five minutes, is left alone both ways, `meta.json` goes up last so a reader can take its presence to mean the meeting is complete, and a server meeting without it is not downloaded yet. Whoever can read that folder can read your meetings; the project-notes warning about synced folders applies to it too. A meeting that arrives from another device has no project-notes pages here until you run `steno project-notes` for it. (Decisions: issues #37 and #39.)
+Deleting a meeting here moves the server's copy to `.trash/` beside the sessions, and a meeting moved there from another device goes to this device's trash; nothing is removed outright. A round that would trash more than a few meetings at once, or that finds the server folder empty, is held back until you run `steno sync --allow-deletes`. A meeting being recorded, written to in the last five minutes, or a room kept on this laptop until you say everyone agreed, is left alone both ways, `meta.json` goes up last so a reader can take its presence to mean the meeting is complete, and a server meeting without it is not downloaded yet. Whoever can read that folder can read your meetings; the project-notes warning about synced folders applies to it too. A meeting that arrives from another device has no project-notes pages here until you run `steno project-notes` for it. (Decisions: issues #37 and #39.)
 
 **Erasing.** Deleting keeps a way back on purpose. When someone who was recorded says no, or takes back a yes, choose **Erase everywhere…** in the meeting's menu (or delete it and run `steno erase NAME`). It removes the meeting for good from this device and its trash, from its project's notes, from the server's folder and `.trash/`, and from the server's own trash bin: a Nextcloud keeps every file removed over WebDAV there, with its old versions, and by default empties the bin only when space runs short, so steno removes the meeting's folders and project pages from it through Nextcloud's trash bin address, logged in as the rclone remote is. With the backups chosen (`--restic`), every restic snapshot is rewritten without the meeting and its project pages and the repository is pruned with `--max-unused 0`, because a default prune leaves a meeting's transcript behind in a partly used pack; that repacks every partly used pack, which on a large repository can move gigabytes, so run `steno erase NAME --dry-run --restic` first to see restic's own figure. restic's settings come from the shell, else from the systemd user unit that runs your backups (`STENO_RESTIC_UNIT`, `restic-backup.service` by default). Copies steno cannot see stay where they are: another device's replica until its next sync, a page synced by another tool (an Obsidian vault's sync) until that tool deletes it and you erase again, an export, older versions of the project's `meetings/README.md` index, which lists the title, and whatever Deepgram or the model host kept.
 

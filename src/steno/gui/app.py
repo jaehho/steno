@@ -47,13 +47,15 @@ from ..events import (
     StatusChanged,
     SummaryReady,
 )
-from ..notes import sync_todos
+from ..kept import mark_all
+from ..notes import held_count, sync_todos
 from ..notesjob import NotesState
 from ..retention import prune_audio
 from ..session import paused_until, set_pause
 from ..state import clear_state, write_state
 from ..summarize import sessions_root
 from ..sync import remote as sync_remote
+from ..sync import session_dirs
 from ..sync import sync as sync_meetings
 from . import words
 from .bridge import EngineBridge
@@ -137,6 +139,9 @@ class App(Adw.Application):
         for _old, _new in migrate_legacy():
             pass
         prune_audio()
+        # Meetings kept before the marker existed, or left half-marked
+        # by a crash, get the marker their meta.json asks for.
+        mark_all(session_dirs(self.root))
         self._install_actions()
         self.bridge = EngineBridge(
             on_event=self._on_event, root=self.root, **self.engine_kw
@@ -350,7 +355,7 @@ class App(Adw.Application):
             self._publish(event.status, event.detail, since=since)
 
         elif isinstance(event, MeetingStarted):
-            self._notify_recording(event.app, kept=event.kept)
+            self._notify_recording(event.app, keep_at_end=event.keep_at_end)
 
         elif isinstance(event, MeetingKept):
             self._notify_recording(event.app)
@@ -359,6 +364,8 @@ class App(Adw.Application):
             self.withdraw_notification(RECORDING_NOTIFICATION)
 
         elif isinstance(event, NotesStatus):
+            if event.state is NotesState.HELD:
+                self._notify_room_kept(event.session_dir)
             # The last meeting finishing is not news while a new one records.
             engine = self.engine
             if engine is None or engine.current is None:
@@ -474,7 +481,7 @@ class App(Adw.Application):
 
     # ------------------------------------------------------------ notifications
 
-    def _notify_recording(self, app: str, *, kept: bool = True) -> None:
+    def _notify_recording(self, app: str, *, keep_at_end: bool = True) -> None:
         """Say it out loud, every time, with the stop button attached.
 
         Recording other people without their knowing is the one thing this tool
@@ -485,27 +492,37 @@ class App(Adw.Application):
         """
         # "manual" is the engine's label for a start you asked for.
         manual = app == "manual"
-        note = Gio.Notification.new("Recording" if kept else "Recording: keep it?")
+        note = Gio.Notification.new("Recording" if keep_at_end else "Recording: keep it?")
         if manual:
             note.set_body("Recording started.")
-        elif kept:
+        elif keep_at_end:
             note.set_body(f"{app} opened the microphone.")
         else:
             note.set_body(
                 f"{app} opened the microphone. The recording is deleted when "
                 "the call ends unless you keep it."
             )
-        note.add_button("Stop" if kept else "Keep",
-                        "app.stop-record" if kept else "app.keep-record")
+        note.add_button("Stop" if keep_at_end else "Keep",
+                        "app.stop-record" if keep_at_end else "app.keep-record")
         if not manual:
             note.add_button("Don't record", "app.discard-record")
         note.set_default_action("app.show")
         note.set_priority(Gio.NotificationPriority.NORMAL)
         self.send_notification(RECORDING_NOTIFICATION, note)
 
+    def _notify_room_kept(self, session_dir: Path) -> None:
+        """A room recording waits for the user's word that everyone in it
+        agreed; with the window closed, this is how they hear it waits."""
+        note = Gio.Notification.new(words.ROOM_KEPT_TITLE)
+        note.set_body(words.ROOM_KEPT_BODY)
+        note.set_default_action_and_target(
+            "app.open-session", GLib.Variant("s", str(session_dir))
+        )
+        self.send_notification(f"room-{session_dir.name}", note)
+
     def _notify_summary(self, session_dir: Path, title: str) -> None:
         note = Gio.Notification.new(title or "Meeting summarized")
-        note.set_body("Summary and todos are ready.")
+        note.set_body(words.summary_ready_body(held_count(session_dir)))
         note.set_default_action_and_target(
             "app.open-session", GLib.Variant("s", str(session_dir))
         )

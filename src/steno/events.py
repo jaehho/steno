@@ -19,8 +19,9 @@ class MeetingStarted:
     started_at: float
     manual: bool = False
     # False for a call recorded under `STENO_CONSENT=ask`: it is deleted
-    # when the call ends unless `Engine.keep_now()` keeps it first.
-    kept: bool = True
+    # when the call ends unless `Engine.keep_now()` keeps it first. (Not
+    # `steno.kept`, which holds a room back from sync and backups.)
+    keep_at_end: bool = True
 
 
 @dataclass(frozen=True)

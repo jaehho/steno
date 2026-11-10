@@ -28,6 +28,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from .kept import MARKER as KEPT_MARKER
+from .kept import has_marker, waits
 from .retention import AUDIO_FILES, delete_session
 from .state import read_state
 from .summarize import iter_sessions, sessions_root
@@ -49,8 +51,9 @@ STATE_FILENAME = "sync.json"
 LOCK_FILENAME = "sync.lock"
 STATE_VERSION = 2
 
-# Never synced: ours while pulling, rclone's, and the copy kept aside when both
-# sides changed a file (the server's version took the name).
+# Never synced: ours while pulling, rclone's, the copy kept aside when both
+# sides changed a file (the server's version took the name), and the marker
+# of a meeting kept on this laptop (`steno.kept`).
 SCRATCH_SUFFIXES = (".tmp", ".partial")
 CONFLICT_MARK = ".conflict-"
 
@@ -165,7 +168,8 @@ def is_audio(rel: str) -> bool:
 
 
 def is_unsynced(name: str) -> bool:
-    return name.endswith(SCRATCH_SUFFIXES) or CONFLICT_MARK in name
+    return (name.endswith(SCRATCH_SUFFIXES) or CONFLICT_MARK in name
+            or name == KEPT_MARKER)
 
 
 def sha1_of(path: Path) -> str:
@@ -222,12 +226,24 @@ def recording_session(root: Path | None = None) -> Path | None:
     return None
 
 
+def is_kept(session_dir: Path) -> bool:
+    """True while a room is kept on this laptop until the user says
+    everyone there agreed (`room.awaits_agreement`), or while it carries
+    the `.steno-kept` marker the backup reads (`steno.kept`), so sync
+    and the backup agree. Nothing of it goes to the server. A call whose
+    mic pass has not run is not kept.
+    """
+    return has_marker(session_dir) or waits(session_dir)
+
+
 def busy_sessions(root: Path | None, now: float) -> set[str]:
-    """Meetings that may be growing or half-edited: left alone both ways."""
+    """Meetings left alone both ways: one that may be growing or
+    half-edited, and one kept on this laptop."""
     recording = recording_session(root)
     busy = {recording.name} if recording is not None else set()
     busy.update(
-        p.name for p in session_dirs(root) if now - newest_mtime(p) < QUIET_S
+        p.name for p in session_dirs(root)
+        if now - newest_mtime(p) < QUIET_S or is_kept(p)
     )
     return busy
 
