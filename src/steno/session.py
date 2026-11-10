@@ -330,9 +330,7 @@ class Engine:
         if self.current is not None:
             return
         started_at = time.time()
-        session_dir = self.root / time.strftime("%Y%m%d-%H%M%S", time.localtime(started_at))
-        created = not session_dir.exists()
-        session_dir.mkdir(parents=True, exist_ok=True)
+        session_dir = new_session_dir(self.root, started_at)
         rec = Recording(
             session_dir=session_dir, started_at=started_at, app=app, manual=manual
         )
@@ -355,8 +353,7 @@ class Engine:
             self.current = None
             # Nothing was recorded: an empty session left behind would be
             # listed forever as a meeting that never got its summary.
-            if created:
-                shutil.rmtree(session_dir, ignore_errors=True)
+            shutil.rmtree(session_dir, ignore_errors=True)
             self.emit(EngineError("capture", f"could not open audio: {e}", fatal=True))
             self._settle()
             return
@@ -763,6 +760,27 @@ class Engine:
 
     def _status(self, status: str, detail: str = "") -> None:
         self.emit(StatusChanged(status, detail))
+
+
+def new_session_dir(root: Path, started_at: float) -> Path:
+    """Make and return a folder of its own for a meeting that starts now.
+
+    Folders are named for the second a meeting started, and other code
+    reads the name back as exactly that. A meeting that starts in the
+    same second as the last would share its folder and write over its
+    audio, so it takes the next free second instead; `meta.json` keeps
+    the exact start.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = started_at
+    while True:
+        path = root / time.strftime("%Y%m%d-%H%M%S", time.localtime(stamp))
+        try:
+            path.mkdir()
+        except FileExistsError:
+            stamp += 1
+        else:
+            return path
 
 
 def _rewrite_meta(session_dir: Path, started_at: float, app: str, manual: bool) -> None:
