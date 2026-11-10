@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from steno import icon_dir, state
+from steno import icon_dir, livesrc, state
 
 
 class TestBarRendering(unittest.TestCase):
@@ -45,6 +45,32 @@ class TestBarRendering(unittest.TestCase):
         out = state.bar_json({"status": "paused", "since": 1000.0}, now=1000.0 - 600)
         self.assertEqual(out["tooltip"], "Paused · 10m left")
 
+    def test_a_test_build_says_so_in_the_tooltip_and_a_field(self):
+        out = state.bar_json({"status": "idle", "src": "feat/x@201e472"})
+        self.assertEqual(out["src"], "feat/x@201e472")
+        self.assertEqual(out["tooltip"],
+                         "Listening for a meeting · test build feat/x@201e472")
+        self.assertEqual(out["class"], "idle")
+
+    def test_a_recording_test_build_keeps_its_clock_and_says_so(self):
+        out = state.bar_json({"status": "recording", "detail": "Zoom",
+                              "since": 100.0, "src": "feat/x@1"},
+                             now=100.0 + 185)
+        self.assertEqual(out["text"], "3m")
+        self.assertEqual(out["tooltip"],
+                         "Recording · Zoom · 3m · test build feat/x@1")
+
+    def test_the_installed_build_prints_what_it_always_has(self):
+        # Readers pinned to the old fields see no change on main.
+        out = state.bar_json({"status": "idle"})
+        self.assertNotIn("src", out)
+        self.assertEqual(out["tooltip"], "Listening for a meeting")
+
+    def test_off_names_no_build(self):
+        out = state.bar_json({"status": "off", "src": "feat/x@1"})
+        self.assertNotIn("src", out)
+        self.assertEqual(out["tooltip"], "Steno is not running")
+
     def test_class_is_always_stylable(self):
         for status in state.ICONS:
             self.assertEqual(state.bar_json({"status": status})["class"], status)
@@ -76,6 +102,28 @@ class TestTrayView(unittest.TestCase):
                     for p in icon_dir().glob("hicolor/*/*/*.svg")}:
             self.assertIn(f"[{sub}]", index)
 
+    def test_a_test_build_names_itself_in_the_title_and_menu(self):
+        # Quickshell's bar shows an item's tooltip title (else its
+        # Title), never the description, so the name goes in the title.
+        view = state.tray_view("idle", src="feat/x@1")
+        self.assertEqual(view["title"], "Steno · test build feat/x@1")
+        self.assertEqual(view["tooltip"], "Listening for a meeting")
+        self.assertEqual(view["status_line"],
+                         "Listening for a meeting · test build feat/x@1")
+
+    def test_a_test_build_asks_for_attention_in_every_state(self):
+        # The bar turns its shut tray drawer's chevron orange only for
+        # NeedsAttention, and an idle test build is the one to catch.
+        for status in ("idle", "paused", "recording", "finalizing"):
+            view = state.tray_view(status, src="feat/x@1")
+            self.assertEqual(view["status"], "NeedsAttention", status)
+
+    def test_the_installed_build_looks_as_it_always_has(self):
+        view = state.tray_view("idle")
+        self.assertEqual(view["title"], "Steno")
+        self.assertEqual(view["status"], "Active")
+        self.assertEqual(view["status_line"], "Listening for a meeting")
+
     def test_unknown_status_falls_back_to_idle_icon(self):
         self.assertEqual(state.tray_view("off")["icon"], state.TRAY_ICONS["idle"])
 
@@ -83,7 +131,10 @@ class TestTrayView(unittest.TestCase):
 class TestStateFile(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        patcher = mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": self.tmp.name})
+        patcher = mock.patch.dict(os.environ, {
+            "XDG_RUNTIME_DIR": self.tmp.name,
+            "XDG_STATE_HOME": str(Path(self.tmp.name) / "state"),
+        })
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -131,6 +182,34 @@ class TestStateFile(unittest.TestCase):
     def test_unknown_status_is_off(self):
         state.write_state("sideways")
         self.assertEqual(state.read_state()["status"], "off")
+
+    def lease(self, **fields):
+        record = {"pid": os.getpid(), "test_build": True,
+                  "label": "feat/x@201e472"}
+        livesrc.write_lease(livesrc.lease_path(), {**record, **fields})
+
+    def test_the_running_apps_test_build_lease_reaches_the_bar(self):
+        state.write_state("idle")
+        self.lease()
+        self.assertEqual(state.read_state()["src"], "feat/x@201e472")
+        self.assertIn("test build feat/x@201e472",
+                      state.bar_json(state.read_state())["tooltip"])
+
+    def test_a_lease_from_another_process_is_not_believed(self):
+        # The test build was replaced by main, which has not leased yet,
+        # or a stale lease survived a reboot.
+        state.write_state("idle")
+        self.lease(pid=os.getpid() + 1)
+        self.assertNotIn("src", state.read_state())
+
+    def test_the_installed_checkout_names_no_build(self):
+        state.write_state("idle")
+        self.lease(test_build=False, label="main@130d018")
+        self.assertNotIn("src", state.read_state())
+
+    def test_no_lease_is_no_build(self):
+        state.write_state("idle")
+        self.assertNotIn("src", state.read_state())
 
     def test_write_is_atomic(self):
         """The bar polls this file; it must never read half of one."""

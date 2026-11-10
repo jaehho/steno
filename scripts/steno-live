@@ -67,4 +67,7 @@ if [ $# -eq 0 ] || { [ $# -eq 1 ] && { [ "$1" = gui ] || [ "$1" = show ]; }; }; 
   fi
 fi
 
+# The app says when it is not this installed checkout (livesrc.py): a
+# worktree handed over for a try must not record a meeting unseen.
+export STENO_DEFAULT_ROOT="$DEFAULT_ROOT"
 exec "$bin" "$@"

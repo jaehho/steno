@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from . import runtime_dir
+from .livesrc import lease_path, read_lease
 
 SECONDS_PER_MINUTE = 60
 SECONDS_PER_HOUR = 3600
@@ -118,12 +119,25 @@ def read_state() -> dict:
     if not isinstance(raw, dict) or not _alive(int(raw.get("pid", 0))):
         return {"status": "off"}
     status = str(raw.get("status", "off"))
-    return {
+    published = {
         "status": status if status in ICONS else "off",
         "detail": str(raw.get("detail", "")),
         "since": float(raw.get("since", 0.0)),
         "session": str(raw.get("session", "")),
     }
+    src = named_test_build(read_lease(lease_path()), int(raw.get("pid", 0)))
+    if src:
+        published["src"] = src
+    return published
+
+
+def named_test_build(lease: dict, pid: int) -> str:
+    """The lease's `branch@sha` when it is the running app's own and a
+    test build, else "". A lease left by an app that has gone, or by
+    the installed checkout, says nothing."""
+    if lease.get("pid") != pid or not lease.get("test_build"):
+        return ""
+    return str(lease.get("label", ""))
 
 
 def _elapsed(since: float, now: float) -> str:
@@ -144,11 +158,16 @@ def bar_json(state: dict, now: float | None = None) -> dict:
 
     `class` and `manual` are read by other programs (`contract/`), so
     they are only ever added to, never renamed.
+
+    `src` is there only while a test build is the running app (a
+    worktree from STENO_SRC, or a branch other than main), so the bar
+    says which build would record the next meeting.
     """
     now = time.time() if now is None else now
     status = state.get("status", "off")
     detail = state.get("detail", "")
     since = float(state.get("since", 0.0) or 0.0)
+    src = state.get("src", "")
 
     text = ""
     if status == "recording" and since:
@@ -166,8 +185,10 @@ def bar_json(state: dict, now: float | None = None) -> dict:
         tooltip = f"Paused · {left // 60}m left" if left else "Paused"
     elif detail:
         tooltip = f"{tooltip} · {detail}"
+    if src and status != "off":
+        tooltip = f"{tooltip} · test build {src}"
 
-    return {
+    out = {
         "text": text,
         "alt": status,
         "class": status,
@@ -177,18 +198,32 @@ def bar_json(state: dict, now: float | None = None) -> dict:
         # only you end it (`Engine._on_detect`).
         "manual": status == "recording" and detail == MANUAL,
     }
+    if src and status != "off":
+        out["src"] = src
+    return out
 
 
-def tray_view(status: str, detail: str = "") -> dict:
+def tray_view(status: str, detail: str = "", src: str = "") -> dict:
     """What the tray item shows and offers in a given state.
 
     No elapsed time: the tray is told about changes, not polled, so a counter
     would freeze at whatever it said when the state last changed.
+
+    A test build (`src`, its `branch@sha`) names itself in the title,
+    which is the line a tray host shows on hover and in its list of
+    who asks for attention, and asks for attention for as long as it
+    runs: a bar that greys resting icons or keeps the tray in a shut
+    drawer still shows that the next meeting would be recorded by it.
     """
     recording = status == "recording"
+    tooltip = bar_json({"status": status, "detail": detail})["tooltip"]
+    named = f" · test build {src}" if src else ""
     return {
         "icon": TRAY_ICONS.get(status, TRAY_ICONS["idle"]),
-        "tooltip": bar_json({"status": status, "detail": detail})["tooltip"],
+        "title": f"Steno{named}",
+        "status": "NeedsAttention" if src else "Active",
+        "tooltip": tooltip,
+        "status_line": f"{tooltip}{named}",
         "record_label": "Stop recording" if recording else "Start recording",
         "can_record": status != "finalizing",
         "recording": recording,
