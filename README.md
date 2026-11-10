@@ -91,6 +91,8 @@ steno summarize [NAME]     (re)summarize a session; --all to catch up
 steno summarize --uncited  redo the summaries that have no citations (lists, prices, --yes)
 steno export [NAME] [-o F] print or save a meeting as markdown
 steno realign [NAME]       re-time an old session against its audio (costs a pass)
+steno debrief [FILE]       record yourself recounting a meeting you just left (Enter
+                           stops), or import a voice memo; transcribed on this machine
 steno delete [NAME]        move a meeting to the trash
 steno erase NAME           remove a deleted meeting from every copy, its server's
                            trash bin included, for consent withdrawn (--dry-run
@@ -504,6 +506,30 @@ The far side is transcribed live, because reading back what *they* just said is
 the point. Your own microphone is **recorded but never streamed** — it is
 transcribed in one pass when the meeting ends, which is cheaper and more
 accurate than streaming it.
+
+`STENO_ASR=local` does the batch passes on this machine instead: your side
+after a call, and `steno realign`. A debrief is always done here, and so is
+its `steno realign`, unless `STENO_ASR` says otherwise. It runs
+faster-whisper `large-v3-turbo` (`STENO_LOCAL_MODEL`) from the Hugging Face
+cache and never downloads it. On a laptop, four CPU threads do four to ten
+minutes of audio a minute (a 3-minute debrief takes about 40 s, loading the
+model included), and an RTX 4050 about sixty. `make venv` installs the CPU
+version (the `local` extra); `make venv EXTRAS=local-gpu` adds CUDA 12's
+cuBLAS and cuDNN for the GPU (a 1.4 GB download, 2.1 GB installed), beside a
+system CUDA 13. `STENO_LOCAL_DEVICE` is `auto`
+(the GPU when it can, else the CPU), `cpu` or `cuda`; `STENO_LOCAL_LANGUAGE`
+is `en`, or empty to let Whisper guess. The far side of a call is still
+streamed to Deepgram, since it is shown as it is said. `meta.json` records
+which engine wrote a meeting's words (`asr`).
+
+A debrief (`steno debrief`) is a session with only your voice in it: you
+talk through a meeting held in a room, at the door, instead of recording the
+room. Nobody else is recorded, so there is no one else's consent to get, and
+the summary is told that the promises you report from others are theirs.
+Enter, Ctrl+C or SIGTERM stops the recording, and so does the 15-minute
+limit (`--max`). If the transcription fails, the recording is kept and
+`steno realign NAME` retries it here. The summary goes to the model host
+you configured, like any other.
 
 Audio leaves the machine only to Deepgram, and transcript text only to the
 model host you configured (Anthropic through Claude Code by default; see above) for the
