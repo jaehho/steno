@@ -1,4 +1,4 @@
-"""Whether a detected call is recorded by itself, or only once you say so.
+"""Whether a detected call is kept by default, or only once you say so.
 
 Where Steno has run so far, one party's consent is enough to record a call,
 and you are that party. In Portugal it is not: Codigo Penal art. 199(1)
@@ -7,11 +7,12 @@ without their consent, even when they were said to you, and also using
 such a recording, however lawfully it was made. So the right default
 depends on where the laptop is, not on taste.
 
-`STENO_CONSENT=auto` records a detected call as soon as it starts, as
-Steno always has. `ask` records nothing: it offers to, and starts only
-when you accept. Unset, a machine whose time zone is in Europe asks and
-any other records. The zone is read at each detection, so changing it on
-arrival needs no restart.
+Either way a detected call is recorded from its first second, so the
+start of a meeting is never lost to a question. `STENO_CONSENT=auto`
+keeps it unless you press Don't record, which deletes it. `ask` deletes
+it when the call ends unless you press Keep. Unset, a machine whose time
+zone is in Europe asks and any other keeps. The zone is read at each
+detection, so changing it on arrival needs no restart.
 """
 from __future__ import annotations
 

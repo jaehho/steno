@@ -1,4 +1,4 @@
-"""Where every speaker must agree, a detected call is offered, not recorded.
+"""A detected call is recorded from its start, then kept or deleted.
 
 No audio, network or bus: capture and the notes job are faked, and the
 detector's events are fed to the engine by hand.
@@ -17,7 +17,12 @@ from unittest import mock
 
 from steno import consent, session
 from steno.detect import MeetingEvent
-from steno.events import CallDetected, CallGone, MeetingEnded, MeetingStarted
+from steno.events import (
+    MeetingDiscarded,
+    MeetingEnded,
+    MeetingKept,
+    MeetingStarted,
+)
 from tests.test_sidebar_menu import ROOT, SCRUBBED, start_broadway
 
 APP = "ZOOM VoiceEngine"
@@ -66,13 +71,14 @@ class TestZone(unittest.TestCase):
         self.assertEqual(consent.machine_zone("", self.link), "")
 
 
-class TestAskFirst(unittest.TestCase):
+class TestKeepOrDiscard(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name) / "sessions"
-        self.mode = "ask"
+        self.mode = "auto"
         self.events: list = []
+        self.notes_jobs = 0
         self.engine = session.Engine(
             emit=self.events.append, root=self.root,
             brief_path=Path(tmp.name) / "brief.md", model="m",
@@ -89,12 +95,17 @@ class TestAskFirst(unittest.TestCase):
         async def idle(*_a, **_kw):
             return None
 
+        async def notes(*_a, **_kw):
+            self.notes_jobs += 1
+
         engine = self.engine
 
         async def scenario():
             for step in steps:
                 if step in {"start", "end"}:
                     await engine._on_detect(MeetingEvent(step, APP))
+                elif step == "toggle":  # `steno toggle`: a start you asked for
+                    await engine._on_command("start")
                 else:
                     await engine._on_command(step)
             await asyncio.gather(*engine._finishers)
@@ -104,7 +115,7 @@ class TestAskFirst(unittest.TestCase):
              mock.patch.object(engine, "_record_mic", idle), \
              mock.patch.object(engine, "_stream_them", idle), \
              mock.patch.object(engine, "_pump", idle), \
-             mock.patch.object(engine, "_run_notes_job", idle):
+             mock.patch.object(engine, "_run_notes_job", notes):
             asyncio.run(scenario())
 
     def sessions(self) -> list[Path]:
@@ -113,48 +124,78 @@ class TestAskFirst(unittest.TestCase):
     def of(self, kind) -> list:
         return [e for e in self.events if isinstance(e, kind)]
 
-    def test_a_detected_call_is_offered_and_nothing_is_recorded(self):
+    def test_auto_records_a_call_from_its_start_and_keeps_it(self):
         self.run_steps("start")
-        self.assertEqual(self.sessions(), [])
-        self.assertIsNone(self.engine.current)
-        self.assertEqual(self.of(CallDetected), [CallDetected(APP)])
-        self.assertEqual(self.of(MeetingStarted), [])
-
-    def test_accepting_records_the_call_until_the_app_lets_go(self):
-        self.run_steps("start", "accept")
         [made] = self.sessions()
         meta = json.loads((made / "meta.json").read_text())
         self.assertEqual((meta["app"], meta["manual"]), (APP, False))
-        self.assertIsNotNone(self.engine.current)
+        [started] = self.of(MeetingStarted)
+        self.assertTrue(started.kept)
         self.run_steps("end")
-        self.assertIsNone(self.engine.current)
+        self.assertEqual(self.sessions(), [made])
         self.assertEqual(len(self.of(MeetingEnded)), 1)
+        self.assertEqual(self.notes_jobs, 1)
 
-    def test_a_call_nobody_accepted_leaves_nothing_behind(self):
-        self.run_steps("start", "end", "accept")
+    def test_dont_record_deletes_the_call_and_writes_no_notes(self):
+        self.run_steps("start", "discard")
         self.assertEqual(self.sessions(), [])
-        self.assertEqual(self.of(CallGone), [CallGone(APP)])
-        self.assertIsNone(self.engine.offered)
+        self.assertIsNone(self.engine.current)
+        [gone] = self.of(MeetingDiscarded)
+        self.assertEqual(gone.app, APP)
+        self.assertEqual(self.of(MeetingEnded), [])
+        self.assertEqual(self.notes_jobs, 0)
 
-    def test_auto_records_at_once_as_before(self):
-        self.mode = "auto"
-        self.run_steps("start")
-        self.assertEqual(len(self.sessions()), 1)
-        self.assertEqual(self.of(CallDetected), [])
-        self.assertEqual(len(self.of(MeetingStarted)), 1)
+    def test_the_app_letting_go_after_dont_record_changes_nothing(self):
+        self.run_steps("start", "discard", "end")
+        self.assertEqual(self.sessions(), [])
+        self.assertEqual(self.of(MeetingEnded), [])
 
-    def test_the_mode_is_read_at_each_call(self):
-        """Changing the zone on arrival must not need a restart."""
-        self.mode = "auto"
-        self.run_steps("start", "end")
+    def test_ask_records_from_the_start_but_not_kept(self):
         self.mode = "ask"
         self.run_steps("start")
         self.assertEqual(len(self.sessions()), 1)
-        self.assertEqual(self.of(CallDetected), [CallDetected(APP)])
+        [started] = self.of(MeetingStarted)
+        self.assertFalse(started.kept)
+
+    def test_ask_deletes_a_call_nobody_kept_when_it_ends(self):
+        self.mode = "ask"
+        self.run_steps("start", "end")
+        self.assertEqual(self.sessions(), [])
+        self.assertEqual(len(self.of(MeetingDiscarded)), 1)
+        self.assertEqual(self.of(MeetingEnded), [])
+        self.assertEqual(self.notes_jobs, 0)
+
+    def test_ask_keeps_a_call_you_kept(self):
+        self.mode = "ask"
+        self.run_steps("start", "keep", "end")
+        self.assertEqual(len(self.sessions()), 1)
+        self.assertEqual(len(self.of(MeetingKept)), 1)
+        self.assertEqual(len(self.of(MeetingEnded)), 1)
+        self.assertEqual(self.notes_jobs, 1)
+
+    def test_a_recording_you_started_is_always_kept(self):
+        self.mode = "ask"
+        self.run_steps("toggle", "end", "stop")
+        [started] = self.of(MeetingStarted)
+        self.assertTrue(started.kept)
+        self.assertEqual(len(self.sessions()), 1)
+        self.assertEqual(len(self.of(MeetingEnded)), 1)
+
+    def test_the_mode_is_read_at_each_call(self):
+        """Changing the zone on arrival must not need a restart."""
+        self.run_steps("start", "end")
+        self.mode = "ask"
+        self.run_steps("start", "end")
+        self.assertEqual(len(self.sessions()), 1)
+        self.assertEqual(len(self.of(MeetingDiscarded)), 1)
+
+    def test_keep_and_discard_with_nothing_recording_do_nothing(self):
+        self.run_steps("keep", "discard")
+        self.assertEqual(self.events, [])
 
 
 class TestOnBroadway(unittest.TestCase):
-    def test_the_call_offer_in_the_app_on_broadway(self):
+    def test_the_recording_notice_in_the_app_on_broadway(self):
         with tempfile.TemporaryDirectory() as runtime:
             server, number = start_broadway(runtime)
             if server is None:

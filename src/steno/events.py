@@ -18,24 +18,28 @@ class MeetingStarted:
     app: str
     started_at: float
     manual: bool = False
+    # False for a call recorded under `STENO_CONSENT=ask`: it is deleted
+    # when the call ends unless `Engine.keep_now()` keeps it first.
+    kept: bool = True
 
 
 @dataclass(frozen=True)
-class CallDetected:
-    """An app opened the microphone and `STENO_CONSENT` is `ask`.
+class MeetingKept:
+    """A call recorded under `STENO_CONSENT=ask` is now kept at its end."""
 
-    Nothing is being recorded. `Engine.record_call()` starts the recording,
-    which then ends when the app lets go of the mic, as one that started by
-    itself does.
-    """
-
+    session_dir: Path
     app: str
 
 
 @dataclass(frozen=True)
-class CallGone:
-    """The call that was offered ended before anyone said to record it."""
+class MeetingDiscarded:
+    """A recording was stopped and deleted: its folder no longer exists.
 
+    You pressed Don't record, or a call under `STENO_CONSENT=ask` ended
+    without being kept. No notes job runs and nothing is synced.
+    """
+
+    session_dir: Path
     app: str
 
 
@@ -121,8 +125,8 @@ class StatusChanged:
 
 Event = (
     MeetingStarted
-    | CallDetected
-    | CallGone
+    | MeetingKept
+    | MeetingDiscarded
     | Heard
     | MeetingEnded
     | NotesStatus

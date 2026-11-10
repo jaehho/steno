@@ -1,4 +1,4 @@
-"""GTK checks for the call offer: its notification and its Record button.
+"""GTK checks for the recording notice: its Keep and Don't record buttons.
 
 Run by test_consent.py, in a child process on a Broadway display and
 never on a real one. The name keeps test discovery from importing this
@@ -19,7 +19,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Gdk
 
-from steno.events import CallDetected, CallGone, MeetingStarted
+from steno.events import MeetingDiscarded, MeetingKept, MeetingStarted
 from steno.gui import app as app_module
 
 APP = "ZOOM VoiceEngine"
@@ -56,12 +56,16 @@ class Note:
         pass
 
 
-class TestCallOffer(unittest.TestCase):
+class TestRecordingNotice(unittest.TestCase):
     def setUp(self):
-        self.accepted = 0
+        self.calls: list[str] = []
         self.sent: dict[str, Note] = {}
         self.withdrawn: list[str] = []
-        engine = SimpleNamespace(record_call=self.accept, current=None)
+        engine = SimpleNamespace(
+            keep_now=lambda: self.calls.append("keep"),
+            discard_now=lambda: self.calls.append("discard"),
+            current=object(),
+        )
         app = app_module.App()
         for patcher in (
             mock.patch.object(app_module.App, "engine", engine),
@@ -74,32 +78,51 @@ class TestCallOffer(unittest.TestCase):
         app._install_actions()
         self.app = app
 
-    def accept(self) -> None:
-        self.accepted += 1
+    def started(self, app: str = APP, *, kept: bool = True) -> Note:
+        self.app._on_event(
+            MeetingStarted(Path("/nonexistent"), app, 0.0, app == "manual", kept)
+        )
+        return self.sent["recording"]
 
-    def test_a_detected_call_asks_and_says_nothing_is_recorded(self):
-        self.app._on_event(CallDetected(APP))
-        note = self.sent["call"]
-        self.assertEqual(note.title, "Call detected: record?")
-        self.assertIn("Nothing is being recorded", note.body)
-        self.assertEqual(note.buttons, [("Record", "app.record-call")])
-        self.assertNotIn("recording", self.sent)
+    def test_a_detected_call_offers_dont_record(self):
+        note = self.started()
+        self.assertEqual(note.title, "Recording")
+        self.assertEqual(note.buttons, [
+            ("Stop", "app.stop-record"),
+            ("Don't record", "app.discard-record"),
+        ])
 
-    def test_record_asks_the_engine_to_record_the_call(self):
-        action = self.app.lookup_action("record-call")
-        assert action is not None, "no app.record-call"
-        action.activate(None)
-        self.assertEqual(self.accepted, 1)
+    def test_a_recording_you_started_offers_only_stop(self):
+        note = self.started("manual")
+        self.assertEqual(note.buttons, [("Stop", "app.stop-record")])
 
-    def test_the_offer_goes_when_the_call_does(self):
-        self.app._on_event(CallGone(APP))
-        self.assertEqual(self.withdrawn, ["call"])
+    def test_a_call_not_kept_yet_says_it_will_be_deleted(self):
+        note = self.started(kept=False)
+        self.assertEqual(note.title, "Recording: keep it?")
+        self.assertIn("deleted when the call ends", note.body)
+        self.assertEqual(note.buttons, [
+            ("Keep", "app.keep-record"),
+            ("Don't record", "app.discard-record"),
+        ])
 
-    def test_the_offer_gives_way_to_the_recording_notice(self):
-        self.app._on_event(CallDetected(APP))
-        self.app._on_event(MeetingStarted(Path("/nonexistent"), APP, 0.0))
-        self.assertEqual(self.withdrawn, ["call"])
-        self.assertEqual(self.sent["recording"].buttons, [("Stop", "app.stop-record")])
+    def test_keeping_turns_it_into_the_plain_notice(self):
+        self.started(kept=False)
+        self.app._on_event(MeetingKept(Path("/nonexistent"), APP))
+        note = self.sent["recording"]
+        self.assertEqual(note.title, "Recording")
+        self.assertEqual(note.buttons[0], ("Stop", "app.stop-record"))
+
+    def test_the_notice_goes_when_the_call_is_deleted(self):
+        self.started()
+        self.app._on_event(MeetingDiscarded(Path("/nonexistent"), APP))
+        self.assertEqual(self.withdrawn, ["recording"])
+
+    def test_the_buttons_reach_the_engine(self):
+        for name in ("keep-record", "discard-record"):
+            action = self.app.lookup_action(name)
+            assert action is not None, f"no app.{name}"
+            action.activate(None)
+        self.assertEqual(self.calls, ["keep", "discard"])
 
 
 if __name__ == "__main__":

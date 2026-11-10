@@ -29,12 +29,12 @@ from .detect import DEFAULT_ALLOW, END_GRACE_S, START_HOLD_S, watch_meetings
 from .events import (
     AdviceDelta,
     AdviceDone,
-    CallDetected,
-    CallGone,
     EngineError,
     Event,
     Heard,
+    MeetingDiscarded,
     MeetingEnded,
+    MeetingKept,
     MeetingStarted,
     NotesStatus,
     StatusChanged,
@@ -118,6 +118,9 @@ class Recording:
     started_at: float
     app: str
     manual: bool = False
+    # False for a call recorded under `STENO_CONSENT=ask` until you keep
+    # it: it is deleted when it ends.
+    kept: bool = True
     tasks: list[asyncio.Task] = field(default_factory=list)
     handles: list = field(default_factory=list)
     transcript_jsonl: IO[str] | None = None
@@ -169,8 +172,6 @@ class Engine:
         self.consent = consent
 
         self.current: Recording | None = None
-        # The app whose call was detected and offered, not yet recorded.
-        self.offered: str | None = None
         # Post-meeting work in flight (batch transcription, a summary). `current`
         # is already None while it runs, so a quit that only looked at `current`
         # cancelled the very work that makes a recording worth keeping.
@@ -231,30 +232,14 @@ class Engine:
 
     async def _on_detect(self, event) -> None:
         if event.kind == "start":
-            if self.current is None and self.consent() == ASK:
-                self._offer(event.app)
-            else:
-                await self._start(event.app)
-        elif self.offered is not None:
-            self._withdraw_offer()
+            # Recorded from its first second either way, so the start of a
+            # meeting is never lost to a question; `ask` only changes what
+            # happens to it at the end if nobody kept it.
+            await self._start(event.app, kept=self.consent() != ASK)
         elif self.current is not None and not self.current.manual:
             # A manually started recording outlives the app that triggered
             # detection: the user asked for it, so only they end it.
             await self._end()
-
-    def _offer(self, app: str) -> None:
-        """Say a call started, and record nothing until told to.
-
-        Where everyone on a call must agree to its recording, starting by
-        itself would make the tool commit the offence on your behalf.
-        """
-        self.offered = app
-        log.info("call detected (%s); asking before recording", app)
-        self.emit(CallDetected(app))
-
-    def _withdraw_offer(self) -> None:
-        app, self.offered = self.offered or "", None
-        self.emit(CallGone(app))
 
     async def _guarded(self, handler, *args) -> None:
         """Run one step of the watch or command loop; a failure is not the end.
@@ -272,18 +257,19 @@ class Engine:
             self._settle()
 
     async def _serve_commands(self) -> None:
-        """Serve `start_now()`, `record_call()`, `stop_now()`, `set_audience()`."""
+        """Serve the thread-safe commands: start, stop, keep, discard, audience."""
         while True:
             await self._guarded(self._on_command, await self._commands.get())
 
     async def _on_command(self, cmd: str) -> None:
         if cmd == "start" and self.current is None:
             await self._start(MANUAL, manual=True)
-        elif cmd == "accept" and self.offered is not None:
-            app, self.offered = self.offered, None
-            await self._start(app)
         elif cmd == "stop" and self.current is not None:
             await self._end()
+        elif cmd == "keep" and self.current is not None:
+            self._keep()
+        elif cmd == "discard" and self.current is not None:
+            await self._discard()
         elif cmd == "audience-on":
             self._audience = True
             self._start_you_display()
@@ -300,13 +286,17 @@ class Engine:
         """Ask the engine to begin recording. Safe to call from another thread."""
         self._command("start")
 
-    def record_call(self) -> None:
-        """Record the call that was offered. Thread-safe.
+    def keep_now(self) -> None:
+        """Keep the current recording when it ends. Thread-safe.
 
-        Unlike `start_now`, the recording belongs to the call: it ends when
-        the app releases the microphone.
+        Only a call recorded under `STENO_CONSENT=ask` needs it; any other
+        recording is kept already.
         """
-        self._command("accept")
+        self._command("keep")
+
+    def discard_now(self) -> None:
+        """Stop the current recording and delete it. Thread-safe."""
+        self._command("discard")
 
     def stop_now(self) -> None:
         """Ask the engine to end the current recording. Thread-safe."""
@@ -326,13 +316,14 @@ class Engine:
             return
         self._loop.call_soon_threadsafe(self._commands.put_nowait, cmd)
 
-    async def _start(self, app: str, manual: bool = False) -> None:
+    async def _start(self, app: str, manual: bool = False, kept: bool = True) -> None:
         if self.current is not None:
             return
         started_at = time.time()
         session_dir = new_session_dir(self.root, started_at)
         rec = Recording(
-            session_dir=session_dir, started_at=started_at, app=app, manual=manual
+            session_dir=session_dir, started_at=started_at, app=app, manual=manual,
+            kept=kept or manual,
         )
         self.current = rec
         self.transcript = []
@@ -377,7 +368,7 @@ class Engine:
                 asyncio.create_task(self._stream_them(sink_mon, them_wav)),
                 asyncio.create_task(self._pump()),
             ]
-            self.emit(MeetingStarted(session_dir, app, started_at, manual))
+            self.emit(MeetingStarted(session_dir, app, started_at, manual, rec.kept))
             self._status("recording", app)
             if self._audience:
                 self._start_you_display()
@@ -401,6 +392,9 @@ class Engine:
         """
         rec = self.current
         if rec is None:
+            return
+        if not rec.kept:
+            await self._discard()
             return
         # Counted before `current` clears, so there is no instant at which a
         # meeting is neither recording nor being finished (a quit that looked
@@ -426,6 +420,45 @@ class Engine:
             raise
         self._finishers.add(task)
         task.add_done_callback(self._finishers.discard)
+
+    def _keep(self) -> None:
+        rec = self.current
+        if rec is None or rec.kept:
+            return
+        rec.kept = True
+        log.info("keeping %s", rec.session_dir.name)
+        self.emit(MeetingKept(rec.session_dir, rec.app))
+
+    async def _discard(self) -> None:
+        """Stop capturing and delete what was recorded: no notes, no sync.
+
+        Deleted outright rather than moved to the trash: what was said was
+        not agreed to be kept, so no copy of it may stay behind.
+        """
+        rec = self.current
+        if rec is None:
+            return
+        self.current = None
+        self._stop_you_display()
+        rec.stop()
+        await asyncio.sleep(0.2)  # let cancelled writers unwind before deleting
+        if rec.transcript_jsonl is not None:
+            with contextlib.suppress(Exception):
+                rec.transcript_jsonl.close()
+        self.transcript = []
+        try:
+            shutil.rmtree(rec.session_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            self.emit(EngineError(
+                "discard", f"could not delete {rec.session_dir.name}: {e}",
+                fatal=True, session_dir=rec.session_dir,
+            ))
+        else:
+            log.info("deleted %s (not kept)", rec.session_dir.name)
+        self.emit(MeetingDiscarded(rec.session_dir, rec.app))
+        self._settle()
 
     def _settle(self) -> None:
         """Back to listening, unless another meeting is recording or finishing."""
