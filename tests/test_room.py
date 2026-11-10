@@ -626,6 +626,30 @@ class TestRealign(Scratch):
         self.assertFalse((folder / "speakers.json").exists())
         self.assertTrue((folder / "speakers.before-realign.json").is_file())
 
+    def test_a_room_is_never_redone_on_this_machine(self):
+        local = mock.AsyncMock(return_value=[])
+        folder = make_session(self.root, "room", manual=True, far=[],
+                              meta={"room": True})
+        with mock.patch.object(transcribe, "transcribe_file_local", local), \
+             self.assertRaisesRegex(ValueError, "cannot tell voices apart"):
+            asyncio.run(realign.realign_session(
+                folder, started_at=STARTED, backend="local"
+            ))
+        local.assert_not_awaited()
+
+    def test_a_call_redone_on_this_machine_asks_for_no_voices(self):
+        async def heard(_path, started_at, speaker):
+            return [{"ts": started_at + 1, "speaker": speaker,
+                     "text": "Hello", "offset": 1.0}]
+
+        folder = make_session(self.root, "call", manual=False,
+                              far=["Hello"])
+        with mock.patch.object(transcribe, "transcribe_file_local", heard):
+            lines = asyncio.run(realign.realign_session(
+                folder, started_at=STARTED, backend="local"
+            ))
+        self.assertEqual(lines, 2)
+
     def test_a_call_keeps_the_microphone_one_voice(self):
         dg = Deepgram(self, THREE_VOICES)
         folder = make_session(self.root, "call", manual=False,

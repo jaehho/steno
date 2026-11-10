@@ -133,7 +133,12 @@ async def realign_session(
     # Voices are asked for on both sides: they cost nothing on a file, and
     # without them a re-timed meeting loses every name it had learned.
     room = is_room(load_meta(session_dir), load_records(session_dir))
-    voices_as = {"them": FAR_VOICE, "you": MIC_VOICE if room else ""}
+    # A pass on this machine names no voices: a call's far side does
+    # without them, and a room refuses it (`transcribe_file`).
+    voices_as = {
+        "them": FAR_VOICE if chosen != "local" else "",
+        "you": MIC_VOICE if room else "",
+    }
     records: list[dict] = []
     for speaker in TRACKS:
         # The echo-cancelled copy when there is one: transcribing a microphone

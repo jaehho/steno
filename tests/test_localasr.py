@@ -136,6 +136,16 @@ class TestBackendSwitch(unittest.TestCase):
         self.assertEqual(rows, [{"ts": 1.0}])
         local.assert_awaited_once_with(Path("/x/you.wav"), 5.0, "you")
 
+    def test_a_local_pass_cannot_tell_voices_apart(self):
+        local = mock.AsyncMock(return_value=[])
+        with mock.patch.object(transcribe, "transcribe_file_local", local), \
+             self.assertRaisesRegex(ValueError, "cannot tell voices apart"):
+            asyncio.run(transcribe.transcribe_file(
+                Path("/x/you.wav"), 0.0, "you", voices_as="mic",
+                backend="local",
+            ))
+        local.assert_not_awaited()
+
     def test_an_explicit_backend_beats_the_environment(self):
         local = mock.AsyncMock(return_value=[])
         with mock.patch.dict(os.environ, {"STENO_ASR": "deepgram"}), \

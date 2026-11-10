@@ -252,6 +252,15 @@ async def transcribe_file(  # noqa: PLR0913 - the batch pass's full config
     made a long meeting worse (it dropped names), so it is given none.
     """
     if (backend or asr_backend(os.environ)) == "local":
+        if voices_as:
+            # Whisper writes the words, not who said them. A room handed
+            # back as one voice would pass for a voice memo, and its
+            # labmates' to-dos would be filed as yours.
+            msg = (
+                "a pass on this machine cannot tell voices apart; "
+                "unset STENO_ASR to transcribe a room"
+            )
+            raise ValueError(msg)
         return await transcribe_file_local(path, started_at, speaker)
     api_key = os.environ["DEEPGRAM_API_KEY"]
     params: list[tuple[str, str]] = [
