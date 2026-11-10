@@ -34,6 +34,7 @@ from ..events import (
     EngineError,
     Event,
     Heard,
+    MeetingDiscarded,
     MeetingEnded,
     MeetingStarted,
     NotesStatus,
@@ -538,6 +539,12 @@ class Window(Adw.ApplicationWindow):
             was_watching = self.sidebar.selected == LIVE
             self.sidebar.live_dir = None
             self.sidebar.refresh(select=event.session_dir if was_watching else None)
+        elif isinstance(event, MeetingDiscarded):
+            # Its folder is gone: nothing to select, and no notes to keep.
+            self.live.clear()
+            self.sidebar.live_dir = None
+            self.sidebar.refresh()
+            self._toast("Recording deleted")
         elif isinstance(event, AdviceDelta):
             if self._asker is not None:
                 self._asker.delta(event.text)

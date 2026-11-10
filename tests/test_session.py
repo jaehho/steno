@@ -79,6 +79,7 @@ class TestBusy(unittest.TestCase):
         return SimpleNamespace(
             stop=lambda: None, transcript_jsonl=None,
             started_at=time.time() - 60, session_dir=self.root, app="zoom",
+            kept=True,
             keyterms=[],
         )
 
@@ -197,6 +198,21 @@ class TestBusy(unittest.TestCase):
         errors = [e for e in events if isinstance(e, EngineError)]
         self.assertEqual([e.where for e in errors], ["engine"])
         self.assertTrue(errors[0].fatal)
+
+
+class TestSessionDir(unittest.TestCase):
+    def test_two_meetings_in_one_second_get_two_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            first = session.new_session_dir(root, 1_794_326_584.2)
+            second = session.new_session_dir(root, 1_794_326_584.7)
+            self.assertNotEqual(first, second)
+            self.assertTrue(first.is_dir() and second.is_dir())
+            # Both names still read back as the second they started in,
+            # give or take the one taken to keep them apart.
+            stamps = [time.mktime(time.strptime(p.name, "%Y%m%d-%H%M%S"))
+                      for p in (first, second)]
+            self.assertEqual(stamps[1] - stamps[0], 1)
 
 
 class TestStartFailure(unittest.TestCase):

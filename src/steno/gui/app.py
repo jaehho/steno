@@ -39,7 +39,9 @@ from ..control import APP_ID
 from ..events import (
     EngineError,
     Event,
+    MeetingDiscarded,
     MeetingEnded,
+    MeetingKept,
     MeetingStarted,
     NotesStatus,
     StatusChanged,
@@ -195,6 +197,8 @@ class App(Adw.Application):
         add("show", lambda _a, _p: self.present_window())
         add("toggle-record", lambda _a, _p: self.toggle_record())
         add("stop-record", lambda _a, _p: self.stop_record())
+        add("keep-record", lambda _a, _p: self.keep_record())
+        add("discard-record", lambda _a, _p: self.discard_record())
         add("pause", lambda _a, p: self.pause(p.get_int32()), "i")
         add("unpause", lambda _a, _p: self.pause(None))
         add("quit", lambda _a, _p: self.request_quit())
@@ -273,6 +277,16 @@ class App(Adw.Application):
         else:
             engine.stop_now()
 
+    def keep_record(self) -> None:
+        engine = self.engine
+        if engine is not None and engine.current is not None:
+            engine.keep_now()
+
+    def discard_record(self) -> None:
+        engine = self.engine
+        if engine is not None and engine.current is not None:
+            engine.discard_now()
+
     def stop_record(self) -> None:
         engine = self.engine
         if engine is not None and engine.current is not None:
@@ -336,9 +350,12 @@ class App(Adw.Application):
             self._publish(event.status, event.detail, since=since)
 
         elif isinstance(event, MeetingStarted):
+            self._notify_recording(event.app, kept=event.kept)
+
+        elif isinstance(event, MeetingKept):
             self._notify_recording(event.app)
 
-        elif isinstance(event, MeetingEnded):
+        elif isinstance(event, (MeetingEnded, MeetingDiscarded)):
             self.withdraw_notification(RECORDING_NOTIFICATION)
 
         elif isinstance(event, NotesStatus):
@@ -457,19 +474,31 @@ class App(Adw.Application):
 
     # ------------------------------------------------------------ notifications
 
-    def _notify_recording(self, app: str) -> None:
+    def _notify_recording(self, app: str, *, kept: bool = True) -> None:
         """Say it out loud, every time, with the stop button attached.
 
         Recording other people without their knowing is the one thing this tool
         must never do quietly — and with the window closed, this notification is
-        the only signal the user gets at the moment it starts.
+        the only signal the user gets at the moment it starts. A call steno
+        started by itself also offers Don't record, which deletes it; one that
+        is not kept yet (`STENO_CONSENT=ask`) offers Keep in place of Stop.
         """
-        note = Gio.Notification.new("Recording")
         # "manual" is the engine's label for a start you asked for.
-        note.set_body(
-            "Recording started." if app == "manual" else f"{app} opened the microphone."
-        )
-        note.add_button("Stop", "app.stop-record")
+        manual = app == "manual"
+        note = Gio.Notification.new("Recording" if kept else "Recording: keep it?")
+        if manual:
+            note.set_body("Recording started.")
+        elif kept:
+            note.set_body(f"{app} opened the microphone.")
+        else:
+            note.set_body(
+                f"{app} opened the microphone. The recording is deleted when "
+                "the call ends unless you keep it."
+            )
+        note.add_button("Stop" if kept else "Keep",
+                        "app.stop-record" if kept else "app.keep-record")
+        if not manual:
+            note.add_button("Don't record", "app.discard-record")
         note.set_default_action("app.show")
         note.set_priority(Gio.NotificationPriority.NORMAL)
         self.send_notification(RECORDING_NOTIFICATION, note)
