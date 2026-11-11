@@ -50,6 +50,7 @@ from ..events import (
 from ..kept import mark_all
 from ..notes import held_count, sync_todos
 from ..notesjob import NotesState
+from ..procname import name_process
 from ..retention import prune_audio
 from ..session import paused_until, set_pause
 from ..state import clear_state, write_state
@@ -92,6 +93,9 @@ class App(Adw.Application):
     def __init__(
         self, root: Path | None = None, background: bool = False, **engine_kw
     ) -> None:
+        # Before anything is sent: a listener that never opened a window
+        # used to send its notices as `python3`, which swaync rules miss.
+        name_process()
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.root = root
         self.engine_kw = engine_kw

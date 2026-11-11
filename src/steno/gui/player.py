@@ -34,6 +34,8 @@ import contextlib
 
 from gi.repository import GLib, Gst
 
+from ..procname import name_process
+
 TICK_MS = 200
 
 _initialized = False
@@ -43,11 +45,7 @@ def _ensure_gst() -> bool:
     global _initialized  # noqa: PLW0603  # one-shot Gst init flag at module scope
     if not _initialized:
         try:
-            # Names the PulseAudio stream. Without it the stream is called
-            # `python3`, so its saved volume is shared with every other Python
-            # program on the machine — and inherited from them.
-            GLib.set_application_name("Steno")
-            GLib.set_prgname("steno")
+            name_process()
             Gst.init(None)
             _initialized = True
         except Exception:
