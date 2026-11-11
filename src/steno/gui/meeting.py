@@ -1289,7 +1289,9 @@ class MeetingPage(Gtk.Box):
         self._focus_todo(row.key)
         if todo.uid:
             self._in_asst(
-                s, lambda: deliver_title(s.dir, todo.uid, row.text),
+                s, lambda: deliver_title(
+                    s.dir, todo.uid, row.text, owner=row.owner
+                ),
                 "asst did not take the new wording; its task keeps the old",
             )
 

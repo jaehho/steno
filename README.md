@@ -107,6 +107,7 @@ steno todos                what you owe, across every meeting not put away
 steno todos --all          ... and the ones you ticked
 steno review [NAME]        a meeting's open to-dos; --mine N... files them,
                            --not-mine N... gives them away (a room's wait for it)
+steno todos --waiting      what others promised you, and the day to ask
 steno status               pause state, archived and unsummarized sessions
 steno watch                print apps as they open the mic
 steno brief [--new]        show or scaffold the standing context
@@ -120,11 +121,22 @@ to-dos, your notes, a question box, and the full transcript, where **clicking
 any line plays that moment back**. A meeting that never got its summary says so
 and has a **Summarize now** button. A meeting's to-dos sit in two groups: **For
 you**, which also holds any item nobody has claimed, and **Waiting on them**,
-what someone else promised, kept as a reminder. Only the first is counted, in
-the page's "N to do" and in the sidebar's "N to-dos open", which lists what you
-still owe across every meeting; a row opens its meeting. A task reaches asst
-with the date the meeting gave it, if it gave one, worked out from the day of
-the meeting, and a note that says which meeting it came from. asst's **Open
+what someone else promised. Only the first is counted, in the page's "N to do"
+and in the sidebar's "N to-dos open", which lists what you still owe across
+every meeting; a row opens its meeting. Once asst has a list called
+**Waiting** (`asst list new Waiting`, not linked to GitHub), what someone else
+promised goes there too, never to the inbox or a project's list. Its title
+there starts "Waiting on them: ", so in Today or on the phone it does not read
+as yours; the row here keeps its own words. It is due at 9am on the day to
+ask, so asst's reminder rings: two working days after the day they gave, or a
+working week after the meeting when they gave none. Ticking it, here, in asst
+or on the phone, marks it received. A re-summarize that gives a filed row to the other
+side moves its task to match. `steno todos --waiting` lists those promises and
+when to ask; `--file` puts the ones from meetings summarized before the list
+existed into it, undated where the day to ask has passed, so they wait in the
+list rather than pile into Overdue, and `--dry-run` prints the asst commands
+that would run, and runs none. A task reaches asst with the date the meeting gave it, if it gave one, worked out
+from the day of the meeting, and a note that says which meeting it came from. asst's **Open
 meeting** opens it, and so does `steno show NAME`. A date you change in asst
 stays changed; Steno sends it only once. The model's action
 items are the weakest part, so each to-do row has a menu (right-click, or
@@ -134,8 +146,8 @@ and **Move to list**. On the row that has the focus a letter does each, as in
 LazyVim's file explorer: `r` edit, `d` remove, `o` open, `m` move, and `a` adds
 a to-do. **Add a to-do** at the end of your group files one the model missed
 under the meeting's project list. Edit and Remove reach
-asst too (`asst edit`, `asst rm`); a row that never reached asst, and what
-others owe, stay here. A title changed in asst comes back to the row. A
+asst too (`asst edit`, `asst rm`); a row that never reached asst stays here.
+A title changed in asst comes back to the row. A
 re-summarize words every row as the model does, yours included, here and in
 asst, and **Summarize again** warns first when you have reworded one. It can
 also bring back a row you removed, since the model says it again. The ⋯ menu acts on

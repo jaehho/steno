@@ -11,6 +11,14 @@ Your items file into the asst list named after the meeting's project when that
 list exists; otherwise the inbox. A list tied to a GitHub repo will open issues
 for them, which is why an unset project stays out of those lists.
 
+What someone else promised files only when asst has a list called
+"Waiting" (`WAITING_LIST`), and only there: never the inbox, never a
+project list, so it is neither counted with your work nor opened as an
+issue. Making that list is how a user turns this on. Its title in asst
+starts "Waiting on them: " (`THEIRS_PREFIX`), because the summary words
+every item as an order ("Send the quote"), and in a view of every list,
+or on the phone, that would read as a task of yours.
+
 A task is filed with its due date, when the summary found one, and a note that
 leads back to the meeting. Both go across once, in the `add`: after that asst
 owns them, and a date changed there is left alone.
@@ -35,6 +43,12 @@ from pathlib import Path
 TIMEOUT_S = 15.0
 COMPLETED_LIMIT = "9999"
 OFF_ENV = "STENO_NO_ASST"
+# The list others' promises go to. No such list, nothing of theirs files.
+WAITING_LIST = "Waiting"
+# Before the words of a promise of theirs in asst, so that outside the
+# Waiting list it does not read as a task of yours. Not the row's words:
+# a title read back from asst loses it (`words_of`).
+THEIRS_PREFIX = "Waiting on them: "
 
 log = logging.getLogger("steno.asst")
 
@@ -157,6 +171,35 @@ def target_list(session_dir: Path, project: str | None = None) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
+def waiting_list(names: list[str]) -> str | None:
+    """The asst list for what others promised, as asst spells it, or
+    None when there is none.
+
+    Matched whole, ignoring case: unlike a project, a prefix is not
+    enough, or a list that only starts with the word would take them.
+    """
+    want = WAITING_LIST.lower()
+    return next((n for n in names if n.lower() == want), None)
+
+
+def title_for(text: str, *, theirs: bool) -> str:
+    """The title asst shows for a row's words: a promise of theirs says
+    so first."""
+    return THEIRS_PREFIX + text if theirs else text
+
+
+def words_of(title: str, *, theirs: bool) -> str:
+    """A row's words in an asst title, `title_for` undone: the prefix
+    comes off a promise of theirs, in any case. A title with nothing
+    after it, or one of yours, is the words as they stand."""
+    head = THEIRS_PREFIX.rstrip()
+    if theirs and title[:len(head)].lower() == head.lower():
+        rest = title[len(head):].strip()
+        if rest:
+            return rest
+    return title
+
+
 def _project_of(session_dir: Path) -> str | None:
     try:
         value = json.loads((session_dir / "meta.json").read_text()).get("project")
@@ -232,16 +275,34 @@ def add_todo(
     """
     if not (session_dir / "meta.json").is_file():
         return None
+    raw = _run(add_command(session_dir, text, todo_key, list_name, due))
+    if raw is None:
+        log.warning("asst did not take the date or note; filing it bare")
+        raw = _run([*_add_head(session_dir, todo_key, list_name), "--", text])
+    return _parse_id(raw)
+
+
+def _add_head(
+    session_dir: Path, todo_key: str, list_name: str | None
+) -> list[str]:
     args = ["add", "--literal", "--source", source_key(session_dir, todo_key)]
     if list_name:
         args.extend(["--list", list_name])
+    return args
+
+
+def add_command(
+    session_dir: Path,
+    text: str,
+    todo_key: str,
+    list_name: str | None = None,
+    due: str = "",
+) -> list[str]:
+    """What `add_todo` asks asst first, after `asst --json`: the item
+    with its list, date and note. A dry run prints it."""
     extras = ["--due", due] if due else []
     extras += ["--note", _note_for(session_dir)]
-    raw = _run([*args, *extras, "--", text])
-    if raw is None:
-        log.warning("asst did not take %s; filing it bare", extras)
-        raw = _run([*args, "--", text])
-    return _parse_id(raw)
+    return [*_add_head(session_dir, todo_key, list_name), *extras, "--", text]
 
 
 def set_done(uid: str, done: bool) -> bool:

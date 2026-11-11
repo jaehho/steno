@@ -14,6 +14,7 @@ import json as _json
 import logging
 import math
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from dotenv import load_dotenv
 
 from . import (
     __version__,
+    asstlink,
     config_dir,
     data_dir,
     debrief,
@@ -53,14 +55,21 @@ from .echo import cancel_file
 from .export import meeting_markdown
 from .notes import (
     Dropped,
+    Filing,
     Restored,
+    Todo,
+    ask_day,
+    asst_command,
     decide_owner,
     drop_open_todos,
+    file_waiting,
     forget_asst,
     load_todos,
+    meeting_day,
     pull_todos,
     restore_dropped_todos,
     sync_todos,
+    waiting_plan,
 )
 from .playback import TRACKS, clean_path
 from .realign import Plan, format_plan, has_audio, plan, realign_session
@@ -1278,6 +1287,10 @@ def cmd_todos(args: argparse.Namespace) -> None:
     with it. A row closed that way is never listed, `--all` or not; that
     flag adds the ticked ones.
     """
+    waiting = getattr(args, "waiting", False)
+    if waiting or getattr(args, "file", False) or getattr(args, "dry_run", False):
+        _cmd_waiting(args, today=_dt.date.today())
+        return
     any_open = False
     for session_dir in _leave_out_archived(iter_sessions(args.dir)):
         todos = [
@@ -1336,6 +1349,100 @@ def cmd_review(args: argparse.Namespace) -> None:
     if any(t.held for t in rows):
         print(f"Say whose: steno review {session_dir.name} --mine N... "
               "--not-mine N...")
+
+
+def _cmd_waiting(args: argparse.Namespace, *, today: _dt.date) -> None:
+    """`steno todos --waiting`: what others promised you and is still
+    open, newest meeting first, with the day to ask about each, and how
+    long before `today` that was.
+
+    `--file` puts the ones asst does not hold yet into its Waiting list,
+    which must exist (`asst list new Waiting`): a summary landing does
+    that by itself once it does, so this is for meetings summarized
+    before. A promise whose day to ask has passed goes in undated, so
+    a backfill waits in that list instead of flooding Today and Overdue.
+    `--dry-run` prints the asst commands `--file` would run and runs
+    none, not even a read.
+    """
+    if not args.waiting:
+        print("--file and --dry-run go with --waiting", file=sys.stderr)
+        sys.exit(2)
+    filing = args.file and not args.dry_run
+    list_name = _waiting_list_or_exit() if filing else asstlink.WAITING_LIST
+    any_open = False
+    planned: list[str] = []
+    for session_dir in _leave_out_archived(iter_sessions(args.dir)):
+        todos = load_todos(session_dir) if args.dry_run else pull_todos(session_dir)
+        if filing:
+            file_waiting(session_dir, todos, list_name, today=today)
+        theirs = [
+            t for t in todos if t.owner == "them" and t.open and not t.held
+        ]
+        if not theirs:
+            continue
+        any_open = True
+        print(f"\n{load_title(session_dir) or session_dir.name}  ({session_dir.name})")
+        day = meeting_day(session_dir)
+        if args.dry_run:
+            planned += _print_waiting_plan(
+                session_dir, theirs, waiting_plan(
+                    theirs, list_name=list_name, meeting=day, today=today
+                ),
+            )
+            continue
+        for t in theirs:
+            print(f"  [ ] {t.text}   ({_waiting_where(t, day, today)})")
+    if not any_open:
+        print("nothing open")
+    elif args.dry_run:
+        late = planned.count("")
+        print(
+            f"\n{len(planned)} to file: {len(planned) - late} due on their "
+            f"day to ask, {late} undated because that day has passed"
+        )
+
+
+def _waiting_list_or_exit() -> str:
+    """asst's Waiting list as asst spells it. Without one (or with asst
+    off), say how to make it and exit 1."""
+    found = (
+        asstlink.waiting_list(asstlink.list_names())
+        if asstlink.available() else None
+    )
+    if found is None:
+        name = asstlink.WAITING_LIST
+        print(
+            f"asst has no {name} list (or asst is off): make it with "
+            f"`asst list new {name}`, leave it unlinked from GitHub, "
+            "and run this again", file=sys.stderr,
+        )
+        sys.exit(1)
+    return found
+
+
+def _print_waiting_plan(
+    session_dir: Path, theirs: list[Todo], filings: list[Filing]
+) -> list[str]:
+    """Print the asst command for each of `filings`, and a note for each
+    of `theirs` asst holds already. The dates they would go with."""
+    for filing in filings:
+        print("  " + shlex.join(asst_command(session_dir, filing)))
+    for t in theirs:
+        if t.uid:
+            print(f"  # already in asst ({t.list_name}): {t.text}")
+    return [f.due for f in filings]
+
+
+def _waiting_where(todo: Todo, meeting: _dt.date | None, today: _dt.date) -> str:
+    """Where a promise of theirs stands: its asst list, or the day to ask
+    and how late that is."""
+    if todo.uid:
+        return f"in asst, {todo.list_name}"
+    ask = ask_day(meeting, todo.due)
+    if not ask:
+        return "not in asst"
+    late = (today - _dt.date.fromisoformat(ask)).days
+    return f"ask {ask}" + (f", {late} days ago" if late > 0 else "") + "; not in asst"
 
 
 def cmd_export(args: argparse.Namespace) -> None:
@@ -1760,6 +1867,15 @@ def main() -> None:  # noqa: PLR0915 - one argparse tree, every subcommand decla
     p_todos.add_argument("--all", action="store_true",
                          help="Include the ticked ones too (a meeting put "
                               "away stays out)")
+    p_todos.add_argument("--waiting", action="store_true",
+                         help="What others promised you instead, with the "
+                              "day to ask about each")
+    p_todos.add_argument("--file", action="store_true",
+                         help="With --waiting: put the ones asst does not "
+                              "hold yet in its Waiting list")
+    p_todos.add_argument("--dry-run", action="store_true",
+                         help="With --waiting: print the asst commands "
+                              "--file would run, and run none")
     p_todos.add_argument("--dir", type=Path, default=None, help="Sessions directory")
     p_todos.set_defaults(func=cmd_todos)
 

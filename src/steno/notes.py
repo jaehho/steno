@@ -18,7 +18,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import NamedTuple
@@ -85,7 +85,8 @@ class Todo:
     done: bool = False
     done_at: float | None = None
     # asst's short id, once the item has been filed there. Empty means it lives
-    # only in this file — either asst is not installed, or the item is theirs.
+    # only in this file: asst is not installed or has not taken it yet, or the
+    # item is theirs and asst has no Waiting list.
     uid: str = ""
     # The `--source` this row was filed under. Frozen at first save so a
     # re-summarize that rephrases the text still finds the same phone task.
@@ -385,9 +386,11 @@ def _carry_state(fresh: Todo, prior: Todo) -> None:
     fresh.list_name = prior.list_name
     # The summary's words win, the user's included (the window warned
     # before it asked), and asst is told them too. Words still owed to
-    # asst stay owed, now the summary's.
+    # asst stay owed, now the summary's. A row that changed hands
+    # changes its title's "Waiting on them: " too (`asst_title`).
     fresh.retitle = bool(prior.uid) and (
         prior.retitle or fresh.text != prior.text
+        or changed_hands(fresh, prior)
     )
     if prior.owner_by_user:
         fresh.owner = prior.owner
@@ -406,6 +409,18 @@ def _hold_in_room(todos: list[Todo], *, room: bool) -> None:
     """
     for t in todos:
         t.held = room and t.open and not t.uid and not t.owner_by_user
+
+
+def changed_hands(fresh: Todo, prior: Todo) -> bool:
+    """Whether a re-summarize moved a row between theirs and yours (an
+    unclaimed item counts as yours, as on the meeting page)."""
+    return (fresh.owner == "them") != (prior.owner == "them")
+
+
+def asst_title(todo: Todo) -> str:
+    """What asst calls a row's task: its words, after "Waiting on them: "
+    when the promise is theirs."""
+    return asstlink.title_for(todo.text, theirs=todo.owner == "them")
 
 
 def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[Todo]:
@@ -451,6 +466,10 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
             _carry_state(fresh, prior)
             taken.add(id(prior))
         _hold_in_room(fresh_items, room=recorded_in_room(session_dir))
+        handed = [
+            fresh for fresh, prior in matched
+            if prior.uid and changed_hands(fresh, prior)
+        ]
         merged = fresh_items + [
             t for t in existing
             if id(t) not in taken and (t.done or t.uid or t.owner == "you")
@@ -458,8 +477,11 @@ def sync_todos(session_dir: Path, summary_body: str, file: bool = True) -> list[
         save_todos(session_dir, merged)
     if not file:
         return merged
-    # Filing the new items, then the new words of the old ones.
-    return flush_asst(session_dir, file_with_asst(session_dir, merged))
+    # Filing the new items, moving the tasks of rows that changed hands,
+    # then the new words of the old ones.
+    filed = file_with_asst(session_dir, merged)
+    follow_new_owner(session_dir, handed)
+    return flush_asst(session_dir, filed)
 
 
 def set_done_local(session_dir: Path, key: str, done: bool) -> list[Todo]:
@@ -503,30 +525,230 @@ def set_done(session_dir: Path, key: str, done: bool) -> list[Todo]:
     return load_todos(session_dir)
 
 
-def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
-    """Push your own unfiled action items to asst, keeping the returned ids.
+# What someone else promised is asked about a little after the day they
+# gave, so a promise kept on its last day has time to arrive, or a
+# working week after the meeting when they gave no day. Working days:
+# Saturday and Sunday do not count. The day comes from the summary's
+# `(due: ...)` and from nowhere else, as for your own items: the model
+# reads the day said against the meeting's, and a guess made here from
+# the words ("next Wednesday") would be a second, worse reading.
+ASK_AFTER_STATED_DAYS = 2
+ASK_AFTER_MEETING_DAYS = 5
+# The time on the day to ask. asst gives a task with a time a reminder
+# that rings, there and on the phone; one with only a date rings on
+# neither. asst reads "YYYY-MM-DD 9am" in its own zone.
+ASK_AT = "9am"
+_SATURDAY = 5  # date.weekday(): Monday is 0
 
-    Only `owner == "you"` goes across: what someone else promised is not a
-    task on the user's phone. Idempotent via `--source`, so a re-summarize
-    files nothing twice and keeps the uid it already had. Destination is the
-    meeting's project list when asst has one, else the inbox. A meeting
-    that is put away files nothing: its to-dos are closed.
+
+class Filing(NamedTuple):
+    """One row to hand asst, the list it goes to (None: the inbox) and
+    the date it goes with ("" for none), as asst reads one."""
+
+    todo: Todo
+    list_name: str | None
+    due: str
+
+
+def plus_working_days(day: date, count: int) -> date:
+    """The day `count` weekdays after `day`."""
+    while count > 0:
+        day += timedelta(days=1)
+        if day.weekday() < _SATURDAY:
+            count -= 1
+    return day
+
+
+def ask_day(
+    meeting: date | None,
+    stated: str,
+    *,
+    after_stated: int = ASK_AFTER_STATED_DAYS,
+    after_meeting: int = ASK_AFTER_MEETING_DAYS,
+) -> str:
+    """The day to ask about a promise someone made you, YYYY-MM-DD.
+
+    `after_stated` working days past the day they gave (`stated`,
+    YYYY-MM-DD, or ""), else `after_meeting` working days past the
+    meeting. "" when neither day is known.
+    """
+    try:
+        given = date.fromisoformat(stated) if stated else None
+    except ValueError:
+        given = None
+    if given is not None:
+        return plus_working_days(given, after_stated).isoformat()
+    if meeting is not None:
+        return plus_working_days(meeting, after_meeting).isoformat()
+    return ""
+
+
+def ask_due(ask: str, *, today: date | None, at: str = ASK_AT) -> str:
+    """What a promise of theirs is filed with for its day to ask
+    (`ask_day`): that day at `at`, so it rings.
+
+    With `today`, a day already behind it gives "" (no date): filed
+    late, a pile of promises would all land in Today and Overdue at
+    once, so they wait in the Waiting list instead. None keeps every
+    day, as a summary landing does: its few are worth the red dot.
+    """
+    if not ask:
+        return ""
+    if today is not None and date.fromisoformat(ask) < today:
+        return ""
+    return f"{ask} {at}"
+
+
+def meeting_day(session_dir: Path) -> date | None:
+    """The day the meeting started: `started_at` in meta.json, else the
+    folder's name (`YYYYmmdd-HHMMSS`). None when neither says."""
+    try:
+        started = float(
+            json.loads((session_dir / "meta.json").read_text())
+            .get("started_at") or 0.0
+        )
+        if started:
+            return datetime.fromtimestamp(started).date()
+    except (
+        OSError, json.JSONDecodeError, AttributeError,
+        TypeError, ValueError, OverflowError,
+    ):
+        pass
+    try:
+        return datetime.strptime(session_dir.name, "%Y%m%d-%H%M%S").date()
+    except ValueError:
+        return None
+
+
+def waiting_plan(
+    todos: Sequence[Todo],
+    *,
+    list_name: str,
+    meeting: date | None,
+    today: date | None = None,
+) -> list[Filing]:
+    """What others promised that asst does not hold yet, each for
+    `list_name`, dated for asking (`ask_day`, `ask_due`: with `today`,
+    one whose day has passed goes undated)."""
+    return [
+        Filing(t, list_name, ask_due(ask_day(meeting, t.due), today=today))
+        for t in todos
+        # A held row (a room's) is nobody's until the user says whose.
+        if t.owner == "them" and t.open and not t.uid and not t.held
+    ]
+
+
+def asst_command(session_dir: Path, filing: Filing) -> list[str]:
+    """The `asst` command that files `filing`, as `_file` runs it first.
+    What a dry run prints."""
+    _with_src(session_dir, filing.todo)
+    return [
+        "asst", "--json",
+        *asstlink.add_command(
+            session_dir, asst_title(filing.todo),
+            _source_tail(session_dir, filing.todo),
+            filing.list_name, filing.due,
+        ),
+    ]
+
+
+def _source_tail(session_dir: Path, todo: Todo) -> str:
+    """The row's frozen source without the meeting's prefix: what
+    `asstlink.add_todo` takes as its key."""
+    prefix = asstlink.source_prefix(session_dir)
+    return todo.src[len(prefix):] if todo.src.startswith(prefix) else todo.key
+
+
+def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
+    """Push unfiled action items to asst, keeping the returned ids.
+
+    Yours go to the meeting's project list when asst has one, else the
+    inbox, with the date the summary found. What someone else promised
+    is not a task of yours: it goes only to the Waiting list
+    (`asstlink.WAITING_LIST`), and only when asst has one, titled as
+    theirs (`asst_title`) and due at 9am on the day to ask (`ask_day`).
+    Never the inbox or a project's list, where it would count as your
+    work or open a GitHub issue. Idempotent via `--source`, so a
+    re-summarize files nothing twice and keeps the uid it already had.
+    A meeting that is put away files nothing: its to-dos are closed.
     """
     if not asstlink.available() or asstlink.archived(session_dir):
         return todos
-    pending = [
+    mine = [
         t for t in todos
         if t.owner == "you" and not t.uid and t.open and not t.held
     ]
-    if not pending:
-        return todos
-    list_name = asstlink.target_list(session_dir)
-    prefix = asstlink.source_prefix(session_dir)
+    plan: list[Filing] = []
+    if mine:
+        list_name = asstlink.target_list(session_dir)
+        plan += [Filing(t, list_name, t.due) for t in mine]
+    if any(
+        t.owner == "them" and t.open and not t.uid and not t.held
+        for t in todos
+    ):
+        waiting = asstlink.waiting_list(asstlink.list_names())
+        if waiting:
+            plan += waiting_plan(
+                todos, list_name=waiting, meeting=meeting_day(session_dir)
+            )
+    _file(session_dir, plan)
+    return todos
+
+
+def file_waiting(
+    session_dir: Path, todos: list[Todo], list_name: str, *, today: date
+) -> list[Todo]:
+    """File what others promised in this meeting into `list_name` now,
+    for a meeting summarized before asst had a Waiting list. One whose
+    day to ask is before `today` goes undated (`ask_due`). The rows
+    that went across. A meeting put away files nothing."""
+    if not asstlink.available() or asstlink.archived(session_dir):
+        return []
+    plan = waiting_plan(
+        todos, list_name=list_name, meeting=meeting_day(session_dir),
+        today=today,
+    )
+    _file(session_dir, plan)
+    return [f.todo for f in plan if f.todo.uid]
+
+
+def follow_new_owner(session_dir: Path, rows: Sequence[Todo]) -> int:
+    """Move the tasks of filed rows a re-summarize gave to the other
+    side: a promise of theirs to the Waiting list, when asst has one,
+    and one now yours to the meeting's project list, else the inbox.
+    Their titles are `flush_asst`'s. Slow. How many moved.
+
+    Only a change of hands moves a task: one the user moved in asst
+    stays where they put it.
+    """
+    rows = [t for t in rows if t.uid and not t.dropped]
+    if not rows or not asstlink.available():
+        return 0
+    theirs = any(t.owner == "them" for t in rows)
+    waiting = asstlink.waiting_list(asstlink.list_names()) if theirs else None
+    yours = any(t.owner != "them" for t in rows)
+    mine = asstlink.target_list(session_dir) if yours else None
+    moved = 0
+    for t in rows:
+        where = waiting if t.owner == "them" else mine
+        if t.owner == "them" and where is None:
+            continue  # no Waiting list: it stays where it was filed
+        if move_todo(session_dir, t.key, where):
+            t.list_name = where or "Inbox"
+            moved += 1
+    return moved
+
+
+def _file(session_dir: Path, plan: Sequence[Filing]) -> None:
+    """Hand each row to asst, and keep the id it gives back, on the row
+    and in todos.json."""
     filed: dict[str, tuple[str, str]] = {}
-    for t in pending:
+    for t, list_name, due in plan:
         _with_src(session_dir, t)
-        key = t.src[len(prefix):] if t.src.startswith(prefix) else t.key
-        uid = asstlink.add_todo(session_dir, t.text, key, list_name, t.due)
+        uid = asstlink.add_todo(
+            session_dir, asst_title(t), _source_tail(session_dir, t),
+            list_name, due,
+        )
         if uid:
             t.uid = uid
             t.list_name = list_name or "Inbox"
@@ -547,7 +769,6 @@ def file_with_asst(session_dir: Path, todos: list[Todo]) -> list[Todo]:
             return changed
 
         _edit(session_dir, landed)
-    return todos
 
 
 def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]:
@@ -576,7 +797,7 @@ def flush_asst(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     for t in todos:
         if (
             t.retitle and t.uid and not t.dropped
-            and asstlink.set_title(t.uid, t.text)
+            and asstlink.set_title(t.uid, asst_title(t))
         ):
             t.retitle = False
             titled.append((t.uid, t.text))
@@ -618,8 +839,9 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     here, and so does a title changed there. A row still dirty keeps its
     local tick, and one whose new words asst has not taken keeps them. A task deleted in asst is
     deleted here too — a row that has reached the phone and then vanished
-    from it was removed on purpose. Rows that never filed (theirs, or yours
-    not yet sent) are local and stay: a pull files nothing. A dropped
+    from it was removed on purpose. Rows that never filed (theirs while
+    asst has no Waiting list, or yours not yet sent) are local and stay:
+    a pull files nothing. A dropped
     row (`drop_open_todos`) is not looked for: its task was removed on
     purpose, by us. It only loses its uid once asst no longer holds it.
 
@@ -686,10 +908,13 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
 
 def _adopt_title(row: Todo, title: str, rows: Sequence[Todo]) -> bool:
     """Take a title given in asst as the row's words, as an Edit here
-    would. Not while words given here are on their way there, and not
-    when another row already says it (the wording is how a row is
-    found). True if the row changed."""
-    title = " ".join(title.split())
+    would, less the "Waiting on them: " a promise of theirs carries
+    there (`asst_title`). Not while words given here are on their way
+    there, and not when another row already says it (the wording is how
+    a row is found). True if the row changed."""
+    title = asstlink.words_of(
+        " ".join(title.split()), theirs=row.owner == "them"
+    )
     if not title or title == row.text or row.retitle:
         return False
     key = Todo(text=title).key
@@ -712,15 +937,16 @@ def move_with_asst(session_dir: Path, todos: list[Todo], list_name: str | None) 
         return 0
     moved = asstlink.move_todos(uids, list_name)
     if moved:
+        # Only yours moved: a promise of theirs stays in Waiting.
         def relist(current: list[Todo]) -> bool:
             for t in current:
-                if t.uid:
+                if t.uid and t.owner == "you":
                     t.list_name = list_name or "Inbox"
             return True
 
         _edit(session_dir, relist)
         for t in todos:
-            if t.uid:
+            if t.uid and t.owner == "you":
                 t.list_name = list_name or "Inbox"
     return moved
 
@@ -759,14 +985,17 @@ def rename_todo(session_dir: Path, key: str, text: str) -> Todo | None:
     return found[0] if found else None
 
 
-def deliver_title(session_dir: Path, uid: str, text: str) -> bool:
+def deliver_title(
+    session_dir: Path, uid: str, text: str, *, owner: str = "you"
+) -> bool:
     """Tell asst about a rewording. Slow: not for the GTK thread. An
     unfiled row has nothing to tell, which is not a failure; one asst
-    did not take is sent again by the next pull (`flush_asst`)."""
+    did not take is sent again by the next pull (`flush_asst`). The row's
+    `owner` says whether asst's title starts "Waiting on them: "."""
     if not uid or not asstlink.available():
         return True
     text = " ".join(text.split())
-    if not asstlink.set_title(uid, text):
+    if not asstlink.set_title(uid, asst_title(Todo(text=text, owner=owner))):
         return False
     _titles_landed(session_dir, [(uid, text)])
     return True
@@ -822,11 +1051,11 @@ def settle_owner(session_dir: Path, keys: list[str], *, mine: bool) -> list[Todo
 
 
 def decide_owner(session_dir: Path, keys: list[str], *, mine: bool) -> list[Todo]:
-    """`settle_owner`, then filing those rows when they are the user's,
-    and none else. Slow when `mine`: it files with asst."""
+    """`settle_owner`, then filing those rows: the user's to the
+    meeting's list, someone else's to asst's Waiting list when it has
+    one (`file_with_asst`). Slow: it files with asst."""
     todos = settle_owner(session_dir, keys, mine=mine)
-    if mine:
-        file_with_asst(session_dir, [t for t in todos if t.key in set(keys)])
+    file_with_asst(session_dir, [t for t in todos if t.key in set(keys)])
     return load_todos(session_dir)
 
 
