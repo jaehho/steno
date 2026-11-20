@@ -67,4 +67,5 @@ ignore = [
 [dependency-groups]
 dev = [
     "pygobject-stubs>=2.17.0",
+    "ruff>=0.17.6",
 ]
