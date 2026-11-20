@@ -53,6 +53,14 @@ class TestStylesheet(unittest.TestCase):
         ):
             self.assertIn(f".{name}", self.css)
 
+    def test_every_line_a_search_hit_is_styled(self):
+        """`show_search` puts line-hit on every matching row and
+        line-hit-current on the one n and N are on. Only the second had
+        a rule, so the other hits looked like any line; the lookahead
+        keeps line-hit-current from passing for line-hit."""
+        for name in ("line-hit", "line-hit-current"):
+            self.assertRegex(self.css, rf"\.{name}(?![\w-])")
+
     def test_the_classes_that_set_an_archived_meeting_apart_are_styled(self):
         for name in ("session-archived", "archive-toggle"):
             self.assertIn(f".{name}", self.css)
