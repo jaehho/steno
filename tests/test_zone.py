@@ -3,9 +3,9 @@
 timedated says so on the system bus; here the signal is sent on a
 private bus, and the change of zone is a change of `TZ`, which, like a
 new /etc/localtime, a running process sees only after `time.tzset()`.
-What the window draws again needs a display, so tests/gtk_zone.py runs
-it on a private Broadway one; that part is skipped without
-gtk4-broadwayd.
+What the window draws again, and the app's startup step that listens on
+the system bus, need a display, so tests/gtk_zone.py runs them on a
+private Broadway one; that part is skipped without gtk4-broadwayd.
 """
 from __future__ import annotations
 

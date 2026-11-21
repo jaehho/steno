@@ -170,9 +170,22 @@ class App(Adw.Application):
     def _follow_zone(self) -> None:
         """Times follow `timedatectl set-timezone` from then on, not
         from the next start (issue #44). Without a system bus the zone
-        is the one steno started in."""
+        is the one steno started in.
+
+        The connection is steno's own. The shared one `bus_get_sync`
+        gives would raise SIGTERM if the system bus went away, killing
+        a recording over a lost zone signal."""
         try:
-            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            address = Gio.dbus_address_get_for_bus_sync(
+                Gio.BusType.SYSTEM, None
+            )
+            bus = Gio.DBusConnection.new_for_address_sync(
+                address,
+                Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None,
+                None,
+            )
         except GLib.Error as e:
             log.warning("no system bus; zone changes unseen: %s", e.message)
             return
