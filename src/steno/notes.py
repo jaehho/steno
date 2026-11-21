@@ -846,7 +846,9 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     purpose, by us. It only loses its uid once asst no longer holds it.
 
     The comparison is made against todos.json as it is after the (slow)
-    fetch, so a tick made while this ran is a dirty row, not a lost one.
+    fetch, so a tick made while this ran is a dirty row, not a lost one,
+    and a row moved to another list meanwhile keeps the list it was
+    moved to: what asst said was read before the move.
     """
     todos = flush_asst(session_dir, todos)
     if not asstlink.available():
@@ -854,7 +856,12 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
     # Rows already on the phone before the fetch. A row filed *during* it
     # (a summary landing) is absent from the snapshot without having been
     # deleted, and must not be dropped as if it had.
-    had_uid = {t.key for t in load_todos(session_dir) if t.uid}
+    before = load_todos(session_dir)
+    had_uid = {t.key for t in before if t.uid}
+    # Each filed row's list before the fetch. A row whose list changed
+    # here during it (Move to list, a project change) was moved after
+    # asst was read; the next pull reads the move back from asst.
+    listed = {t.uid: t.list_name for t in before if t.uid}
     remote = asstlink.fetch_session(session_dir)
     if remote is None:
         return load_todos(session_dir)
@@ -892,6 +899,8 @@ def pull_todos(session_dir: Path, todos: list[Todo] | None = None) -> list[Todo]
             done = bool(hit["completed"])
             uid = str(hit.get("id") or t.uid)
             list_name = str(hit.get("list") or t.list_name)
+            if listed.get(t.uid, t.list_name) != t.list_name:
+                list_name = t.list_name  # moved here during the fetch
             if t.done != done or t.uid != uid or t.list_name != list_name:
                 t.done = done
                 t.done_at = time.time() if done else None

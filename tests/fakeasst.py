@@ -270,6 +270,15 @@ class FakeAsst:
         self._state = state
         self._write()
 
+    def move(self, uid: str, list_name: str) -> None:
+        """Move a task the way the user would in asst's own window."""
+        state = self._read()
+        for t in state["tasks"]:
+            if t["id"] == uid:
+                t["list_name"] = list_name
+        self._state = state
+        self._write()
+
     def change_due(self, uid: str, due: str) -> None:
         """Change a task's date the way the user would in asst."""
         state = self._read()

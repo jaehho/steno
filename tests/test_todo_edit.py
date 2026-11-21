@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from steno import asstlink
 from steno.notes import (
@@ -283,6 +284,36 @@ class TestMoving(EditCase):
     def test_a_task_asst_would_not_move_leaves_the_row_alone(self):
         self.asst.down = True
         self.assertFalse(move_todo(self.dir, SEND, "thesis"))
+        self.assertEqual(self.row(SEND).list_name, "lab")
+
+
+class TestMovingDuringAPull(EditCase):
+    """A pull reads asst, waits, then writes what it read. A move that
+    lands in between is newer than what the pull read."""
+
+    def pull_with_a_move_in_the_middle(self) -> None:
+        fetch = asstlink.fetch_session
+
+        def fetch_then_move(session_dir: Path) -> dict | None:
+            read = fetch(session_dir)  # asst still says "lab"
+            self.assertTrue(move_todo(self.dir, SEND, "thesis"))
+            return read
+
+        with mock.patch.object(
+            asstlink, "fetch_session", side_effect=fetch_then_move
+        ):
+            pull_todos(self.dir)
+
+    def test_the_move_wins(self):
+        self.pull_with_a_move_in_the_middle()
+        self.assertEqual(self.row(SEND).list_name, "thesis")
+
+    def test_the_next_pull_follows_asst_again(self):
+        """Only that pull's word is older than the move; a move made in
+        asst after it is still taken."""
+        self.pull_with_a_move_in_the_middle()
+        self.asst.move(self.row(SEND).uid, "lab")
+        pull_todos(self.dir)
         self.assertEqual(self.row(SEND).list_name, "lab")
 
 
