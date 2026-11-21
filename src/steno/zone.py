@@ -60,9 +60,11 @@ def watch_zone(
         if not names_zone(changed, invalidated):
             return
         time.tzset()
+        # %Z is the abbreviation in effect now; tzname[0] is always
+        # the standard-time one, wrong under daylight saving time.
         log.info(
             "time zone is now %s (%s)",
-            changed.get(ZONE_PROPERTY, "?"), time.tzname[0],
+            changed.get(ZONE_PROPERTY, "?"), time.strftime("%Z"),
         )
         on_change()
 
