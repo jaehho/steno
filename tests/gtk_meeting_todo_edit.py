@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -26,6 +27,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Gdk, Gio, GLib, Gtk
 
+from steno import asstlink
 from steno.gui.meeting import MeetingPage
 from steno.gui.window import Window
 from steno.notes import load_todos, sync_todos
@@ -593,6 +595,44 @@ class TestMoving(TodoEditCase):
         self.assertTrue(wait_for(lambda: bool(self.toasts)))
         self.assertEqual(self.toasts, ["asst has no lists to move it to"])
         self.assertEqual(asked, [])
+
+    def test_a_pull_that_read_asst_before_the_move_keeps_the_move(self):
+        """The pull reads asst, the move lands, then the pull lands: the
+        row names the list it was moved to, not the one asst said."""
+        self.pick("thesis")
+        self.assertTrue(wait_for(lambda: not self.page._pull_in_flight))
+        fetch = asstlink.fetch_session
+        read, moved = threading.Event(), threading.Event()
+
+        def fetch_until_moved(session_dir: Path) -> dict | None:
+            said = fetch(session_dir)  # asst still says "Inbox"
+            read.set()
+            moved.wait(10)
+            return said
+
+        patch = mock.patch.object(
+            asstlink, "fetch_session", side_effect=fetch_until_moved
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.page.pull_now()
+        self.assertTrue(wait_for(read.is_set), "the pull never read asst")
+        self.right_click(SEND).activate_action("todo.move", None)
+        self.assertTrue(
+            wait_for(lambda: self.local(SEND).list_name == "thesis")
+        )
+        moved.set()
+        self.assertTrue(wait_for(lambda: not self.page._pull_in_flight))
+        settle()
+        self.assertEqual(self.local(SEND).list_name, "thesis")
+        self.assertEqual(self.list_label(SEND), "thesis")
+
+    def list_label(self, text: str) -> str:
+        (button,) = [
+            w for w in walk(self.row(text))
+            if isinstance(w, Gtk.Button) and w.has_css_class("todo-list")
+        ]
+        return button.get_label()
 
 
 if __name__ == "__main__":
