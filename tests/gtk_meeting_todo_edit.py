@@ -16,6 +16,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -76,8 +77,25 @@ def walk(widget: Gtk.Widget):
         child = child.get_next_sibling()
 
 
+def join_threads_since(
+    before: set[threading.Thread], *, seconds: float = 30.0
+) -> list[str]:
+    """Wait for every thread started since `before` was taken, running
+    the main loop in between, since what a thread hands back to it can
+    start another. The names of those still running after `seconds`."""
+    end = time.monotonic() + seconds
+    while started := [t for t in threading.enumerate() if t not in before]:
+        if time.monotonic() > end:
+            return [t.name for t in started]
+        for thread in started:
+            thread.join(max(0.0, end - time.monotonic()))
+        settle()
+    return []
+
+
 class TodoEditCase(unittest.TestCase):
     def setUp(self):
+        self._threads = set(threading.enumerate())
         self.raised: list[BaseException] = []
         self._hook = sys.excepthook
         sys.excepthook = lambda _kind, value, _tb: self.raised.append(value)
@@ -102,11 +120,17 @@ class TodoEditCase(unittest.TestCase):
         sync_todos(self.dir, SUMMARY)
 
     def tearDown(self):
+        # The page pulls from asst and tells it of edits on threads of
+        # its own. One still running as the folders go writes into them
+        # mid-removal ("Directory not empty"), and once the fake is
+        # stopped its `asst` is whatever the restored PATH finds.
+        running = join_threads_since(self._threads)
         sys.excepthook = self._hook
         self.window.destroy()
         settle()
         self._tmp.cleanup()
         self.assertEqual(self.raised, [])
+        self.assertEqual(running, [], "threads still running at teardown")
 
     def rows(self) -> dict[str, Gtk.Box]:
         """The to-do rows by their words."""
