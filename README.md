@@ -660,6 +660,7 @@ reconnect.
 - **`events.py`** — what the engine says. The engine never touches a widget.
 - **`state.py` / `control.py`** — what the bar reads, and how a click reaches
   the running app (its own D-Bus actions; no socket, no pidfile).
+- **`zone.py`** — follows `timedatectl set-timezone` without a restart: on timedated's signal on the system bus it calls `time.tzset()`, so new folders and transcript lines take the new zone, and the window draws its days again.
 
 `make help` lists everything. `PRODUCT.md` says what this is for and what it
 refuses to be.

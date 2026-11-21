@@ -33,6 +33,7 @@ from .. import (
     livesrc,
     migrate_legacy,
     projectnotes,
+    zone,
 )
 from .. import log as steno_log
 from ..control import APP_ID
@@ -115,6 +116,7 @@ class App(Adw.Application):
         self.tray: Tray | None = None
         self.source: livesrc.Source | None = None
         self._sync_workers: list[threading.Thread] = []
+        self._zone_bus: Gio.DBusConnection | None = None
 
     # ------------------------------------------------------------------ startup
 
@@ -163,6 +165,25 @@ class App(Adw.Application):
         # stuck on `off` while the mic is open is the one lie it must not tell.
         GLib.timeout_add_seconds(REPUBLISH_S, self._republish)
         GLib.timeout_add_seconds(SYNC_FIRST_S, self._sync_first)
+        self._follow_zone()
+
+    def _follow_zone(self) -> None:
+        """Times follow `timedatectl set-timezone` from then on, not
+        from the next start (issue #44). Without a system bus the zone
+        is the one steno started in."""
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        except GLib.Error as e:
+            log.warning("no system bus; zone changes unseen: %s", e.message)
+            return
+        self._zone_bus = bus
+        zone.watch_zone(bus, self.zone_changed)
+
+    def zone_changed(self) -> None:
+        """The zone was read again: the window draws its times in it.
+        New folders and transcript lines take it as they are written."""
+        if self._window is not None:
+            self._window.zone_changed()
 
     def do_activate(self) -> None:
         # `--background` is the autostart path: come up listening, silently,

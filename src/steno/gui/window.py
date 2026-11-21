@@ -700,6 +700,15 @@ class Window(Adw.ApplicationWindow):
         else:
             self.meeting.pull_now()
 
+    def zone_changed(self) -> None:
+        """The machine's time zone changed: the list's days ("Today",
+        "Last 7 days") and the header are drawn again in the new one.
+        A meeting's own time is its folder's name, and stays."""
+        if not self._loaded:
+            return  # the first load draws them in it
+        self.sidebar.refresh()
+        self._update_header()
+
     def show_session(self, session_dir: Path | None) -> None:
         """Open one meeting - where a summary notification lands."""
         if self._loaded:
