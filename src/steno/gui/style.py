@@ -154,6 +154,13 @@ def stylesheet(colors: dict[str, str], transcript_pt: int = TRANSCRIPT_PT_DEFAUL
     }}
     list.transcript-past row {{ border-radius: 6px; padding: 2px 8px; }}
     list.transcript-past row:hover {{ background: {colors['surface0']}; }}
+    /* Every line a search found keeps the yellow edge of the match n and
+       N are on, dimmed, so the hits show while scrolling and the current
+       one still reads apart. Before the rules below, so the line being
+       played, a cited line and the current match each win on its row. */
+    list.transcript-past row.line-hit {{
+        box-shadow: inset 2px 0 0 alpha({colors['yellow']}, 0.5);
+    }}
     list.transcript-past row.line-playing {{
         background: {colors['surface1']};
         box-shadow: inset 2px 0 0 {colors['teal']};
