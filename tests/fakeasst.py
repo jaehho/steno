@@ -226,6 +226,18 @@ class FakeAsst:
         self._state = state
         self._write()
 
+    @property
+    def lists(self) -> tuple[str, ...]:
+        """The lists `asst lists` prints besides the inbox."""
+        return tuple(self._read()["lists"])
+
+    @lists.setter
+    def lists(self, names: tuple[str, ...]) -> None:
+        state = self._read()
+        state["lists"] = list(names)
+        self._state = state
+        self._write()
+
     def refuse_rm(self, *uids: str) -> None:
         """Only these tasks cannot be deleted: `rm` exits 1."""
         state = self._read()

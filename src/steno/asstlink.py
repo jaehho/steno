@@ -146,10 +146,18 @@ def _parse_tasks(raw: str | None) -> list[dict]:
     )
 
 
+def fetch_list_names() -> list[str] | None:
+    """Every asst list name. None when asst cannot answer, which is not
+    the same as an answer with no lists."""
+    raw = _run(["lists"])
+    if raw is None:
+        return None
+    return [str(r["name"]) for r in _parse_tasks(raw) if r.get("name")]
+
+
 def list_names() -> list[str]:
     """Every asst list name. Empty when asst cannot answer."""
-    rows = _parse_tasks(_run(["lists"]))
-    return [str(r["name"]) for r in rows if r.get("name")]
+    return fetch_list_names() or []
 
 
 def target_list(session_dir: Path, project: str | None = None) -> str | None:

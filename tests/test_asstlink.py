@@ -141,6 +141,19 @@ class TestTargetList(unittest.TestCase):
             self.assertIsNone(asstlink.target_list(self.session))
 
 
+class TestListNames(unittest.TestCase):
+    def _fetch(self, raw: str | None) -> list[str] | None:
+        with mock.patch.object(asstlink, "_run", return_value=raw):
+            return asstlink.fetch_list_names()
+
+    def test_no_answer_is_none_not_empty(self):
+        """Move says asst did not answer, not that it has no lists."""
+        self.assertIsNone(self._fetch(None))
+
+    def test_an_answer_with_no_lists_is_empty(self):
+        self.assertEqual(self._fetch("[]"), [])
+
+
 class TestPull(unittest.TestCase):
     def setUp(self):
         # fetch_session only uses the session folder name in the source prefix.

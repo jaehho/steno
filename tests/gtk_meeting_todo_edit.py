@@ -574,12 +574,25 @@ class TestMoving(TodoEditCase):
         )
         self.assertEqual(self.local(DRAFT).list_name, "Inbox")
 
-    def test_without_lists_it_says_so(self):
+    def test_with_asst_down_it_says_asst_did_not_answer(self):
+        asked = self.pick("thesis")
         self.asst.down = True
         popover = self.right_click(SEND)
         popover.activate_action("todo.move", None)
         self.assertTrue(wait_for(lambda: bool(self.toasts)))
+        self.assertEqual(
+            self.toasts, ["asst did not answer; its task stays where it is"]
+        )
+        self.assertEqual(asked, [])
+
+    def test_without_lists_it_says_so(self):
+        asked = self.pick("thesis")
+        self.asst.lists = ()
+        popover = self.right_click(SEND)
+        popover.activate_action("todo.move", None)
+        self.assertTrue(wait_for(lambda: bool(self.toasts)))
         self.assertEqual(self.toasts, ["asst has no lists to move it to"])
+        self.assertEqual(asked, [])
 
 
 if __name__ == "__main__":

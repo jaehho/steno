@@ -1344,12 +1344,17 @@ class MeetingPage(Gtk.Box):
 
     def _move_todo(self, s: Session, todo: Todo) -> None:
         def fetch(_s: Session) -> None:
-            names = asstlink.list_names()
+            names = asstlink.fetch_list_names()
             GLib.idle_add(self._ask_move, s, todo, names)
 
         self._in_asst_thread(fetch, s)
 
-    def _ask_move(self, s: Session, todo: Todo, names: list[str]) -> bool:
+    def _ask_move(
+        self, s: Session, todo: Todo, names: list[str] | None
+    ) -> bool:
+        if names is None:
+            self._toast("asst did not answer; its task stays where it is")
+            return GLib.SOURCE_REMOVE
         choices = ["Inbox"] + [n for n in names if n.lower() != "inbox"]
         if len(choices) == 1 and not names:
             self._toast("asst has no lists to move it to")
